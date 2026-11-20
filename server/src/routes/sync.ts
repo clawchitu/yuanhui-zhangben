@@ -7,7 +7,7 @@ import { emptyChanges, pullChanges, type Cursors } from "../sync/pull.ts";
 import { StoreBusy } from "../sync/lock.ts";
 import { deletePendingUntil } from "../auth/session.ts";
 import { EpochMismatch, pushOps, type DeviceState, type IncomingOp, type OpResult } from "../sync/push.ts";
-import { SCOPES, type Scope } from "../sync/projection.ts";
+import { resultOut, scopeOfRole, SCOPES, type Scope } from "../sync/projection.ts";
 import { strictValidatorCompiler, syncBodySchema } from "../sync/validate.ts";
 import { identityOf } from "../auth/authenticate.ts";
 import { sendError } from "./errors.ts";
@@ -85,8 +85,9 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
 
       // 注销期间（§14 S04-2）：results 为空，带 delete_pending_until，手机把 op 留在 outbox、停止推送
       const until = device.deletePending ? deletePendingUntil(device.deleteRequestedAt) : undefined;
+      const resultScope = scopeOfRole(device.role);
       return {
-        results,
+        results: results.map((r) => resultOut(r, resultScope)),
         ...(until ? { delete_pending_until: until } : {}),
         ...out,
         server_time: now.toISOString(),

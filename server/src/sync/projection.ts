@@ -4,7 +4,7 @@
 //
 // 收银员（scope = cashier_projection）拿不到：product_private 的任何字段（库存、货值、进价、low_at、保质期设置、盘点时间），
 // 任何进货 / 盘点 / 损耗流水（只有卖出），别的手机的流水，保质期批次，cogs_fen / value_delta_fen / unit_cost_fen / cost_missing，
-// 以及 lot、别机的、非卖出的墓碑（cashierRemovedVisible）。
+// 以及 lot、别机的、非卖出的墓碑（cashierRemovedVisible），push 结果里的 current（resultOut，含幂等重放）。
 import { sql, type Selectable } from "kysely";
 import type { Database } from "../db.ts";
 
@@ -161,5 +161,28 @@ export function lotOut(l: Row<"stock_lots">) {
     closed_reason: l.closed_reason,
     handle_ver: l.handle_ver,
     rev: int(l.rev),
+  };
+}
+
+/** 设备角色 → 裁剪口径（与 permissions.json 的 sync:pull scope 一致：家用全店，收银员投影） */
+export const scopeOfRole = (role: "family" | "cashier"): Scope => (role === "cashier" ? "cashier_projection" : "full_store");
+
+/**
+ * push 结果按**当前请求的**角色裁剪（白名单挑键）。所有结果都走这里，包括幂等重放的缓存结果：
+ * ops.result 里存的是第一次处理时的完整结果（I8「重发返回与第一次相同的结果」指库里这份不变），
+ * 回给谁再按谁裁——家用发的过期期初带回 current.stock_qty，收银员拿同 id 同内容重发时不能看到。
+ * current（stock_qty / stock_ver / qty_left / handle_ver / closed）全是账面库存和批次状态，收银员一律不给。
+ */
+export function resultOut<R extends { id: string; status: string; code?: string; remap?: Record<string, string>; current?: Record<string, unknown>; replayed?: boolean }>(
+  r: R,
+  scope: Scope,
+) {
+  return {
+    id: r.id,
+    status: r.status,
+    ...(r.code !== undefined ? { code: r.code } : {}),
+    ...(r.remap !== undefined ? { remap: r.remap } : {}),
+    ...(r.current !== undefined && scope === "full_store" ? { current: r.current } : {}),
+    ...(r.replayed !== undefined ? { replayed: r.replayed } : {}),
   };
 }

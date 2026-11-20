@@ -168,7 +168,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 - I5 同一个 op 重放任意次，库里结果不变
 - I6 对账：对任意时间段，`期初货值 + Σ value_delta（按类型分组）= 期末货值`，逐分相等
 - I7 同一店内 `rev` 不重复；用任意页大小分页拉取的结果集合 = 一次拉完的结果集合
-- I8 重发同一个 op，返回与第一次相同的结果（含拒绝原因和 remap）
+- I8 重发同一个 op，返回与第一次相同的结果（含拒绝原因和 remap）；「相同」指库里存的那份结果不变，回给手机时仍按当前请求的角色裁剪（收银员重发拿不到 `current` 里的库存，`sync/projection.ts` 的 `resultOut`）
 
 ### 3.4 手机本地库（GRDB）
 
