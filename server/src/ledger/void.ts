@@ -9,7 +9,7 @@ import type { Database } from "../db.ts";
 import type { StoreTx } from "../sync/lock.ts";
 import { Remap } from "../sync/aliases.ts";
 import type { Outcome } from "../sync/catalog.ts";
-import { VOIDABLE, voidEntry, type Draft, type EntryType } from "./cost.ts";
+import { raw, VOIDABLE, type Draft, type EntryType } from "./cost.ts";
 import { onVoid } from "./lots.ts";
 import { bad, guarded, loadProduct, stateOf, writeStep, type LedgerContext } from "./apply.ts";
 
@@ -67,7 +67,7 @@ async function voidOne(tx: StoreTx, ctx: LedgerContext, e: EntryRow) {
     const f = await tx.trx.selectFrom("entries").select(["id", "unit_cost_fen"]).where("store_id", "=", tx.storeId).where("id", "=", e.cost_fix_entry_id).executeTakeFirstOrThrow();
     fixedBy = { ref: f.id, b: BigInt(f.unit_cost_fen!) };
   }
-  const step = voidEntry(stateOf(prod), draftOf(e), fixedBy);
+  const step = raw.voidEntry(stateOf(prod), draftOf(e), fixedBy);
   // 冲销行照抄原行的展示字段；件数是数量，跟 qty_delta 一起取反（§3.3「所有数量和金额取反」）
   await writeStep(tx, ctx, prod, {
     batchId: e.batch_id ?? undefined,

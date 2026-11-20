@@ -9,7 +9,7 @@ import type { StoreTx } from "../sync/lock.ts";
 import { shanghaiDay } from "../auth/guard.ts";
 import { Remap } from "../sync/aliases.ts";
 import type { Outcome } from "../sync/catalog.ts";
-import { removeStock } from "./cost.ts";
+import { raw } from "./cost.ts";
 import { bad, entryFree, guarded, loadProduct, stateOf, writeStep, type LedgerContext } from "./apply.ts";
 
 // ── 纯算法 ──
@@ -226,7 +226,7 @@ export async function applyExpiryDispose(tx: StoreTx, ctx: LedgerContext, p: Dis
     if (p.action !== "sold_out") {
       await entryFree(tx, p.entry_id);
       const prod = (await loadProduct(tx, lot.product_id))!;
-      const step = removeStock<string>(stateOf(prod), BigInt(p.actual_qty), p.action === "discard" ? "expire_loss" : "supplier_return");
+      const step = raw.removeStock<string>(stateOf(prod), BigInt(p.actual_qty), p.action === "discard" ? "expire_loss" : "supplier_return");
       const flags = { ...ctx.flags, lot_id: lot.id, qty_left_before: lot.qty_left };
       await writeStep(tx, { ...ctx, flags }, prod, { id: p.entry_id, unitName: prod.base_unit, expiryDate: lot.expiry_date as string | null }, step);
     }

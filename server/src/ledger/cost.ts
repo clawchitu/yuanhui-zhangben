@@ -280,6 +280,18 @@ function lateCompensateRaw<R>(before: CostState, step: Step<R>): Step<R> {
   return { state: st, entries };
 }
 
+/**
+ * 写库前的最后一步（apply.ts 的 writeStep 用）：迟到的先把原流水、补偿行、I3 归位组合好，再对组合后的最终状态和每条流水检查范围。
+ * 范围检查不能放在补偿之前：未补偿的中间状态可能越界（库存已在 INT32 边上时迟到卖出 / 进货 1 个），
+ * 而补偿后的结果和每条流水都存得下，提前检查会把合法流水终局拒收（PR #16 Codex 1，§14 S05-4）。
+ */
+export function settle<R>(before: CostState, step: Step<R>, late: boolean): Step<R> {
+  return storable(late ? lateCompensateRaw(before, step) : step);
+}
+
+/** 不做范围检查的算法，给 writeStep 先组合再经 settle 检查；不经 writeStep 写库的调用方不许用 */
+export const raw = { stockIn: stockInRaw, sale: saleRaw, removeStock: removeStockRaw, voidEntry: voidEntryRaw } as const;
+
 // 对外的入口：每一步都过 storable（§14 S05-4）
 export const stockIn = <R>(...a: Parameters<typeof stockInRaw<R>>): Step<R> => storable(stockInRaw<R>(...a));
 export const sale = <R>(...a: Parameters<typeof saleRaw<R>>): Step<R> => storable(saleRaw<R>(...a));
@@ -287,4 +299,3 @@ export const count = <R>(...a: Parameters<typeof countRaw<R>>): Step<R> => stora
 export const opening = <R>(...a: Parameters<typeof openingRaw<R>>): Step<R> => storable(openingRaw<R>(...a));
 export const removeStock = <R>(...a: Parameters<typeof removeStockRaw<R>>): Step<R> => storable(removeStockRaw<R>(...a));
 export const voidEntry = <R>(...a: Parameters<typeof voidEntryRaw<R>>): Step<R> => storable(voidEntryRaw<R>(...a));
-export const lateCompensate = <R>(...a: Parameters<typeof lateCompensateRaw<R>>): Step<R> => storable(lateCompensateRaw<R>(...a));

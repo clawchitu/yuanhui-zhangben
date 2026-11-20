@@ -11,7 +11,7 @@ import type { StoreTx } from "../sync/lock.ts";
 import { Remap, resolveProductId } from "../sync/aliases.ts";
 import { DEFAULT_BASE_UNIT, type ApplyContext, type Outcome } from "../sync/catalog.ts";
 import { allocate, AllocationError, LIMITS } from "./allocation.ts";
-import { CostError, lateCompensate, opening, sale, stockIn, type CostState, type MissingSale, type Step } from "./cost.ts";
+import { CostError, opening, raw, settle, type CostState, type MissingSale, type Step } from "./cost.ts";
 import { createLot, deductLots } from "./lots.ts";
 
 export interface LedgerContext extends ApplyContext {
@@ -119,12 +119,13 @@ function isLate(ctx: LedgerContext, prod: ProductRow, counted: boolean): boolean
 }
 
 /**
- * 把 cost.ts 的一步写进 entries（第一条是主流水），再改商品投影。
+ * 把 cost.ts 的一步写进 entries（第一条是主流水），再改商品投影。rawStep 可以是未做范围检查的（cost.ts 的 raw），这里统一检查。
  * 迟到的流水（isLate）在这里统一追加补偿行（cost.ts 的 lateCompensate），所以卖出、进货、撤销、扔掉 / 退货都走同一处；
  * 补偿行和主流水同一个 op、seq 相邻、occurred_at 相同，flags 多一个 late_before_count。
  */
 export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRow, main: MainRow, rawStep: Step<string>, o: { counted?: boolean } = {}) {
-  const step = isLate(ctx, prod, o.counted === true) ? lateCompensate(stateOf(prod), rawStep) : rawStep;
+  // 范围检查在组合补偿之后（cost.ts 的 settle）：检查的是补偿后的最终状态和全部流水；越界抛 CostError → guarded 回滚并拒 invalid
+  const step = settle(stateOf(prod), rawStep, isLate(ctx, prod, o.counted === true));
   let seq = await nextSeq(tx);
   for (const [i, d] of step.entries.entries()) {
     const id = i === 0 && main.id !== undefined ? main.id.toLowerCase() : randomUUID();
@@ -226,7 +227,7 @@ export async function applyStockIn(tx: StoreTx, ctx: LedgerContext, p: StockInPa
     if (T > LIMITS.maxLineAmountFen) bad("进货总价超上限");
     const prod = (await loadProduct(tx, await resolveProductId(tx, p.product_id, remap))) ?? bad("商品不存在");
     await entryFree(tx, p.entry_id);
-    const step = stockIn(stateOf(prod), n, T, unit, await missingSales(tx, prod.id));
+    const step = raw.stockIn(stateOf(prod), n, T, unit, await missingSales(tx, prod.id));
     await writeStep(tx, ctx, prod, {
       id: p.entry_id,
       barcode: p.barcode,
@@ -337,7 +338,7 @@ export async function applySaleBatch(tx: StoreTx, ctx: LedgerContext, p: SaleBat
           .execute();
         prod = (await loadProduct(tx, pid))!;
       }
-      const step = sale(stateOf(prod), BigInt(l.pack_qty) * BigInt(l.pack_count), alloc.amountFen[i]!, alloc.listFen[i]!);
+      const step = raw.sale(stateOf(prod), BigInt(l.pack_qty) * BigInt(l.pack_count), alloc.amountFen[i]!, alloc.listFen[i]!);
       await writeStep(tx, ctx, prod, {
         id: l.entry_id,
         batchId,

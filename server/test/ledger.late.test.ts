@@ -162,3 +162,65 @@ describe("迟到流水补偿（§5.6 第 4 条）", () => {
     await app.close();
   });
 });
+
+/** 把 total 个基本单位拆成合法的行（每行 pack_qty ≤ 9999、pack_count ≤ 99999、乘积 ≤ 9,999,999） */
+function split(total: number): Array<{ pack_qty: number; pack_count: number }> {
+  const out: Array<{ pack_qty: number; pack_count: number }> = [];
+  let left = total;
+  while (left >= 9_999_000) {
+    out.push({ pack_qty: 9_999, pack_count: 1_000 });
+    left -= 9_999_000;
+  }
+  if (left >= 9_999) out.push({ pack_qty: 9_999, pack_count: Math.floor(left / 9_999) });
+  left %= 9_999;
+  if (left > 0) out.push({ pack_qty: 1, pack_count: left });
+  return out;
+}
+const INT32_MIN = -2147483648;
+const INT32_MAX = 2147483647;
+
+describe("迟到补偿在范围检查之前组合（PR #16 Codex 1，§14 S05-4）", () => {
+  it("库存已是 INT32 下界：迟到卖出 1 个照收（补偿后库存不变）；盘点之后的同样一笔仍拒 invalid", { timeout: 120_000 }, async () => {
+    const { shop, app, send, newProduct } = await setup();
+    const pid = await newProduct();
+    await send(op("opening", { entry_id: randomUUID(), product_id: pid, counted_qty: 0 }, { at: T_COUNT }));
+    const lines = split(-INT32_MIN).map((l) => ({ entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", name: "x", unit_name: "个", ...l, unit_price_fen: 0 }));
+    for (let i = 0; i < lines.length; i += 200) {
+      const r = await send(op("sale_batch", { batch_id: randomUUID(), paid_total_fen: 0, lines: lines.slice(i, i + 200) }, { at: T_AFTER }));
+      expect(r[0]!.status).toBe("applied");
+    }
+    expect([(await product(shop.storeId, pid)).stock_qty, Number((await product(shop.storeId, pid)).stock_value_fen)]).toEqual([INT32_MIN, 0]);
+    const s = sale(pid, 1, T_LATE);
+    expect(await send(s)).toEqual([{ id: s.id, status: "applied" }]);
+    const p = await product(shop.storeId, pid);
+    expect([p.stock_qty, Number(p.stock_value_fen), p.cost_known]).toEqual([INT32_MIN, 0, false]);
+    const es = await entriesOf(shop.storeId, pid);
+    expect(es.slice(-2).map((e) => [e.type, e.qty_delta, Number(e.amount_fen), late(e)])).toEqual([["sale", -1, 300, false], ["count", 1, 0, true]]);
+    // 不迟到的同样一笔：最终库存越界，仍按 §14 S05-4 拒 invalid
+    const s2 = sale(pid, 1, T_AFTER);
+    expect(await send(s2)).toEqual([{ id: s2.id, status: "rejected", code: "invalid" }]);
+    expect((await product(shop.storeId, pid)).stock_qty).toBe(INT32_MIN);
+    await assertDbLedger(tdb.kysely, shop.storeId, pid);
+    await app.close();
+  });
+
+  it("库存已是 INT32 上界：迟到进货 1 个照收（补偿后库存不变，进价更新为这次的）；盘点之后的同样一笔仍拒 invalid", { timeout: 120_000 }, async () => {
+    const { shop, app, send, newProduct } = await setup();
+    const pid = await newProduct();
+    await send(op("opening", { entry_id: randomUUID(), product_id: pid, counted_qty: 0, unit_cost_fen: 0 }, { at: T_COUNT }));
+    const ins = split(INT32_MAX).map((l) => op("stock_in", { entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", ...l, unit_cost_fen: 0 }, { at: T_AFTER }));
+    for (let i = 0; i < ins.length; i += 200) {
+      const r = await send(...ins.slice(i, i + 200));
+      expect(r.every((x: { status: string }) => x.status === "applied")).toBe(true);
+    }
+    expect((await product(shop.storeId, pid)).stock_qty).toBe(INT32_MAX);
+    const lateIn = stockIn(pid, 1, 5, T_LATE);
+    expect(await send(lateIn)).toEqual([{ id: lateIn.id, status: "applied" }]);
+    const p = await product(shop.storeId, pid);
+    expect([p.stock_qty, Number(p.stock_value_fen), Number(p.last_cost_fen), p.cost_known]).toEqual([INT32_MAX, 0, 5, true]);
+    const s2 = stockIn(pid, 1, 5, T_AFTER);
+    expect(await send(s2)).toEqual([{ id: s2.id, status: "rejected", code: "invalid" }]);
+    await assertDbLedger(tdb.kysely, shop.storeId, pid);
+    await app.close();
+  });
+});
