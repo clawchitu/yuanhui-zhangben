@@ -4,7 +4,7 @@
 // 注销可以撤回，不是终局，不能用 rejected 表达（手机会当成「没记上」不再重发，撤回后丢账）。被踢设备同样处理。
 //
 // 每个 op 的处理顺序：
-//  0. 存不进库、算不了哈希的 op（\u0000、不成对的代理项、解析不出时间的 occurred_at、payload 嵌套超过 16 层或节点超过 1 万个）
+//  0. 存不进库、算不了哈希的 op（\u0000、不成对的代理项、解析不出时间或年份 0000 的 occurred_at、payload 嵌套超过 16 层或节点超过 1 万个）
 //     → rejected: invalid，不留档（§14 S04-13）。这一步是迭代的，之后的递归处理栈深度有界。
 //     兜底：每个 op 在自己的 savepoint 里处理，Postgres 报数据类错误（SQLSTATE 22xxx）时只回滚这个 op、拒 invalid、不留档，
 //     按 error 级别记日志（预检查漏掉了什么，要人看）。S05 接入记账 op 时要重新定这条兜底（§14 S04-14）。
@@ -168,7 +168,10 @@ function storablePayload(payload: unknown): boolean {
  */
 export function storable(op: IncomingOp): boolean {
   // 闰秒写法 23:59:60 等：ajv 的 date-time 放行，但解析不出时间
-  if (!Number.isFinite(Date.parse(op.occurred_at))) return false;
+  const t = Date.parse(op.occurred_at);
+  if (!Number.isFinite(t)) return false;
+  // 年份 0000（含带时区偏移、换算成 UTC 落到公元前的）：不是公历年份，ops.occurred_at 存不下（§14 S05-4 第一层），所有 op 类型都判
+  if (op.occurred_at.startsWith("0000") || new Date(t).getUTCFullYear() < 1) return false;
   return storablePayload(op.payload);
 }
 

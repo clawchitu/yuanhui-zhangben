@@ -5,7 +5,7 @@ import type { Kysely } from "kysely";
 import type { Database } from "../../src/db.ts";
 import { withStoreLock } from "../../src/sync/lock.ts";
 import { assertLedger, type Row } from "../../src/ledger/invariants.ts";
-import type { EntryType } from "../../src/ledger/cost.ts";
+import type { CostState, EntryType } from "../../src/ledger/cost.ts";
 
 type K = Kysely<Database>;
 
@@ -176,7 +176,7 @@ export async function insertStockIn(db: K, s: { storeId: string; deviceId: strin
  * 库里一个商品的全部流水 → invariants.ts 的 Row，跑 assertLedger（I1–I3、冲销、补记、cost_fix 冲销逐分，§14 S05-6 ⑥）。
  * 流水按 seq（店内应用顺序）排；同一个 op 的流水 seq 连续，assertLedger 的「相邻」断言靠它。
  */
-export async function assertDbLedger(db: K, storeId: string, pid: string) {
+export async function assertDbLedger(db: K, storeId: string, pid: string, initial: CostState = { q: 0n, v: 0n, c: null, k: false }) {
   const es = await db.selectFrom("entries").selectAll().where("store_id", "=", storeId).where("product_id", "=", pid).orderBy("seq").execute();
   const idx = new Map(es.map((e, i) => [e.id, i]));
   const rows: Row[] = es.map((e, i) => ({
@@ -196,6 +196,6 @@ export async function assertDbLedger(db: K, storeId: string, pid: string) {
   }));
   const p = await db.selectFrom("products").selectAll().where("store_id", "=", storeId).where("id", "=", pid).executeTakeFirstOrThrow();
   const state = { q: BigInt(p.stock_qty), v: BigInt(p.stock_value_fen), c: p.last_cost_fen === null ? null : BigInt(p.last_cost_fen), k: p.cost_known };
-  assertLedger({ q: 0n, v: 0n, c: null, k: false }, state, rows);
+  assertLedger(initial, state, rows);
   return { es, p };
 }
