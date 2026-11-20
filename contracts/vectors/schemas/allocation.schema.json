@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "allocation.schema.json",
+  "title": "优惠分摊向量（§5.1）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "cases"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "rules",
+          "title",
+          "lines",
+          "paid_total_fen",
+          "expect",
+          "calc"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^alloc-[0-9]{2}$"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^5\\.[0-6]-"
+            },
+            "minItems": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "calc": {
+            "type": "string",
+            "minLength": 1
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "unit_price_fen",
+                "pack_count"
+              ],
+              "properties": {
+                "unit_price_fen": {
+                  "type": "integer"
+                },
+                "pack_count": {
+                  "type": "integer"
+                },
+                "pack_qty": {
+                  "type": "integer",
+                  "description": "缺省为 1；只用于基本单位数量上限（pack_qty × pack_count ≤ 9,999,999）"
+                }
+              }
+            }
+          },
+          "paid_total_fen": {
+            "type": "integer"
+          },
+          "expect": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "list_fen",
+                  "list_total_fen",
+                  "amount_fen"
+                ],
+                "properties": {
+                  "list_fen": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  },
+                  "list_total_fen": {
+                    "type": "integer"
+                  },
+                  "amount_fen": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "error"
+                ],
+                "properties": {
+                  "error": {
+                    "const": "invalid"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

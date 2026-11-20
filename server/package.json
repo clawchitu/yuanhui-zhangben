@@ -8,15 +8,19 @@
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "contracts:check": "node scripts/validate-contracts.ts"
   },
   "dependencies": {
     "fastify": "^5.12.8",
     "pg": "^8.23.1"
   },
   "devDependencies": {
+    "@readme/openapi-parser": "^4.1.2",
     "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "typescript": "^7.0.2",
     "vitest": "^5.1.1"
   }

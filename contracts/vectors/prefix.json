@@ -1,0 +1,465 @@
+{
+ "$schema": "./schemas/prefix.schema.json",
+ "version": 1,
+ "catalog": [
+  {
+   "product_id": "P1",
+   "name": "康师傅红烧牛肉面",
+   "barcode": "6902514300011",
+   "pack_qty": 1
+  },
+  {
+   "product_id": "P2",
+   "name": "康师傅香辣牛肉面",
+   "barcode": "6902514300028",
+   "pack_qty": 1
+  },
+  {
+   "product_id": "P3",
+   "name": "怡宝纯净水 555ml（旧包装）",
+   "barcode": "6920202888883",
+   "pack_qty": 1
+  },
+  {
+   "product_id": "P3",
+   "name": "怡宝纯净水 555ml（新包装）",
+   "barcode": "6920202888890",
+   "pack_qty": 1
+  },
+  {
+   "product_id": "P4",
+   "name": "饼干 A",
+   "barcode": "6954767410012",
+   "pack_qty": 1
+  },
+  {
+   "product_id": "P5",
+   "name": "饼干 B",
+   "barcode": "6954767410029",
+   "pack_qty": 1
+  },
+  {
+   "product_id": "P6",
+   "name": "饼干 C",
+   "barcode": "6954767410036",
+   "pack_qty": 1
+  },
+  {
+   "product_id": "P7",
+   "name": "饼干 D",
+   "barcode": "6954767410043",
+   "pack_qty": 1
+  },
+  {
+   "product_id": "P8",
+   "name": "饼干 E",
+   "barcode": "6954767410050",
+   "pack_qty": 1
+  },
+  {
+   "product_id": "P9",
+   "name": "口香糖（EAN-8）",
+   "barcode": "12345670",
+   "pack_qty": 1
+  },
+  {
+   "product_id": "P10",
+   "name": "另一个以 12345670 开头的码",
+   "barcode": "1234567012340",
+   "pack_qty": 1
+  },
+  {
+   "product_id": "P11",
+   "name": "可乐 330ml（罐）",
+   "barcode": "6925303770013",
+   "pack_qty": 1
+  },
+  {
+   "product_id": "P11",
+   "name": "可乐 330ml（箱，24 罐）",
+   "barcode": "6925303770020",
+   "pack_qty": 24
+  }
+ ],
+ "cases": [
+  {
+   "id": "pre-01",
+   "input": "69025143",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     {
+      "product_id": "P1",
+      "pack_qty": 1,
+      "barcode": "6902514300011"
+     },
+     {
+      "product_id": "P2",
+      "pack_qty": 1,
+      "barcode": "6902514300028"
+     }
+    ],
+    "shown": [
+     {
+      "product_id": "P1",
+      "pack_qty": 1,
+      "barcode": "6902514300011"
+     },
+     {
+      "product_id": "P2",
+      "pack_qty": 1,
+      "barcode": "6902514300028"
+     }
+    ],
+    "more_count": 0,
+    "auto_select": null
+   },
+   "note": "必过：同厂商两个商品都列出，不自动选"
+  },
+  {
+   "id": "pre-02",
+   "input": "6902514",
+   "expected": {
+    "listed": false,
+    "candidates": [],
+    "shown": [],
+    "more_count": 0,
+    "auto_select": null
+   },
+   "note": "不满 8 位不列"
+  },
+  {
+   "id": "pre-03",
+   "input": "690251430001",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     {
+      "product_id": "P1",
+      "pack_qty": 1,
+      "barcode": "6902514300011"
+     }
+    ],
+    "shown": [
+     {
+      "product_id": "P1",
+      "pack_qty": 1,
+      "barcode": "6902514300011"
+     }
+    ],
+    "more_count": 0,
+    "auto_select": {
+     "product_id": "P1",
+     "pack_qty": 1
+    }
+   },
+   "note": "只剩一个才自动选中"
+  },
+  {
+   "id": "pre-04",
+   "input": "6902514300028",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     {
+      "product_id": "P2",
+      "pack_qty": 1,
+      "barcode": "6902514300028"
+     }
+    ],
+    "shown": [
+     {
+      "product_id": "P2",
+      "pack_qty": 1,
+      "barcode": "6902514300028"
+     }
+    ],
+    "more_count": 0,
+    "auto_select": {
+     "product_id": "P2",
+     "pack_qty": 1
+    }
+   },
+   "note": "输满 13 位"
+  },
+  {
+   "id": "pre-05",
+   "input": "69202028",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     {
+      "product_id": "P3",
+      "pack_qty": 1,
+      "barcode": "6920202888883"
+     }
+    ],
+    "shown": [
+     {
+      "product_id": "P3",
+      "pack_qty": 1,
+      "barcode": "6920202888883"
+     }
+    ],
+    "more_count": 0,
+    "auto_select": {
+     "product_id": "P3",
+     "pack_qty": 1
+    }
+   },
+   "note": "同一商品的两个单件码算一个候选（行上显示最小的那个匹配条码）"
+  },
+  {
+   "id": "pre-06",
+   "input": "69547674",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     {
+      "product_id": "P4",
+      "pack_qty": 1,
+      "barcode": "6954767410012"
+     },
+     {
+      "product_id": "P5",
+      "pack_qty": 1,
+      "barcode": "6954767410029"
+     },
+     {
+      "product_id": "P6",
+      "pack_qty": 1,
+      "barcode": "6954767410036"
+     },
+     {
+      "product_id": "P7",
+      "pack_qty": 1,
+      "barcode": "6954767410043"
+     },
+     {
+      "product_id": "P8",
+      "pack_qty": 1,
+      "barcode": "6954767410050"
+     }
+    ],
+    "shown": [
+     {
+      "product_id": "P4",
+      "pack_qty": 1,
+      "barcode": "6954767410012"
+     },
+     {
+      "product_id": "P5",
+      "pack_qty": 1,
+      "barcode": "6954767410029"
+     },
+     {
+      "product_id": "P6",
+      "pack_qty": 1,
+      "barcode": "6954767410036"
+     },
+     {
+      "product_id": "P7",
+      "pack_qty": 1,
+      "barcode": "6954767410043"
+     }
+    ],
+    "more_count": 1,
+    "auto_select": null
+   },
+   "note": "5 个候选：按条码升序显示前 4 个，还有 1 个"
+  },
+  {
+   "id": "pre-07",
+   "input": "69547674100",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     {
+      "product_id": "P4",
+      "pack_qty": 1,
+      "barcode": "6954767410012"
+     },
+     {
+      "product_id": "P5",
+      "pack_qty": 1,
+      "barcode": "6954767410029"
+     },
+     {
+      "product_id": "P6",
+      "pack_qty": 1,
+      "barcode": "6954767410036"
+     },
+     {
+      "product_id": "P7",
+      "pack_qty": 1,
+      "barcode": "6954767410043"
+     },
+     {
+      "product_id": "P8",
+      "pack_qty": 1,
+      "barcode": "6954767410050"
+     }
+    ],
+    "shown": [
+     {
+      "product_id": "P4",
+      "pack_qty": 1,
+      "barcode": "6954767410012"
+     },
+     {
+      "product_id": "P5",
+      "pack_qty": 1,
+      "barcode": "6954767410029"
+     },
+     {
+      "product_id": "P6",
+      "pack_qty": 1,
+      "barcode": "6954767410036"
+     },
+     {
+      "product_id": "P7",
+      "pack_qty": 1,
+      "barcode": "6954767410043"
+     }
+    ],
+    "more_count": 1,
+    "auto_select": null
+   },
+   "note": "还是 5 个"
+  },
+  {
+   "id": "pre-08",
+   "input": "695476741004",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     {
+      "product_id": "P7",
+      "pack_qty": 1,
+      "barcode": "6954767410043"
+     }
+    ],
+    "shown": [
+     {
+      "product_id": "P7",
+      "pack_qty": 1,
+      "barcode": "6954767410043"
+     }
+    ],
+    "more_count": 0,
+    "auto_select": {
+     "product_id": "P7",
+     "pack_qty": 1
+    }
+   },
+   "note": "再输一位剩一个"
+  },
+  {
+   "id": "pre-09",
+   "input": "99999999",
+   "expected": {
+    "listed": true,
+    "candidates": [],
+    "shown": [],
+    "more_count": 0,
+    "auto_select": null
+   },
+   "note": "满 8 位但没有匹配"
+  },
+  {
+   "id": "pre-10",
+   "input": "12345670",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     {
+      "product_id": "P9",
+      "pack_qty": 1,
+      "barcode": "12345670"
+     },
+     {
+      "product_id": "P10",
+      "pack_qty": 1,
+      "barcode": "1234567012340"
+     }
+    ],
+    "shown": [
+     {
+      "product_id": "P9",
+      "pack_qty": 1,
+      "barcode": "12345670"
+     },
+     {
+      "product_id": "P10",
+      "pack_qty": 1,
+      "barcode": "1234567012340"
+     }
+    ],
+    "more_count": 0,
+    "auto_select": null
+   },
+   "note": "完全等于一个 8 位码，又是另一个码的前缀：两个都列，完全相等的排第一，不自动选"
+  },
+  {
+   "id": "pre-11",
+   "input": "69253037",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     {
+      "product_id": "P11",
+      "pack_qty": 1,
+      "barcode": "6925303770013"
+     },
+     {
+      "product_id": "P11",
+      "pack_qty": 24,
+      "barcode": "6925303770020"
+     }
+    ],
+    "shown": [
+     {
+      "product_id": "P11",
+      "pack_qty": 1,
+      "barcode": "6925303770013"
+     },
+     {
+      "product_id": "P11",
+      "pack_qty": 24,
+      "barcode": "6925303770020"
+     }
+    ],
+    "more_count": 0,
+    "auto_select": null
+   },
+   "note": "同一商品的单件码和整箱码是两个候选，不自动选"
+  },
+  {
+   "id": "pre-12",
+   "input": "6925303770020",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     {
+      "product_id": "P11",
+      "pack_qty": 24,
+      "barcode": "6925303770020"
+     }
+    ],
+    "shown": [
+     {
+      "product_id": "P11",
+      "pack_qty": 24,
+      "barcode": "6925303770020"
+     }
+    ],
+    "more_count": 0,
+    "auto_select": {
+     "product_id": "P11",
+     "pack_qty": 24
+    }
+   },
+   "note": "只剩整箱码：自动选中「P11 × 24」"
+  }
+ ]
+}

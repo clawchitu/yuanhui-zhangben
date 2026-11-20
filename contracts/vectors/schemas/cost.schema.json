@@ -1,0 +1,363 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cost.schema.json",
+  "title": "成本向量（§5.2）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "cases"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "rules",
+          "title",
+          "initial",
+          "steps"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^cost-[0-9]{2}$"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^5\\.[0-6]-"
+            },
+            "minItems": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "must_pass": {
+            "type": "boolean"
+          },
+          "initial": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "q",
+              "v",
+              "c",
+              "k",
+              "u"
+            ],
+            "properties": {
+              "q": {
+                "type": "integer"
+              },
+              "v": {
+                "type": "integer"
+              },
+              "c": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "k": {
+                "type": "boolean"
+              },
+              "u": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "action",
+                "expect",
+                "calc"
+              ],
+              "properties": {
+                "action": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "type",
+                        "pack_qty",
+                        "pack_count",
+                        "unit_cost_fen"
+                      ],
+                      "properties": {
+                        "type": {
+                          "const": "stock_in"
+                        },
+                        "pack_qty": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "pack_count": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "unit_cost_fen": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "type",
+                        "pack_qty",
+                        "pack_count",
+                        "amount_fen",
+                        "list_amount_fen"
+                      ],
+                      "properties": {
+                        "type": {
+                          "const": "sale"
+                        },
+                        "pack_qty": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "pack_count": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "amount_fen": {
+                          "type": "integer"
+                        },
+                        "list_amount_fen": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "type",
+                        "counted_qty",
+                        "unit_cost_fen"
+                      ],
+                      "properties": {
+                        "type": {
+                          "const": "opening"
+                        },
+                        "counted_qty": {
+                          "type": "integer"
+                        },
+                        "unit_cost_fen": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "type",
+                        "counted_qty"
+                      ],
+                      "properties": {
+                        "type": {
+                          "const": "count"
+                        },
+                        "counted_qty": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "type",
+                        "qty"
+                      ],
+                      "properties": {
+                        "type": {
+                          "const": "expire_loss"
+                        },
+                        "qty": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "type",
+                        "qty"
+                      ],
+                      "properties": {
+                        "type": {
+                          "const": "supplier_return"
+                        },
+                        "qty": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "type",
+                        "target_step"
+                      ],
+                      "properties": {
+                        "type": {
+                          "const": "void"
+                        },
+                        "target_step": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      }
+                    }
+                  ]
+                },
+                "calc": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "expect": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "entries",
+                    "state"
+                  ],
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "type",
+                          "qty_delta",
+                          "amount_fen",
+                          "list_amount_fen",
+                          "cogs_fen",
+                          "value_delta_fen",
+                          "cost_missing"
+                        ],
+                        "properties": {
+                          "type": {
+                            "enum": [
+                              "sale",
+                              "stock_in",
+                              "opening",
+                              "count",
+                              "cost_adjust",
+                              "cost_fix",
+                              "expire_loss",
+                              "supplier_return"
+                            ]
+                          },
+                          "qty_delta": {
+                            "type": "integer"
+                          },
+                          "amount_fen": {
+                            "type": "integer"
+                          },
+                          "list_amount_fen": {
+                            "type": "integer"
+                          },
+                          "cogs_fen": {
+                            "type": "integer"
+                          },
+                          "value_delta_fen": {
+                            "type": "integer"
+                          },
+                          "cost_missing": {
+                            "type": "boolean"
+                          },
+                          "unit_cost_fen": {
+                            "type": "integer"
+                          },
+                          "reverses_step": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "covers_steps": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "minItems": 1
+                          }
+                        }
+                      }
+                    },
+                    "state": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "q",
+                        "v",
+                        "c",
+                        "k",
+                        "u"
+                      ],
+                      "properties": {
+                        "q": {
+                          "type": "integer"
+                        },
+                        "v": {
+                          "type": "integer"
+                        },
+                        "c": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "k": {
+                          "type": "boolean"
+                        },
+                        "u": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

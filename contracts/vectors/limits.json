@@ -1,0 +1,105 @@
+{
+ "$schema": "./schemas/limits.schema.json",
+ "version": 1,
+ "cases": [
+  {
+   "id": "lim-01",
+   "op_type": "stock_in",
+   "fields": {
+    "pack_qty": 1,
+    "pack_count": 99999,
+    "unit_cost_fen": 1000
+   },
+   "expected": "ok",
+   "note": "进货总价 99,999×1,000=99,999,000 ≤ 99,999,999"
+  },
+  {
+   "id": "lim-02",
+   "op_type": "stock_in",
+   "fields": {
+    "pack_qty": 1,
+    "pack_count": 1,
+    "unit_cost_fen": 99999999
+   },
+   "expected": "ok",
+   "note": "进货总价恰好等于上限"
+  },
+  {
+   "id": "lim-03",
+   "op_type": "stock_in",
+   "fields": {
+    "pack_qty": 1,
+    "pack_count": 2,
+    "unit_cost_fen": 50000000
+   },
+   "expected": "invalid",
+   "note": "进货总价 100,000,000 超上限"
+  },
+  {
+   "id": "lim-04",
+   "op_type": "stock_in",
+   "fields": {
+    "pack_qty": 9999,
+    "pack_count": 1000,
+    "unit_cost_fen": 1
+   },
+   "expected": "ok",
+   "note": "基本单位 9,999,000 ≤ 9,999,999"
+  },
+  {
+   "id": "lim-05",
+   "op_type": "stock_in",
+   "fields": {
+    "pack_qty": 9999,
+    "pack_count": 1001,
+    "unit_cost_fen": 1
+   },
+   "expected": "invalid",
+   "note": "基本单位 10,008,999 超上限"
+  },
+  {
+   "id": "lim-06",
+   "op_type": "sale_line",
+   "fields": {
+    "pack_qty": 100,
+    "pack_count": 99999,
+    "unit_price_fen": 1
+   },
+   "expected": "ok",
+   "note": "基本单位 9,999,900；单行金额 99,999"
+  },
+  {
+   "id": "lim-07",
+   "op_type": "sale_line",
+   "fields": {
+    "pack_qty": 101,
+    "pack_count": 99999,
+    "unit_price_fen": 1
+   },
+   "expected": "invalid",
+   "note": "基本单位 10,099,899 超上限"
+  },
+  {
+   "id": "lim-08",
+   "op_type": "sale_line",
+   "fields": {
+    "pack_qty": 1,
+    "pack_count": 99999,
+    "unit_price_fen": 1000
+   },
+   "expected": "ok",
+   "note": "单行金额 99,999,000"
+  },
+  {
+   "id": "lim-09",
+   "op_type": "sale_line",
+   "fields": {
+    "pack_qty": 1,
+    "pack_count": 99999,
+    "unit_price_fen": 1001
+   },
+   "expected": "invalid",
+   "note": "单行金额 100,098,999 超上限"
+  }
+ ]
+}

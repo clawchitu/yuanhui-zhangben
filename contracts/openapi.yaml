@@ -1,0 +1,1057 @@
+openapi: 3.1.0
+info:
+  title: 元辉账本 API
+  version: 1.0.0
+  description: |
+    对应 docs/plan-v2.md §7（接口列表）、§4（同步协议）、§6（权限）。
+    - 金额一律整数分，数量一律整数基本单位；JSON 里不带小数点、不用字符串（§5.0）。
+    - 除标了 `security: []` 的接口外都要 `Authorization: Bearer <设备令牌>`。
+    - 每个接口谁能调，以 `contracts/permissions.json` 为准（`x-permission` 是它在那里的 id）。
+    - 收银员拿到的响应里，被裁剪的字段**整个键都不出现**，不是置空（§4.2）；本文件里这些字段都是可选的，并在描述里标「收银员不下发」。
+    - op 的格式见 `ops.schema.json`。
+servers:
+  - url: https://api.yuanhuishop.cn
+    description: 备案后（§9.3）；备案前的地址见 §9.2
+security:
+  - device: []
+tags:
+  - name: 公共
+  - name: 登录
+  - name: 同步
+  - name: 查询
+  - name: 设备与开通
+  - name: 账号
+  - name: 运维
+paths:
+  /healthz:
+    get:
+      tags: [运维]
+      operationId: healthz
+      summary: 存活检查（查一次数据库）
+      security: []
+      x-permission: GET /healthz
+      responses:
+        "200":
+          description: 正常
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok]
+                properties:
+                  ok: { const: true }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/config:
+    get:
+      tags: [公共]
+      operationId: getConfig
+      summary: 客户端配置
+      security: []
+      x-permission: GET /v1/config
+      responses:
+        "200":
+          description: 配置
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Config" }
+  /v1/auth/login:
+    post:
+      tags: [登录]
+      operationId: login
+      summary: 账号密码登录（13）
+      description: 连错 5 次锁 15 分钟（25c），另有按 IP 限速；错误信息不区分「账号不存在」和「密码错」。
+      security: []
+      x-permission: POST /v1/auth/login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, password, device_id]
+              properties:
+                username: { type: string, minLength: 1, maxLength: 64 }
+                password: { type: string, minLength: 1, maxLength: 256 }
+                device_id: { $ref: "#/components/schemas/Uuid" }
+                label: { $ref: "#/components/schemas/DeviceLabel" }
+      responses:
+        "200": { $ref: "#/components/responses/Session" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "423": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/auth/pair/redeem:
+    post:
+      tags: [登录]
+      operationId: redeemPairing
+      summary: 扫码登录（14），兑换开通码
+      description: 二维码内容是 `YHZB1:<code>`，这里传 `<code>`。码用过 → `pairing_used`，过期 → `pairing_expired`（25d）。
+      security: []
+      x-permission: POST /v1/auth/pair/redeem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code, device_id]
+              properties:
+                code: { type: string, minLength: 1, maxLength: 128 }
+                device_id: { $ref: "#/components/schemas/Uuid" }
+      responses:
+        "200": { $ref: "#/components/responses/Session" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/auth/demo:
+    post:
+      tags: [登录]
+      operationId: demoLogin
+      summary: 一键进演示小店（「看看演示」）
+      description: 受 `demo_login_enabled` 控制，默认关；关着时返回 404 `demo_disabled`。发的是演示店的家用设备令牌。
+      security: []
+      x-permission: POST /v1/auth/demo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [device_id]
+              properties:
+                device_id: { $ref: "#/components/schemas/Uuid" }
+      responses:
+        "200": { $ref: "#/components/responses/Session" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/auth/logout:
+    post:
+      tags: [登录]
+      operationId: logout
+      summary: 作废本机令牌
+      description: 手机先尽量把 outbox 传完；没传完的进恢复队列，logout 推迟到传完之后（§4.5）。
+      x-permission: POST /v1/auth/logout
+      responses:
+        "204": { description: 已作废 }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/me:
+    get:
+      tags: [查询]
+      operationId: getMe
+      summary: 角色、店名、设备名、注销状态
+      x-permission: GET /v1/me
+      responses:
+        "200":
+          description: 当前设备
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Me" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/sync:
+    post:
+      tags: [同步]
+      operationId: sync
+      summary: 推 op + 拉变更（§4.2）
+      description: |
+        平时唯一的写账入口。一次请求一个事务，在店铺锁内按顺序应用 op。
+        - `epoch` 与服务器不一致：不应用任何 op，返回 409 `epoch_mismatch` 和新 epoch（§4.6）。
+        - 被踢的令牌：不返回任何数据，`device.revoked=true`，推上来的 op 按 §4.5 处理。
+        - `has_more` 某条流为真就继续拉那条流，每页最多 500 行。
+      x-permission: POST /v1/sync
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SyncRequest" }
+      responses:
+        "200":
+          description: 处理结果和变更
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SyncResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409":
+          description: epoch 不一致，一个 op 都没应用
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [code, epoch]
+                properties:
+                  code: { const: epoch_mismatch }
+                  epoch: { $ref: "#/components/schemas/Uuid" }
+                  message: { type: string }
+        "426": { $ref: "#/components/responses/Error" }
+  /v1/barcode-lookup/{barcode}:
+    get:
+      tags: [查询]
+      operationId: barcodeLookup
+      summary: 查条码对应的商品名
+      description: 先查 `barcode_catalog`，没有再调快鸟（2 秒超时）。每设备每分钟 20 次，每店每天 300 次。演示店返回内置假数据、不调付费接口。收银员只拿到 name、spec、has_image。
+      x-permission: GET /v1/barcode-lookup/{barcode}
+      parameters:
+        - name: barcode
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/Barcode" }
+      responses:
+        "200":
+          description: 查询结果（查不到也是 200，found=false）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BarcodeLookup" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/images/{product_id}:
+    get:
+      tags: [查询]
+      operationId: getImage
+      summary: 200px 商品小图
+      description: 强缓存；`v` 是 image_ver，换图后变。
+      x-permission: GET /v1/images/{product_id}
+      parameters:
+        - { $ref: "#/components/parameters/ProductId" }
+        - name: v
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: 图片
+          content:
+            image/jpeg:
+              schema: { type: string, contentEncoding: binary }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/reports/today:
+    get:
+      tags: [查询]
+      operationId: reportToday
+      summary: 今天的账（09）
+      description: 在线才能看。口径见 §5.3。
+      x-permission: GET /v1/reports/today
+      parameters:
+        - name: date
+          in: query
+          required: false
+          description: 上海时区日期，默认今天
+          schema: { $ref: "#/components/schemas/Date" }
+      responses:
+        "200":
+          description: 日报
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReportToday" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/reports/month:
+    get:
+      tags: [查询]
+      operationId: reportMonth
+      summary: 本月的账（10）
+      description: 三张卡、优惠和过期损耗、每日柱状图、对账各行。对账每一项都是 `entries.value_delta_fen` 按类型的分组求和（§5.3）。
+      x-permission: GET /v1/reports/month
+      parameters:
+        - name: month
+          in: query
+          required: false
+          description: YYYY-MM，上海时区，默认本月
+          schema: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$" }
+      responses:
+        "200":
+          description: 月报
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReportMonth" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/entries:
+    get:
+      tags: [查询]
+      operationId: listEntries
+      summary: 某一天的流水（07a，超出手机本地 35 天时用）
+      description: 不含冲销行（冲销行只用于报表求和，列表不显示，§3.3）；原行带 voided_at。
+      x-permission: GET /v1/entries
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/Date" }
+      responses:
+        "200":
+          description: 流水
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [date, entries, batches]
+                properties:
+                  date: { $ref: "#/components/schemas/Date" }
+                  entries: { type: array, items: { $ref: "#/components/schemas/Entry" } }
+                  batches: { type: array, items: { $ref: "#/components/schemas/SaleBatch" } }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/entries/days:
+    get:
+      tags: [查询]
+      operationId: listEntryDays
+      summary: 更早的记录，每天一行（07c）
+      x-permission: GET /v1/entries/days
+      parameters:
+        - name: before
+          in: query
+          required: false
+          description: 只列这一天之前的日子（不含），默认今天
+          schema: { $ref: "#/components/schemas/Date" }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 31, default: 7 }
+      responses:
+        "200":
+          description: 每天汇总
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [days]
+                properties:
+                  days:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [date, count, amount_fen]
+                      properties:
+                        date: { $ref: "#/components/schemas/Date" }
+                        count: { type: integer, minimum: 0, description: 笔数 }
+                        amount_fen: { $ref: "#/components/schemas/SignedFen" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/pairing-tokens:
+    post:
+      tags: [设备与开通]
+      operationId: createPairingToken
+      summary: 出开通码（17a 家人码 / 17b 收银员码）
+      description: 2 分钟过期，一次性。二维码内容 = `YHZB1:<code>`。收银员码必须带称呼。注销期间禁止。
+      x-permission: POST /v1/pairing-tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [role]
+              properties:
+                role: { $ref: "#/components/schemas/Role" }
+                label: { $ref: "#/components/schemas/DeviceLabel" }
+              if: { properties: { role: { const: cashier } } }
+              then: { required: [label] }
+      responses:
+        "201":
+          description: 已生成
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [id, code, expires_at]
+                properties:
+                  id: { $ref: "#/components/schemas/Uuid" }
+                  code: { type: string }
+                  expires_at: { $ref: "#/components/schemas/DateTime" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/pairing-tokens/{id}:
+    get:
+      tags: [设备与开通]
+      operationId: getPairingToken
+      summary: 出码手机轮询「对方扫了没有」
+      x-permission: GET /v1/pairing-tokens/{id}
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+      responses:
+        "200":
+          description: 状态
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status: { enum: [waiting, used, expired] }
+                  used_by_label: { $ref: "#/components/schemas/DeviceLabel" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/devices:
+    get:
+      tags: [设备与开通]
+      operationId: listDevices
+      summary: 已登录的手机
+      x-permission: GET /v1/devices
+      responses:
+        "200":
+          description: 未撤销的设备，以及有暂存账的已撤销设备
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [devices]
+                properties:
+                  devices: { type: array, items: { $ref: "#/components/schemas/Device" } }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/devices/{id}/revoke:
+    post:
+      tags: [设备与开通]
+      operationId: revokeDevice
+      summary: 让它退出
+      description: 不能踢自己（自己用退出登录），踢自己返回 400 `cannot_revoke_self`。
+      x-permission: POST /v1/devices/{id}/revoke
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+      responses:
+        "204": { description: 已撤销 }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/devices/revoke-others:
+    post:
+      tags: [设备与开通]
+      operationId: revokeOtherDevices
+      summary: 让其他手机全部退出
+      x-permission: POST /v1/devices/revoke-others
+      responses:
+        "200":
+          description: 已撤销
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [revoked]
+                properties:
+                  revoked: { type: integer, minimum: 0 }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/devices/me:
+    patch:
+      tags: [设备与开通]
+      operationId: renameMyDevice
+      summary: 改这台手机的名字
+      description: 同店未撤销设备不重名，重名时自动加序号（§3.1），以响应里的 label 为准。
+      x-permission: PATCH /v1/devices/me
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [label]
+              properties:
+                label: { $ref: "#/components/schemas/DeviceLabel" }
+      responses:
+        "200":
+          description: 改好的名字
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [label]
+                properties:
+                  label: { $ref: "#/components/schemas/DeviceLabel" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/held-ops:
+    get:
+      tags: [设备与开通]
+      operationId: listHeldOps
+      summary: 被退出的手机补传上来、等确认的账（§4.5）
+      x-permission: GET /v1/held-ops
+      responses:
+        "200":
+          description: 暂存的 op
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [held]
+                properties:
+                  held: { type: array, items: { $ref: "#/components/schemas/HeldOp" } }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/held-ops/{id}/resolve:
+    post:
+      tags: [设备与开通]
+      operationId: resolveHeldOp
+      summary: 记上 / 不要
+      description: 盘点、期初类版本已变的只能丢弃；accept 时返回 409 `stale`。
+      x-permission: POST /v1/held-ops/{id}/resolve
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action]
+              properties:
+                action: { enum: [accept, discard] }
+      responses:
+        "200":
+          description: 处理结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OpResult" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/recovery/import:
+    post:
+      tags: [运维]
+      operationId: recoveryImport
+      summary: 恢复模式下，重新开通的设备补交保留的 op（§4.6）
+      description: 平时关闭（404 `recovery_disabled`）。按原 id 幂等，打 `flags.recovered`。
+      x-permission: POST /v1/recovery/import
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ops]
+              properties:
+                ops:
+                  type: array
+                  maxItems: 200
+                  items: { $ref: "./ops.schema.json" }
+      responses:
+        "200":
+          description: 每个 op 的结果
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [results]
+                properties:
+                  results: { type: array, items: { $ref: "#/components/schemas/OpResult" } }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/account/password:
+    post:
+      tags: [账号]
+      operationId: changePassword
+      summary: 改密码
+      description: 不强制其他手机退出。
+      x-permission: POST /v1/account/password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [old, new]
+              properties:
+                old: { type: string, minLength: 1, maxLength: 256 }
+                new: { type: string, minLength: 8, maxLength: 256 }
+      responses:
+        "204": { description: 已改 }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/account/delete-request:
+    post:
+      tags: [账号]
+      operationId: requestAccountDeletion
+      summary: 申请注销（23）
+      description: 记 `delete_requested_at`，全部设备退出。注销期间禁止写账和开通设备；7 天后删除在线数据和 OSS 图片。
+      x-permission: POST /v1/account/delete-request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [password]
+              properties:
+                password: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        "200":
+          description: 已登记
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [delete_pending_until]
+                properties:
+                  delete_pending_until: { $ref: "#/components/schemas/DateTime" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/account/delete-cancel:
+    post:
+      tags: [账号]
+      operationId: cancelAccountDeletion
+      summary: 撤回注销
+      description: 7 天内用账号密码登录后撤回。
+      x-permission: POST /v1/account/delete-cancel
+      responses:
+        "204": { description: 已撤回 }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    device:
+      type: http
+      scheme: bearer
+      description: 设备令牌，256 位随机数；服务器只存 sha256（§3.1）
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/Uuid" }
+    ProductId:
+      name: product_id
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/Uuid" }
+  responses:
+    Error:
+      description: 错误
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Session:
+      description: 登录成功，返回设备令牌
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [token, role, store, label, epoch]
+            properties:
+              token: { type: string, description: 只在这里出现一次，手机存钥匙串 }
+              epoch: { $ref: "#/components/schemas/Uuid", description: 手机的第一个 epoch，之后每次 /v1/sync 都要带（§4.2） }
+              role: { $ref: "#/components/schemas/Role" }
+              store: { $ref: "#/components/schemas/Store" }
+              label: { $ref: "#/components/schemas/DeviceLabel" }
+              delete_pending_until: { $ref: "#/components/schemas/DateTime" }
+  schemas:
+    Uuid: { type: string, format: uuid }
+    DateTime: { type: string, format: date-time }
+    Date: { type: string, format: date, description: 上海时区的日历日 }
+    Fen: { type: integer, minimum: 0, maximum: 9007199254740991, description: 整数分 }
+    SignedFen: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991, description: 整数分，可为负 }
+    Qty: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991, description: 整数基本单位，可为负 }
+    Rev: { type: integer, minimum: 0, maximum: 9007199254740991 }
+    Barcode: { type: string, minLength: 1, maxLength: 64 }
+    DeviceLabel: { type: string, minLength: 1, maxLength: 40 }
+    Role: { enum: [family, cashier] }
+    Store:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string }
+        is_demo: { type: boolean }
+    ErrorCode:
+      enum:
+        - invalid
+        - unauthorized
+        - bad_credentials
+        - locked
+        - rate_limited
+        - forbidden
+        - not_found
+        - revoked
+        - pairing_used
+        - pairing_expired
+        - demo_disabled
+        - epoch_mismatch
+        - build_too_old
+        - stale
+        - id_conflict
+        - cannot_revoke_self
+        - delete_pending
+        - not_delete_pending
+        - recovery_disabled
+        - lookup_quota_exceeded
+        - lookup_unavailable
+        - unavailable
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code: { $ref: "#/components/schemas/ErrorCode" }
+        message: { type: string, description: 给人看的中文说明，手机不靠它判断 }
+        locked_until: { $ref: "#/components/schemas/DateTime" }
+        retry_after_s: { type: integer, minimum: 0 }
+    Config:
+      type: object
+      additionalProperties: false
+      required: [min_build, demo_login_enabled, privacy_url, support_url]
+      properties:
+        min_build: { type: integer, minimum: 0 }
+        demo_login_enabled: { type: boolean }
+        privacy_url: { type: string, format: uri }
+        support_url: { type: string, format: uri }
+    Me:
+      type: object
+      additionalProperties: false
+      required: [role, store, label]
+      properties:
+        role: { $ref: "#/components/schemas/Role" }
+        store: { $ref: "#/components/schemas/Store" }
+        label: { $ref: "#/components/schemas/DeviceLabel" }
+        delete_pending_until: { $ref: "#/components/schemas/DateTime" }
+    Cursors:
+      type: object
+      additionalProperties: false
+      required: [catalog, ledger]
+      properties:
+        catalog: { $ref: "#/components/schemas/Rev" }
+        ledger: { $ref: "#/components/schemas/Rev" }
+    SyncRequest:
+      type: object
+      additionalProperties: false
+      required: [epoch, cursors, ops, app_build]
+      properties:
+        epoch:
+          $ref: "#/components/schemas/Uuid"
+          description: 手机记着的 epoch，必填、不允许为空；第一个来自登录 / 兑码 / 演示登录的响应（§4.2）
+        cursors: { $ref: "#/components/schemas/Cursors" }
+        ops:
+          type: array
+          maxItems: 200
+          items: { $ref: "./ops.schema.json" }
+        app_build: { type: integer, minimum: 0 }
+        pull:
+          type: boolean
+          default: true
+          description: 恢复队列用旧令牌上传时为 false（只推不拉，§4.5）
+    OpResult:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        status: { enum: [applied, rejected, held] }
+        code:
+          description: status=rejected 时必有
+          enum: [forbidden, stale, id_conflict, invalid]
+        remap:
+          type: object
+          minProperties: 1
+          propertyNames: { format: uuid }
+          additionalProperties: { $ref: "#/components/schemas/Uuid" }
+          description: "§4.2 的 remap?: {旧商品id: 赢家商品id, …}。键是这个 op 里引用到的、已经成为别名的商品 id，值是赢家商品的 id；可以有多对（一笔 sale_batch 的好几行可能各引用一个别名）。任何引用了别名的 op 都可能带它，不只是 product_upsert。手机收到后把本地所有对旧 id 的引用改写成新 id"
+        current:
+          type: object
+          description: status=rejected 且 code=stale 时带回最新账面数（stock_qty、stock_ver）或批次状态（qty_left、handle_ver、closed）
+          additionalProperties: false
+          properties:
+            stock_qty: { $ref: "#/components/schemas/Qty" }
+            stock_ver: { $ref: "#/components/schemas/Rev" }
+            qty_left: { $ref: "#/components/schemas/Qty" }
+            handle_ver: { type: integer, minimum: 0 }
+            closed: { type: boolean }
+        replayed: { type: boolean, description: 重发同一 id 时为 true，结果与第一次相同 }
+      if: { properties: { status: { const: rejected } } }
+      then: { required: [code] }
+      examples:
+        - { id: 00000000-0000-4000-8000-000000000004, status: applied, remap: { 00000000-0000-4000-8000-000000000202: 00000000-0000-4000-8000-000000000999 } }
+        # 一笔 sale_batch 的两行各引用了一个别名商品，两对映射一起返回
+        - id: 00000000-0000-4000-8000-000000000001
+          status: applied
+          remap:
+            00000000-0000-4000-8000-000000000201: 00000000-0000-4000-8000-000000000901
+            00000000-0000-4000-8000-000000000203: 00000000-0000-4000-8000-000000000903
+        - { id: 00000000-0000-4000-8000-000000000014, status: rejected, code: stale, current: { stock_qty: 8, stock_ver: 12 } }
+        - { id: 00000000-0000-4000-8000-000000000001, status: applied, replayed: true }
+    SyncResponse:
+      type: object
+      additionalProperties: false
+      required: [results, changes, cursors, has_more, total_products, server_time, epoch, min_build, device, store]
+      properties:
+        results: { type: array, items: { $ref: "#/components/schemas/OpResult" } }
+        changes:
+          type: object
+          additionalProperties: false
+          required: [products, barcodes, removed, entries, batches, lots]
+          description: 被踢设备、pull=false 时各数组为空
+          properties:
+            products: { type: array, items: { $ref: "#/components/schemas/Product" } }
+            barcodes: { type: array, items: { $ref: "#/components/schemas/ProductBarcode" } }
+            removed: { type: array, items: { $ref: "#/components/schemas/Removed" } }
+            entries: { type: array, items: { $ref: "#/components/schemas/Entry" } }
+            batches: { type: array, items: { $ref: "#/components/schemas/SaleBatch" } }
+            lots: { type: array, items: { $ref: "#/components/schemas/StockLot" }, description: 收银员不下发（数组为空） }
+        cursors: { $ref: "#/components/schemas/Cursors" }
+        has_more:
+          type: object
+          additionalProperties: false
+          required: [catalog, ledger]
+          properties:
+            catalog: { type: boolean }
+            ledger: { type: boolean }
+        total_products: { type: integer, minimum: 0 }
+        server_time: { $ref: "#/components/schemas/DateTime" }
+        epoch: { $ref: "#/components/schemas/Uuid" }
+        min_build: { type: integer, minimum: 0 }
+        device:
+          type: object
+          additionalProperties: false
+          required: [role, label, revoked]
+          properties:
+            role: { $ref: "#/components/schemas/Role" }
+            label: { $ref: "#/components/schemas/DeviceLabel" }
+            revoked: { type: boolean }
+            discard_outbox: { type: boolean, description: 演示店重置时为 true，手机丢弃这家店的 outbox 和恢复队列（§4.5） }
+        store:
+          type: object
+          additionalProperties: false
+          required: [name]
+          properties:
+            name: { type: string }
+    Product:
+      type: object
+      additionalProperties: false
+      required: [id, name, base_unit, price_fen, needs_review, track_expiry, image_ver, archived, rev]
+      description: catalog 流。`private` 只发给家用 / 审核，收银员的响应里没有这个键（§3.4 product_private）。
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        name: { type: string }
+        base_unit: { type: string }
+        price_fen: { $ref: "#/components/schemas/Fen" }
+        needs_review: { type: boolean }
+        track_expiry: { type: boolean }
+        image_ver: { type: integer, minimum: 0, description: 0 = 没图 }
+        archived: { type: boolean }
+        rev: { $ref: "#/components/schemas/Rev" }
+        private:
+          type: object
+          additionalProperties: false
+          required: [stock_qty, stock_value_fen, last_cost_fen, cost_known, stock_ver, low_at, expiry_warn_days, shelf_life_months, last_count_at]
+          description: 收银员不下发
+          properties:
+            stock_qty: { $ref: "#/components/schemas/Qty" }
+            stock_value_fen: { $ref: "#/components/schemas/SignedFen" }
+            last_cost_fen: { oneOf: [{ $ref: "#/components/schemas/Fen" }, { type: "null" }] }
+            cost_known: { type: boolean }
+            stock_ver: { $ref: "#/components/schemas/Rev" }
+            low_at: { oneOf: [{ type: integer, minimum: 0 }, { type: "null" }] }
+            expiry_warn_days: { type: integer, minimum: 0 }
+            shelf_life_months: { oneOf: [{ type: integer, minimum: 1 }, { type: "null" }] }
+            last_count_at: { oneOf: [{ $ref: "#/components/schemas/DateTime" }, { type: "null" }] }
+    ProductBarcode:
+      type: object
+      additionalProperties: false
+      required: [barcode, product_id, pack_qty, unit_name, rev]
+      description: 单件码（pack_qty=1）没有 pack_price_fen 这个键（§3.2）
+      properties:
+        barcode: { $ref: "#/components/schemas/Barcode" }
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        pack_qty: { type: integer, minimum: 1, maximum: 9999 }
+        unit_name: { type: string }
+        pack_price_fen: { $ref: "#/components/schemas/Fen" }
+        rev: { $ref: "#/components/schemas/Rev" }
+    Removed:
+      type: object
+      additionalProperties: false
+      required: [kind, row_id, rev]
+      properties:
+        kind: { enum: [barcode, product_alias, entry, batch, lot] }
+        row_id: { type: string, description: 条码墓碑是条码本身，其余是 uuid }
+        rev: { $ref: "#/components/schemas/Rev" }
+    EntryType: { enum: [sale, stock_in, opening, count, cost_adjust, cost_fix, expire_loss, supplier_return] }
+    Entry:
+      type: object
+      additionalProperties: false
+      required: [id, seq, type, product_id, name_snapshot, qty_delta, amount_fen, list_amount_fen, device_id, occurred_at, voided_at, rev]
+      description: |
+        ledger 流。收银员只收到本机最近 2 天的 sale 行，且没有 cogs_fen / value_delta_fen / unit_cost_fen / cost_missing 这几个键（§4.2）。
+        冲销行 reverses_entry_id 非空，只用于报表求和（§3.3）。
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        seq: { type: integer, minimum: 1 }
+        op_id: { $ref: "#/components/schemas/Uuid" }
+        batch_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
+        type: { $ref: "#/components/schemas/EntryType" }
+        reverses_entry_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        barcode: { oneOf: [{ $ref: "#/components/schemas/Barcode" }, { type: "null" }] }
+        name_snapshot: { type: string }
+        unit_name: { oneOf: [{ type: string }, { type: "null" }] }
+        pack_qty: { oneOf: [{ type: integer, minimum: 1 }, { type: "null" }] }
+        pack_count: { oneOf: [{ type: integer }, { type: "null" }] }
+        qty_delta: { $ref: "#/components/schemas/Qty" }
+        list_amount_fen: { $ref: "#/components/schemas/SignedFen" }
+        amount_fen: { $ref: "#/components/schemas/SignedFen" }
+        unit_cost_fen: { oneOf: [{ $ref: "#/components/schemas/Fen" }, { type: "null" }], description: 收银员不下发 }
+        cogs_fen: { $ref: "#/components/schemas/SignedFen", description: 收银员不下发 }
+        value_delta_fen: { $ref: "#/components/schemas/SignedFen", description: 收银员不下发 }
+        cost_missing: { type: boolean, description: 收银员不下发 }
+        expiry_date: { oneOf: [{ $ref: "#/components/schemas/Date" }, { type: "null" }] }
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        device_label: { type: string }
+        occurred_at: { $ref: "#/components/schemas/DateTime" }
+        received_at: { $ref: "#/components/schemas/DateTime" }
+        voided_at: { oneOf: [{ $ref: "#/components/schemas/DateTime" }, { type: "null" }] }
+        cost_fix_entry_id: { oneOf: [{ $ref: "#/components/schemas/Uuid" }, { type: "null" }] }
+        flags:
+          type: object
+          properties:
+            clock_adjusted: { type: boolean }
+            late_from_revoked: { type: boolean }
+            late_before_count: { type: boolean }
+            recovered: { type: boolean }
+            qty_left_before: { type: integer }
+        rev: { $ref: "#/components/schemas/Rev" }
+    SaleBatch:
+      type: object
+      additionalProperties: false
+      required: [id, device_id, list_total_fen, paid_total_fen, occurred_at, rev]
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        list_total_fen: { $ref: "#/components/schemas/Fen" }
+        paid_total_fen: { $ref: "#/components/schemas/Fen", description: 撤销单行后不改，报表按行求和 }
+        occurred_at: { $ref: "#/components/schemas/DateTime" }
+        received_at: { $ref: "#/components/schemas/DateTime" }
+        rev: { $ref: "#/components/schemas/Rev" }
+    StockLot:
+      type: object
+      additionalProperties: false
+      required: [id, product_id, expiry_date, qty_in, qty_left, snoozed_until, closed_at, closed_reason, handle_ver, rev]
+      description: 只发给家用 / 审核，只用于到期提醒（§5.4）
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        source_entry_id: { $ref: "#/components/schemas/Uuid" }
+        expiry_date: { oneOf: [{ $ref: "#/components/schemas/Date" }, { type: "null" }] }
+        qty_in: { type: integer, minimum: 0 }
+        qty_left: { type: integer, minimum: 0 }
+        snoozed_until: { oneOf: [{ $ref: "#/components/schemas/Date" }, { type: "null" }] }
+        closed_at: { oneOf: [{ $ref: "#/components/schemas/DateTime" }, { type: "null" }] }
+        closed_reason: { oneOf: [{ enum: [disposed, voided] }, { type: "null" }] }
+        handle_ver: { type: integer, minimum: 0 }
+        rev: { $ref: "#/components/schemas/Rev" }
+    BarcodeLookup:
+      type: object
+      additionalProperties: false
+      required: [found]
+      description: 收银员只有 found、name、spec、has_image
+      properties:
+        found: { type: boolean }
+        name: { type: string }
+        spec: { type: string }
+        has_image: { type: boolean }
+        brand: { type: string }
+        image_url: { type: string, format: uri }
+    ProductAmount:
+      type: object
+      additionalProperties: false
+      required: [product_id, name]
+      properties:
+        product_id: { $ref: "#/components/schemas/Uuid" }
+        name: { type: string }
+        qty: { $ref: "#/components/schemas/Qty" }
+        amount_fen: { $ref: "#/components/schemas/SignedFen" }
+        expiry_date: { $ref: "#/components/schemas/Date" }
+    ReportToday:
+      type: object
+      additionalProperties: false
+      required: [date, sold_fen, profit_fen, discount_fen, cost_missing_count, top_sellers, low_stock, expiring]
+      description: 口径见 §5.3
+      properties:
+        date: { $ref: "#/components/schemas/Date" }
+        sold_fen: { $ref: "#/components/schemas/SignedFen", description: 卖了 = Σ 卖出行 amount_fen（cost_fix 行不算） }
+        profit_fen: { $ref: "#/components/schemas/SignedFen", description: 赚了 = Σ 进价已知卖出行 (amount − cogs) + Σ cost_fix 行 (amount − cogs) }
+        discount_fen: { $ref: "#/components/schemas/SignedFen", description: 优惠 = Σ (list_amount_fen − amount_fen) }
+        cost_missing_count: { type: integer, minimum: 0, description: 有 N 样进价没填（尚未补记的 cost_missing 卖出涉及的商品种数） }
+        loss_cost_missing_count: { type: integer, minimum: 0, description: 标了 cost_missing 的损耗行（扔掉、退货、盘点）笔数，「有 N 笔没算进价」（§5.2、§5.3） }
+        top_sellers: { type: array, items: { $ref: "#/components/schemas/ProductAmount" } }
+        low_stock: { type: array, items: { $ref: "#/components/schemas/ProductAmount" } }
+        expiring: { type: array, items: { $ref: "#/components/schemas/ProductAmount" } }
+    ReconRow:
+      type: object
+      additionalProperties: false
+      required: [key, amount_fen, cost_missing_count]
+      properties:
+        cost_missing_count: { type: integer, minimum: 0, description: 这一行里标了 cost_missing 的流水笔数；非零时行旁注明「有 N 笔没算进价」（§5.3）。卖出行指尚未补记的卖出 }
+        key:
+          enum: [stock_in, sale, count, expire_loss, supplier_return, opening_and_adjust]
+          description: 每一项 = 本月 entries.value_delta_fen 按类型分组求和；opening_and_adjust 是 opening + cost_adjust，非零才显示；进价已知时没填进价的期初记成 count，算在 count 行（§5.2）
+        amount_fen: { $ref: "#/components/schemas/SignedFen" }
+    ReportMonth:
+      type: object
+      additionalProperties: false
+      required: [month, sold_fen, profit_fen, stock_value_end_fen, discount_fen, expire_loss_fen, cost_missing_count, loss_cost_missing_count, daily, reconciliation]
+      properties:
+        month: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$" }
+        sold_fen: { $ref: "#/components/schemas/SignedFen" }
+        profit_fen: { $ref: "#/components/schemas/SignedFen" }
+        stock_value_end_fen: { $ref: "#/components/schemas/SignedFen", description: 现在店里货值（本月则为现在，过去的月份为月末） }
+        discount_fen: { $ref: "#/components/schemas/SignedFen" }
+        expire_loss_fen: { $ref: "#/components/schemas/SignedFen", description: Σ expire_loss 行 cogs_fen }
+        cost_missing_count: { type: integer, minimum: 0, description: 有 N 样进价没填（尚未补记的 cost_missing 卖出涉及的商品种数） }
+        loss_cost_missing_count: { type: integer, minimum: 0, description: 标了 cost_missing 的损耗行（扔掉、退货、盘点）笔数 }
+        daily:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [date, sold_fen, profit_fen]
+            properties:
+              date: { $ref: "#/components/schemas/Date" }
+              sold_fen: { $ref: "#/components/schemas/SignedFen" }
+              profit_fen: { $ref: "#/components/schemas/SignedFen" }
+        reconciliation:
+          type: object
+          additionalProperties: false
+          required: [stock_value_start_fen, rows, stock_value_end_fen]
+          description: 期初货值 + Σ rows.amount_fen = 期末货值，逐分相等（I6）
+          properties:
+            stock_value_start_fen: { $ref: "#/components/schemas/SignedFen" }
+            rows: { type: array, items: { $ref: "#/components/schemas/ReconRow" } }
+            stock_value_end_fen: { $ref: "#/components/schemas/SignedFen" }
+    Device:
+      type: object
+      additionalProperties: false
+      required: [id, label, role, last_seen_at, is_me, revoked, held_count]
+      properties:
+        id: { $ref: "#/components/schemas/Uuid" }
+        label: { $ref: "#/components/schemas/DeviceLabel" }
+        role: { $ref: "#/components/schemas/Role" }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        last_seen_at: { oneOf: [{ $ref: "#/components/schemas/DateTime" }, { type: "null" }] }
+        is_me: { type: boolean }
+        revoked: { type: boolean }
+        held_count: { type: integer, minimum: 0, description: 「被退出前还有 N 笔别的账」 }
+    HeldOp:
+      type: object
+      additionalProperties: false
+      required: [id, device_id, device_label, type, occurred_at, payload, can_accept]
+      properties:
+        id: { $ref: "#/components/schemas/Uuid", description: op id }
+        device_id: { $ref: "#/components/schemas/Uuid" }
+        device_label: { type: string }
+        type: { type: string }
+        occurred_at: { $ref: "#/components/schemas/DateTime" }
+        payload: { type: object }
+        can_accept: { type: boolean, description: 盘点、期初类版本已变时为 false，只能丢弃 }

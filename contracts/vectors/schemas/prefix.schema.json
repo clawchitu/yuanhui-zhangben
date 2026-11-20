@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prefix.schema.json",
+  "title": "手输条码前缀匹配向量（§5.5）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "catalog",
+    "cases"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "catalog": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "product_id",
+          "name",
+          "barcode",
+          "pack_qty"
+        ],
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "barcode": {
+            "type": "string",
+            "pattern": "^[0-9]{8,14}$"
+          },
+          "pack_qty": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9999
+          }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "input",
+          "expected",
+          "note"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "input": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "note": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "listed",
+              "candidates",
+              "shown",
+              "more_count",
+              "auto_select"
+            ],
+            "properties": {
+              "listed": {
+                "type": "boolean"
+              },
+              "candidates": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "product_id",
+                    "pack_qty",
+                    "barcode"
+                  ],
+                  "properties": {
+                    "product_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "pack_qty": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "barcode": {
+                      "type": "string",
+                      "pattern": "^[0-9]{8,14}$"
+                    }
+                  }
+                }
+              },
+              "shown": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "product_id",
+                    "pack_qty",
+                    "barcode"
+                  ],
+                  "properties": {
+                    "product_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "pack_qty": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "barcode": {
+                      "type": "string",
+                      "pattern": "^[0-9]{8,14}$"
+                    }
+                  }
+                }
+              },
+              "more_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "auto_select": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "product_id",
+                      "pack_qty"
+                    ],
+                    "properties": {
+                      "product_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "pack_qty": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

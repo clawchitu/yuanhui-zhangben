@@ -39,4 +39,6 @@ jobs:
           cache-dependency-path: server/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      - name: 校验 contracts（openapi、JSON Schema 语法，向量文件格式）
+        run: npm run contracts:check
       - run: npm test
