@@ -1,30 +1,77 @@
-import { afterAll, describe, expect, it } from "vitest";
-import pg from "pg";
-import { buildApp } from "../src/app.js";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { buildApp } from "../src/app.ts";
+import { createDb } from "../src/db.ts";
+import { createTestDb, testConfig, type TestDb } from "./helpers/db.ts";
+import { loadOpenApi, validatorFor } from "./helpers/contract.ts";
 
-describe("S00 占位", () => {
-  const app = buildApp();
-  afterAll(() => app.close());
+describe("GET /healthz", () => {
+  let tdb: TestDb;
+  beforeAll(async () => {
+    tdb = await createTestDb();
+  });
+  afterAll(() => tdb.drop());
 
-  it("GET /v1/health 返回 ok", async () => {
-    const res = await app.inject({ method: "GET", url: "/v1/health" });
+  it("数据库正常时 200 {ok:true}，且符合契约", async () => {
+    const app = buildApp({ config: testConfig(), db: tdb, logger: false });
+    const res = await app.inject({ method: "GET", url: "/healthz" });
+    await app.close();
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
+    const api = await loadOpenApi();
+    const v = validatorFor(api.paths["/healthz"].get.responses["200"].content["application/json"].schema);
+    expect(v(res.json()), JSON.stringify(v.errors)).toBe(true);
   });
 
-  // CI 里设置 DATABASE_URL 和 REQUIRE_DB=1，必须连得上 Postgres 服务容器；
-  // 本机没设 DATABASE_URL 时跳过。
-  const dbUrl = process.env.DATABASE_URL;
-  it.skipIf(!dbUrl && process.env.REQUIRE_DB !== "1")("能连上 Postgres", async () => {
-    expect(dbUrl, "REQUIRE_DB=1 但没有 DATABASE_URL").toBeTruthy();
-    const client = new pg.Client({ connectionString: dbUrl });
-    await client.connect();
-    try {
-      const r = await client.query("select 1 as one, current_setting('server_version_num')::int as v");
-      expect(r.rows[0].one).toBe(1);
-      expect(r.rows[0].v).toBeGreaterThanOrEqual(160000);
-    } finally {
-      await client.end();
-    }
+  it("数据库连不上时 503 {code:'unavailable'}（契约 Error）", async () => {
+    // 端口 1 上没有 Postgres：连接被拒
+    const bad = createDb({ connectionString: "postgres://nobody@127.0.0.1:1/none", connectionTimeoutMillis: 500 });
+    const app = buildApp({ config: testConfig(), db: bad, logger: false });
+    const res = await app.inject({ method: "GET", url: "/healthz" });
+    await app.close();
+    await bad.close();
+    expect(res.statusCode).toBe(503);
+    expect(res.json().code).toBe("unavailable");
+    const api = await loadOpenApi();
+    const v = validatorFor(api.components.schemas.Error);
+    expect(v(res.json()), JSON.stringify(v.errors)).toBe(true);
+  });
+
+  it("运行中数据库断开（连接池关闭）后 503，而不是挂住或 500", async () => {
+    const db = createDb({ connectionString: tdb.url, connectionTimeoutMillis: 500 });
+    const app = buildApp({ config: testConfig(), db, logger: false });
+    expect((await app.inject({ method: "GET", url: "/healthz" })).statusCode).toBe(200);
+    // 关掉连接池：之后任何查询都会立即失败，模拟运行中数据库掉线
+    await db.close();
+    const res = await app.inject({ method: "GET", url: "/healthz" });
+    await app.close();
+    expect(res.statusCode).toBe(503);
+  });
+
+  it("数据库不响应时 2 秒左右返回 503（不无限等）", async () => {
+    // 一个只接受 TCP、永远不回话的端口：连接超时
+    const net = await import("node:net");
+    const sockets: import("node:net").Socket[] = [];
+    const server = net.createServer((s) => sockets.push(s));
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as import("node:net").AddressInfo).port;
+    const db = createDb({ connectionString: `postgres://x@127.0.0.1:${port}/x`, connectionTimeoutMillis: 10_000 });
+    const app = buildApp({ config: testConfig(), db, logger: false });
+    const t0 = Date.now();
+    const res = await app.inject({ method: "GET", url: "/healthz" });
+    const ms = Date.now() - t0;
+    await app.close();
+    sockets.forEach((s) => s.destroy());
+    server.close();
+    await db.close().catch(() => {});
+    expect(res.statusCode).toBe(503);
+    expect(ms).toBeLessThan(3000);
+  });
+
+  it("S00 的 /v1/health 已经去掉（Q13）", async () => {
+    const app = buildApp({ config: testConfig(), db: tdb, logger: false });
+    const res = await app.inject({ method: "GET", url: "/v1/health" });
+    await app.close();
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ code: "not_found" });
   });
 });
