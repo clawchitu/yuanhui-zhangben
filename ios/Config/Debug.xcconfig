@@ -1,0 +1,6 @@
+// 本地开发 / 模拟器 / CI 测试用。
+// 只放非敏感的构建设置；密钥一律不进 xcconfig（CLAUDE.md「密钥」）。
+YH_ENV = debug
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG $(inherited)
+SWIFT_OPTIMIZATION_LEVEL = -Onone
+ENABLE_TESTABILITY = YES

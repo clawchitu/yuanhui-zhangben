@@ -1,0 +1,4 @@
+// TestFlight 内测包（S11b 起使用）。优化编译，保留 BETA 编译条件给内测专用开关。
+YH_ENV = beta
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = BETA $(inherited)
+SWIFT_OPTIMIZATION_LEVEL = -O
