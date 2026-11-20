@@ -4,6 +4,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Kysely } from "kysely";
 import type { Database } from "../../src/db.ts";
 import { withStoreLock } from "../../src/sync/lock.ts";
+import { assertLedger, type Row } from "../../src/ledger/invariants.ts";
+import type { EntryType } from "../../src/ledger/cost.ts";
 
 type K = Kysely<Database>;
 
@@ -168,4 +170,32 @@ export async function insertStockIn(db: K, s: { storeId: string; deviceId: strin
       .execute();
     return { entryId, lotId };
   });
+}
+
+/**
+ * 库里一个商品的全部流水 → invariants.ts 的 Row，跑 assertLedger（I1–I3、冲销、补记、cost_fix 冲销逐分，§14 S05-6 ⑥）。
+ * 流水按 seq（店内应用顺序）排；同一个 op 的流水 seq 连续，assertLedger 的「相邻」断言靠它。
+ */
+export async function assertDbLedger(db: K, storeId: string, pid: string) {
+  const es = await db.selectFrom("entries").selectAll().where("store_id", "=", storeId).where("product_id", "=", pid).orderBy("seq").execute();
+  const idx = new Map(es.map((e, i) => [e.id, i]));
+  const rows: Row[] = es.map((e, i) => ({
+    idx: i,
+    type: e.type as EntryType,
+    qty_delta: BigInt(e.qty_delta),
+    amount_fen: BigInt(e.amount_fen),
+    list_amount_fen: BigInt(e.list_amount_fen),
+    cogs_fen: BigInt(e.cogs_fen),
+    value_delta_fen: BigInt(e.value_delta_fen),
+    cost_missing: e.cost_missing,
+    unit_cost_fen: e.unit_cost_fen === null ? null : BigInt(e.unit_cost_fen),
+    reverses: e.reverses_entry_id === null ? null : idx.get(e.reverses_entry_id)!,
+    covers: e.type === "cost_fix" && e.reverses_entry_id === null ? es.flatMap((x, j) => (x.cost_fix_entry_id === e.id ? [j] : [])) : null,
+    voided: e.voided_at !== null,
+    costFixBy: e.cost_fix_entry_id === null ? null : idx.get(e.cost_fix_entry_id)!,
+  }));
+  const p = await db.selectFrom("products").selectAll().where("store_id", "=", storeId).where("id", "=", pid).executeTakeFirstOrThrow();
+  const state = { q: BigInt(p.stock_qty), v: BigInt(p.stock_value_fen), c: p.last_cost_fen === null ? null : BigInt(p.last_cost_fen), k: p.cost_known };
+  assertLedger({ q: 0n, v: 0n, c: null, k: false }, state, rows);
+  return { es, p };
 }

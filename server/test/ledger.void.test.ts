@@ -4,8 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
 import { bearer, login, makeApp, makeLoginShop, pair, TestClock } from "./helpers/auth.ts";
 import { allKeys, op, pullAll, syncOk, upsertFull } from "./helpers/sync.ts";
-import { assertLedger, type Row } from "../src/ledger/invariants.ts";
-import type { EntryType } from "../src/ledger/cost.ts";
+import { assertDbLedger as assertDbLedgerIn } from "./helpers/ledger.ts";
 
 let tdb: TestDb;
 beforeAll(async () => {
@@ -45,32 +44,7 @@ const lineIds = (s: ReturnType<typeof saleOf>) => (s.payload.lines as Array<{ en
 const batchId = (s: ReturnType<typeof saleOf>) => s.payload.batch_id as string;
 const voidOp = (target: Record<string, string>, at = "2026-11-20T01:59:30Z") => op("void", { target }, { at });
 
-/** 库里一个商品的全部流水 → invariants.ts 的 Row，跑 assertLedger（I1–I3、冲销、补记、cost_fix 冲销逐分，§14 S05-6 ⑥） */
-export async function assertDbLedger(storeId: string, pid: string) {
-  const es = await entriesOf(storeId, pid);
-  const idx = new Map(es.map((e, i) => [e.id, i]));
-  const rows: Row[] = es.map((e, i) => ({
-    idx: i,
-    type: e.type as EntryType,
-    qty_delta: BigInt(e.qty_delta),
-    amount_fen: BigInt(e.amount_fen),
-    list_amount_fen: BigInt(e.list_amount_fen),
-    cogs_fen: BigInt(e.cogs_fen),
-    value_delta_fen: BigInt(e.value_delta_fen),
-    cost_missing: e.cost_missing,
-    unit_cost_fen: e.unit_cost_fen === null ? null : BigInt(e.unit_cost_fen),
-    reverses: e.reverses_entry_id === null ? null : idx.get(e.reverses_entry_id)!,
-    covers: e.type === "cost_fix" && e.reverses_entry_id === null ? es.flatMap((x, j) => (x.cost_fix_entry_id === e.id ? [j] : [])) : null,
-    voided: e.voided_at !== null,
-    costFixBy: e.cost_fix_entry_id === null ? null : idx.get(e.cost_fix_entry_id)!,
-  }));
-  const p = await product(storeId, pid);
-  const state = { q: BigInt(p.stock_qty), v: BigInt(p.stock_value_fen), c: p.last_cost_fen === null ? null : BigInt(p.last_cost_fen), k: p.cost_known };
-  assertLedger({ q: 0n, v: 0n, c: null, k: false }, state, rows);
-  // 同一个 op 的流水 seq 连续
-  for (let i = 1; i < es.length; i++) expect(BigInt(es[i]!.seq) > BigInt(es[i - 1]!.seq)).toBe(true);
-  return { es, p };
-}
+const assertDbLedger = (storeId: string, pid: string) => assertDbLedgerIn(tdb.kysely, storeId, pid);
 
 describe("撤销写库（④）", () => {
   it("整批：每行冲销、occurred_at 是撤销时间、原行 voided_at、paid_total_fen 不改；撤销两次第二次无操作；重放返回第一次结果", async () => {
