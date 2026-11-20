@@ -1,9 +1,12 @@
 // S04：/v1/sync 的协议层：epoch 握手、最低版本、请求格式、被踢设备（§4.5）、注销期间、手机时钟超前、只推不拉。
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
 import { bearer, login, makeApp, makeLoginShop, pair, TestClock } from "./helpers/auth.ts";
 import { op, sync, syncOk, upsertFull, upsertQuick } from "./helpers/sync.ts";
+import { HANDLERS } from "../src/sync/push.ts";
+import { OP_TYPES, OPS_SCHEMA_PATH, type OpType } from "../src/sync/validate.ts";
 
 let tdb: TestDb;
 beforeAll(async () => {
@@ -322,5 +325,15 @@ describe("全部 op 类型都已接入（§14 S04-1、S05-6 ⑩）", () => {
     for (const o of [...ledger, ...stale, ...lots]) expect(logged.has(o.id)).toBe(true);
     const types = await tdb.kysely.selectFrom("entries").select("type").where("store_id", "=", shop.storeId).execute();
     expect(new Set(types.map((t) => t.type))).toEqual(new Set(["opening", "stock_in", "sale", "cost_adjust"]));
+  });
+});
+
+describe("ops.schema.json 里每个 type 都有处理函数（§14 S04-1）", () => {
+  it("契约的 type 集合 = OP_TYPES = HANDLERS 的键，每个都是函数（HANDLERS 的类型是完整的 Record，少一个就编译不过）", () => {
+    const schema = JSON.parse(readFileSync(OPS_SCHEMA_PATH, "utf8")) as { oneOf: Array<{ properties: { type: { const: string } } }> };
+    const contractTypes = schema.oneOf.map((b) => b.properties.type.const).sort();
+    expect([...OP_TYPES].sort()).toEqual(contractTypes);
+    expect(Object.keys(HANDLERS).sort()).toEqual(contractTypes);
+    for (const t of contractTypes) expect(typeof HANDLERS[t as OpType]).toBe("function");
   });
 });
