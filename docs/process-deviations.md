@@ -14,7 +14,7 @@
 2. `scripts/merge-pr.sh <PR号> [--dry-run]` 在合并前检查：
    - PR 是 open、非草稿、无冲突、目标 main；
    - `server-ci` 在当前 head 上成功；
-   - `ios-ci`：PR 改了 `ios/**` 或 `.github/workflows/ios.yml` 时必须成功；没改、工作流没触发时视为不需要；只要出现过就必须成功；
+   - `ios-ci`：PR 改了 `ios/**`、`contracts/**` 或 `.github/workflows/ios.yml` 时必须成功（`contracts/**` 自 S12 起加入）；没改、工作流没触发时视为不需要；只要出现过就必须成功；
    - PR 评论里有当前 head 推送之后的「Codex 审核：通过」和「Fable 审核：通过」开头的评论，每方以最后一条「X 审核：」评论为准。
    - 全过才 `gh pr merge --squash --match-head-commit <sha>`。
 3. 评审结论用 **PR 评论**而不是 `review/codex`、`review/fable` 状态（没有必需检查，状态也拦不住合并，评论更直观）。
@@ -28,7 +28,7 @@
 
 **改为**：`ios.yml` 用 `paths` 过滤，只在 `ios/**` 或 `.github/workflows/ios.yml` 改动时触发，省掉自托管 Mac 上的无谓构建。因为没有平台级必需检查，不存在 Pending 卡死；「工作流没触发」由 `merge-pr.sh` 按改动路径判断为不需要。`server.yml` 仍然对每个 PR 都触发。
 
-注意：以后 `ios/` 依赖仓库里别的目录（例如 S01 的 `contracts/vectors/`）时，要把那个目录加进 `ios.yml` 的 `paths`，并同步改 `merge-pr.sh` 里判断 `ios_needed` 的正则。
+注意：以后 `ios/` 依赖仓库里别的目录（例如 S01 的 `contracts/vectors/`）时，要把那个目录加进 `ios.yml` 的 `paths`，并同步改 `merge-pr.sh` 里判断 `ios_needed` 的正则。S12 起 ShopCore 的测试直接读 `contracts/`，已把 `contracts/**` 加进两处。
 
 ## D-S00-3 iOS 模拟器运行时（2026-11-19）
 
