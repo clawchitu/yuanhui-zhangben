@@ -1,0 +1,45 @@
+name: YuanhuiZhangben
+options:
+  bundleIdPrefix: cn.yuanhuishop
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: C29GS8XSA6
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  YuanhuiZhangben:
+    type: application
+    platform: iOS
+    sources: [App]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cn.yuanhuishop.zhangben
+        PRODUCT_NAME: YuanhuiZhangben
+        INFOPLIST_KEY_CFBundleDisplayName: 元辉账本
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        CODE_SIGN_STYLE: Automatic
+  YuanhuiZhangbenTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [AppTests]
+    dependencies:
+      - target: YuanhuiZhangben
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cn.yuanhuishop.zhangben.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  YuanhuiZhangben:
+    build:
+      targets:
+        YuanhuiZhangben: all
+        YuanhuiZhangbenTests: [test]
+    test:
+      targets: [YuanhuiZhangbenTests]
