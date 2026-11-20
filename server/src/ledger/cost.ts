@@ -259,7 +259,8 @@ export type LateDraft = Draft & { late: true };
  * 原流水照记（step 不改），再追加一条 count 补偿行，数量和货值正好抵消这一步全部流水（含 cost_adjust）对库存的影响：
  * qty_delta = −Σ qty_delta，value_delta = −Σ value_delta，按盘点的记法 cogs = −value_delta；k 为假且数量有变化时标 cost_missing。
  * 库存回到这一步之前的 q、v；c、k 用这一步之后的（k 只增不减，c 是最近一次的进价）。
- * 之后若违反 I3，按撤销的归位规则补一条 cost_adjust 到 v = q × c（同样标 late）。这一步对库存没有净影响时原样返回。
+ * 之后若违反 I3，或这一步让 k 由假变真（不论库存正负，§14 S06-8），补一条 cost_adjust 到 v = q × c（同样标 late；
+ * 金额为 0 不记）。这一步对库存没有净影响时原样返回。
  */
 function lateCompensateRaw<R>(before: CostState, step: Step<R>): Step<R> {
   const dq = step.entries.reduce((x, e) => x + e.qty_delta, 0n);
@@ -271,7 +272,8 @@ function lateCompensateRaw<R>(before: CostState, step: Step<R>): Step<R> {
   let st: CostState = { ...after, q: before.q, v: before.v };
   if (st.k) {
     const c = known(st);
-    if ((st.q <= 0n && st.v !== st.q * c) || (st.q > 0n && st.v < 0n)) {
+    // 这一步让 k 由假变真：之前的 v 只是因为进价未知才是 0，不论库存正负都归位到 q × c（裁定 S06-8）
+    if (!before.k || (st.q <= 0n && st.v !== st.q * c) || (st.q > 0n && st.v < 0n)) {
       const adj: Draft[] = [];
       st = adjust(adj, st, st.q * c);
       entries.push(...adj.map((a) => ({ ...a, late: true as const })));

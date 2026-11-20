@@ -115,6 +115,34 @@ describe("迟到流水补偿（§5.6 第 4 条）", () => {
     await app.close();
   });
 
+  it("迟到的进货让进价从没填变已知、库存为正：补偿后货值归位到 q × c，之后卖出按进价记成本（PR #16 Fable 1，裁定 S06-8）", async () => {
+    const { shop, app, send, newProduct } = await setup();
+    const pid = await newProduct();
+    // 没填进价的期初 5 个（01:30）→ 迟到的进货 5 × 100（01:00）
+    await send(op("opening", { entry_id: randomUUID(), product_id: pid, counted_qty: 5 }, { at: T_COUNT }));
+    await send(stockIn(pid, 5, 100, T_LATE));
+    let p = await product(shop.storeId, pid);
+    expect([p.stock_qty, Number(p.stock_value_fen), Number(p.last_cost_fen), p.cost_known]).toEqual([5, 500, 100, true]);
+    const es = await entriesOf(shop.storeId, pid);
+    const tail = es.slice(es.findIndex((e) => e.type === "stock_in"));
+    // 进货 +5 / +500 → 进价补上时的 cost_adjust（10 × 100 − 500 = +500）→ 补偿 −5 / −1000 → 归位 +500（标 late）
+    expect(tail.map((e) => [e.type, e.qty_delta, Number(e.value_delta_fen), late(e)])).toEqual([
+      ["stock_in", 5, 500, false],
+      ["cost_adjust", 0, 500, false],
+      ["count", -5, -1000, true],
+      ["cost_adjust", 0, 500, true],
+    ]);
+    await assertDbLedger(tdb.kysely, shop.storeId, pid);
+    // 之后卖 2 个：cogs = 200，不标 cost_missing
+    await send(sale(pid, 2, T_AFTER));
+    const sl = (await entriesOf(shop.storeId, pid)).at(-1)!;
+    expect([sl.type, Number(sl.cogs_fen), sl.cost_missing]).toEqual(["sale", 200, false]);
+    p = await product(shop.storeId, pid);
+    expect([p.stock_qty, Number(p.stock_value_fen)]).toEqual([3, 300]);
+    await assertDbLedger(tdb.kysely, shop.storeId, pid);
+    await app.close();
+  });
+
   it("进价没填时补偿行只改数量、金额 0、标 cost_missing（同数量有变化的盘点）", async () => {
     const { shop, app, send, newProduct } = await setup();
     const pid = await newProduct();
