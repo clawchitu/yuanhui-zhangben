@@ -15,6 +15,9 @@ import ShopCore
 ///   -uiRoute stockIn,settings,…                  开好后把这些路由直接塞进导航栈（测「硬塞路由也进不去」）
 ///   -uiFreshInstall                              当作刚装好：清掉本机的字号选择和「首次进入做完了」
 ///   -uiScrollTo bottom                           首页打开后滚到底（截长页用）
+///   -uiFixture scanner | scanner-login           扫码测试页（27a / 27b 的样子，S14）
+///   -uiCamera denied|authorized|notDetermined    把相机权限当成这个值（S14）
+///   -uiScan / -uiScanSource / -uiScanGap / -uiScanDelay   FakeScanner 喂码，见 `FakeScanner`（S14）
 /// Beta / Release 里这些参数一律不认：没有会话就出「还没登录」页。
 enum UIFixture {
     enum Screen: Equatable {
@@ -23,6 +26,7 @@ enum UIFixture {
         case home(unsynced: Bool)
         case onboarding
         case settings
+        case scanner(login: Bool)
         #endif
     }
 
@@ -38,6 +42,8 @@ enum UIFixture {
         case "home-unsynced": return .home(unsynced: true)
         case "onboarding": return .onboarding
         case "settings": return .settings
+        case "scanner": return .scanner(login: false)
+        case "scanner-login": return .scanner(login: true)
         default: break
         }
         #endif
