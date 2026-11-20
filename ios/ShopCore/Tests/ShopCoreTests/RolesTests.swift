@@ -40,6 +40,8 @@ final class RolesTests: XCTestCase {
         }
         // 撤销带条件：本机、当天（§6 原则 ③）
         XCTAssertEqual(c.conditions[.void], ["own_device_sale", "sale_day_eq_server_receive_day"])
+        // 临时登记只能带名称和卖价（§4.3，服务器按 quick_only 拒多带的字段）
+        XCTAssertEqual(c.conditions[.quickRegister], ["quick_only"])
         XCTAssertTrue(c.canSend(.saleBatch))
         XCTAssertTrue(c.canSend(.productUpsert, quick: true))
         XCTAssertFalse(c.canSend(.productUpsert, quick: false))

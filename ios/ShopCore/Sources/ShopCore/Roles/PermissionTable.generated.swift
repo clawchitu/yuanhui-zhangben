@@ -180,7 +180,7 @@ extension PermissionTable {
         ]),
         PermissionRule(id: "op:product_upsert[quick]", kind: "op", cells: [
             .family: PermissionCell(.allow, conditions: []),
-            .cashier: PermissionCell(.allow, conditions: []),
+            .cashier: PermissionCell(.allow, conditions: ["quick_only"]),
             .review: PermissionCell(.allow, conditions: []),
             .revoked: PermissionCell(.allow, conditions: ["occurred_at_lte_revoked_at", "within_revoke_window"])
         ]),

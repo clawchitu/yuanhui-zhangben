@@ -651,6 +651,9 @@
       },
       "cashier": {
         "decision": "allow",
+        "conditions": [
+          "quick_only"
+        ],
         "note": "只有名称和卖价，带了别的字段就拒；服务器强制 needs_review=true"
       },
       "review": {
