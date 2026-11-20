@@ -4,22 +4,17 @@
 //   例：read -s P && printf '%s\n' "$P" | DATABASE_URL=... node scripts/create-account.ts --store ... --username ...
 // 审核号（review）只能建在演示店，家用号（family）只能建在非演示店。
 import { parseArgs } from "node:util";
-import argon2 from "argon2";
 import type { Kysely } from "kysely";
 import { createDb, type Database } from "../src/db.ts";
+import { hashPassword, PASSWORD_MAX, PASSWORD_MIN } from "../src/auth/password.ts";
 
-export const PASSWORD_MIN = 8;
-export const PASSWORD_MAX = 256; // 契约 /v1/auth/login 的 password maxLength
+export { hashPassword, PASSWORD_MAX, PASSWORD_MIN };
 
 export interface CreateAccountInput {
   storeId: string;
   username: string;
   password: string;
   kind?: "family" | "review";
-}
-
-export async function hashPassword(password: string): Promise<string> {
-  return argon2.hash(password, { type: argon2.argon2id });
 }
 
 export async function createAccount(db: Kysely<Database>, input: CreateAccountInput): Promise<{ id: string }> {

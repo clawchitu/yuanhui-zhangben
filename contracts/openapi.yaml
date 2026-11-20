@@ -87,7 +87,7 @@ paths:
       tags: [登录]
       operationId: redeemPairing
       summary: 扫码登录（14），兑换开通码
-      description: 二维码内容是 `YHZB1:<code>`，这里传 `<code>`。码用过 → `pairing_used`，过期 → `pairing_expired`（25d）。
+      description: 二维码内容是 `YHZB1:<code>`，这里传 `<code>`。码用过 → `pairing_used`，过期 → `pairing_expired`（25d）；出码的手机已被退出也算过期。账号在注销期间 → 403 `delete_pending`。
       security: []
       x-permission: POST /v1/auth/pair/redeem
       requestBody:
@@ -104,6 +104,7 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/Session" }
         "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "410": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
@@ -553,7 +554,7 @@ paths:
       tags: [账号]
       operationId: changePassword
       summary: 改密码
-      description: 不强制其他手机退出。
+      description: 不强制其他手机退出。原密码输错不计入登录锁定，但和申请注销共用按账号的限速：15 分钟内错 5 次后返回 `429 rate_limited`（带 `retry_after_s`）。
       x-permission: POST /v1/account/password
       requestBody:
         required: true
@@ -571,12 +572,13 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /v1/account/delete-request:
     post:
       tags: [账号]
       operationId: requestAccountDeletion
       summary: 申请注销（23）
-      description: 记 `delete_requested_at`，全部设备退出。注销期间禁止写账和开通设备；7 天后删除在线数据和 OSS 图片。
+      description: 记 `delete_requested_at`，全部设备退出。注销期间禁止写账和开通设备；7 天后删除在线数据和 OSS 图片。密码输错和改密码共用按账号的限速：15 分钟内错 5 次后返回 `429 rate_limited`。
       x-permission: POST /v1/account/delete-request
       requestBody:
         required: true
@@ -601,6 +603,7 @@ paths:
                   delete_pending_until: { $ref: "#/components/schemas/DateTime" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /v1/account/delete-cancel:
     post:
       tags: [账号]
