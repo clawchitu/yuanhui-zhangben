@@ -1,13 +1,13 @@
 // S05b 返修（PR #13 的 Codex / Fable 审核）：每条都是先在旧代码上失败（或改坏实现后失败）的回归测试。
 // - Codex P1：重放缓存结果按当前请求角色裁剪（收银员重发家用的 stale 期初拿不到 stock_qty），库里保留原结果
-// - Codex P2：卖出行存手机传来的名称快照（离线旧名），撤销沿用原快照
+// - Codex P2：卖出行存手机传来的名称快照（离线旧名、别名合并），撤销沿用原快照
 // - Fable 1：记账 op 写到一半被拒时整笔回滚（guarded() 的 ROLLBACK TO SAVEPOINT ledger）
 // - Fable 2：收银员撤本机名下的非原始卖出行（冲销行）得 forbidden（voidTargetSale 只认原始卖出行）
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
 import { login, makeApp, makeLoginShop, pair, TestClock } from "./helpers/auth.ts";
-import { allKeys, op, syncOk, upsertFull } from "./helpers/sync.ts";
+import { allKeys, newBarcode, op, syncOk, upsertFull } from "./helpers/sync.ts";
 
 let tdb: TestDb;
 beforeAll(async () => {
@@ -63,6 +63,30 @@ const saleOp = (lines: ReturnType<typeof saleLine>[], paid?: number, at = AT) =>
 const voidOp = (target: Record<string, string>, at = "2026-11-20T01:59:30Z") => op("void", { target }, { at });
 
 describe("Codex P2：卖出名称快照", () => {
+  it("别名合并：两台手机离线各自登记同一条码，后到的那台用自己的商品 id 和名字卖出 → 改写到赢家、带 remap，流水存后到那台的名字；撤销保留原快照", async () => {
+    const { shop, app, boss, send, sendAs } = await setup();
+    const other = await login(app, shop.username);
+    const code = newBarcode();
+    const a = upsertFull({ barcode: code, name: "赢家名称" });
+    const b = upsertFull({ barcode: code, name: "后到名称" });
+    await send(a);
+    await sendAs(other.token, b);
+    const winner = a.payload.product_id as string;
+    const alias = b.payload.product_id as string;
+    await send(opening(winner, 10, { unit_cost_fen: 100 }));
+    const line = { ...saleLine(alias, { name: "后到名称" }), barcode: code };
+    const s = saleOp([line]);
+    expect(await sendAs(other.token, s)).toEqual([{ id: s.id, status: "applied", remap: { [alias]: winner } }]);
+    let es = await entriesOf(shop.storeId, winner);
+    const e = es.find((x) => x.id === line.entry_id)!;
+    expect([e.product_id, e.name_snapshot]).toEqual([winner, "后到名称"]);
+    const v = voidOp({ entry_id: line.entry_id });
+    expect(await send(v)).toEqual([{ id: v.id, status: "applied" }]);
+    es = await entriesOf(shop.storeId, winner);
+    expect(es.find((x) => x.reverses_entry_id === line.entry_id)!.name_snapshot).toBe("后到名称");
+    await app.close();
+  });
+
   it("离线旧名卖出、商品已改名后补传 → 流水存旧名；撤销的冲销行保留原快照", async () => {
     const { shop, app, send, newProduct } = await setup();
     const pid = await newProduct("旧名称");
