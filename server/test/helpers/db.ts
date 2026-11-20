@@ -91,7 +91,7 @@ export async function expectPgError(p: Promise<unknown>, code: string, constrain
   }
 }
 
-/** 测试用的取号：stores.rev + 1。正式的取号函数（店铺锁内）在 S04 */
+/** 测试用的取号：stores.rev + 1，不拿店铺锁，只给约束测试直接造行。正式的取号函数是 src/sync/lock.ts 的 takeRev（必须在店铺锁内） */
 export async function nextRev(db: Kysely<Database>, storeId: string): Promise<string> {
   const r = await db
     .updateTable("stores")
