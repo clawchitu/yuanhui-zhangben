@@ -13,8 +13,10 @@ public struct PermissionCell: Hashable, Sendable {
     public let decision: PermissionDecision
     /// 有条件时全部满足才能（例如收银员撤销：本机、当天）
     public let conditions: [String]
-    public init(_ decision: PermissionDecision, conditions: [String] = []) {
-        self.decision = decision; self.conditions = conditions
+    /// 数据范围（`permissions.json` 的 `scope`，例如 `sync:pull` 的 `full_store` / `cashier_projection`）
+    public let scope: String?
+    public init(_ decision: PermissionDecision, conditions: [String] = [], scope: String? = nil) {
+        self.decision = decision; self.conditions = conditions; self.scope = scope
     }
     /// 这个身份能不能做（不论有没有附加条件）
     public var permits: Bool { decision == .allow || decision == .public }
@@ -113,4 +115,28 @@ public struct Capabilities: Hashable, Sendable {
         let id = type == .productUpsert ? "op:product_upsert[\(quick ? "quick" : "full")]" : "op:\(type.rawValue)"
         return PermissionTable.rule(id)?.cell(role).permits ?? false
     }
+}
+
+/// `sync:pull` 给这个身份下发的数据范围（§4.2、§6.1）。
+public enum PullScope: String, Hashable, Sendable {
+    /// 全店（家用、审核）
+    case fullStore = "full_store"
+    /// 收银员裁剪版：没有库存、货值、进价、批次
+    case cashierProjection = "cashier_projection"
+
+    /// 从权限表的 `sync:pull` 行推出；拉不了（被踢）或表里没有时为 nil
+    public static func of(_ role: Role) -> PullScope? {
+        guard let cell = PermissionTable.rule("sync:pull")?.cell(role), cell.permits else { return nil }
+        return cell.scope.flatMap(PullScope.init(rawValue:))
+    }
+}
+
+/// 库存、货值、进价在这台手机上看不看得见（§14 S12-3）。
+/// 权限表里没有单独的一行：由 `sync:pull` 的 `scope` 推出——服务器不下发的东西，界面上也不显示。
+/// 不借用「进货」能力判断：能不能进货和能不能看库存是两回事。
+public enum DataVisibility {
+    /// 能看库存数（「还剩 126 罐」、快没货、快过期）
+    public static func seesStock(_ role: Role) -> Bool { PullScope.of(role) == .fullStore }
+    /// 能看进价、货值、平均进价
+    public static func seesCost(_ role: Role) -> Bool { PullScope.of(role) == .fullStore }
 }

@@ -17,13 +17,14 @@ enum TypeRole: CaseIterable, Sendable {
 
 /// 字号系统。
 /// - 大字模式开：把动态字号下限抬到 `xxxLarge`，上限封在 `accessibility2`。
-/// - 大字模式关：跟随系统。
+/// - 大字模式关（标准）：跟随系统，上限同样封在 `accessibility2`（§14 S11-1），范围 `xSmall … accessibility2`。
 /// - 价格、总价、主按钮、键盘、步进器是固定尺寸（`number(_:)` / `Tokens.FixedFontSize`），不走这套。
 enum TypeScale {
     static let largeModeFloor: DynamicTypeSize = .xxxLarge
     static let largeModeCeiling: DynamicTypeSize = .accessibility2
     static let largeModeRange: ClosedRange<DynamicTypeSize> = largeModeFloor...largeModeCeiling
-    static let fullRange: ClosedRange<DynamicTypeSize> = .xSmall ... .accessibility5
+    /// 标准模式：跟随系统，但上限同样封在 `accessibility2`（§14 S11-1）
+    static let standardRange: ClosedRange<DynamicTypeSize> = .xSmall ... largeModeCeiling
 
     static let title = Font.title2.weight(.semibold)
     static let nav = Font.headline
@@ -42,8 +43,8 @@ enum TypeScale {
     static let primaryButton = Font.system(size: Tokens.FixedFontSize.primaryButton, weight: .semibold)
 
     static func effectiveSize(system: DynamicTypeSize, largeMode: Bool) -> DynamicTypeSize {
-        guard largeMode else { return system }
-        return min(max(system, largeModeFloor), largeModeCeiling)
+        let range = largeMode ? largeModeRange : standardRange
+        return min(max(system, range.lowerBound), range.upperBound)
     }
 
     /// 某个角色在给定系统字号、大字模式下的实际磅值。
@@ -72,9 +73,26 @@ enum TypeScale {
     }
 }
 
+/// 系统设置里的原始字号（套上字号范围之前的值）。16 页要同时预览「大字」和「标准」两种效果，需要它。
+private struct SystemTypeSizeKey: EnvironmentKey {
+    static let defaultValue: DynamicTypeSize = .large
+}
+
+extension EnvironmentValues {
+    var systemTypeSize: DynamicTypeSize {
+        get { self[SystemTypeSizeKey.self] }
+        set { self[SystemTypeSizeKey.self] = newValue }
+    }
+}
+
 extension View {
-    /// 在根视图上套一次。开 = 动态字号夹在 xxxLarge…accessibility2；关 = 跟随系统。
+    /// 在根视图上套一次。开 = 动态字号夹在 xxxLarge…accessibility2；关 = 跟随系统，封顶 accessibility2。
     func largeTextMode(_ enabled: Bool) -> some View {
-        dynamicTypeSize(enabled ? TypeScale.largeModeRange : TypeScale.fullRange)
+        dynamicTypeSize(enabled ? TypeScale.largeModeRange : TypeScale.standardRange)
+    }
+
+    /// 让这块内容按「某种模式」显示，不管当前开没开大字模式（16 页的两个样例）。
+    func previewTypeMode(largeMode: Bool, system: DynamicTypeSize) -> some View {
+        environment(\.dynamicTypeSize, TypeScale.effectiveSize(system: system, largeMode: largeMode))
     }
 }

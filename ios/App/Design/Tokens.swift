@@ -66,6 +66,8 @@ enum Tokens {
         static let stepperCompact: CGFloat = 46
         static let thumb: CGFloat = 64
         static let modeBar: CGFloat = 52
+        /// 固定尺寸控件的最小点按区域
+        static let minHitTarget: CGFloat = 56
     }
 
     enum Radius {

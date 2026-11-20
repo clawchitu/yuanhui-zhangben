@@ -16,6 +16,7 @@ final class RolesTests: XCTestCase {
                 let cell = r[role.rawValue] as! [String: Any]
                 XCTAssertEqual(gen.cell(role).decision.rawValue, cell["decision"] as! String, "\(id) \(role)")
                 XCTAssertEqual(gen.cell(role).conditions, (cell["conditions"] as? [String]) ?? [], "\(id) \(role)")
+                XCTAssertEqual(gen.cell(role).scope, cell["scope"] as? String, "\(id) \(role) scope")
             }
         }
     }
@@ -64,5 +65,29 @@ final class RolesTests: XCTestCase {
         // 被踢设备只在恢复队列里补传卖出和临时登记（有条件），界面上什么都不给
         XCTAssertEqual(c.granted, [.sell, .quickRegister])
         XCTAssertEqual(c.conditions[.sell], ["occurred_at_lte_revoked_at", "within_revoke_window"])
+    }
+
+    /// §14 S12-3：库存 / 进价可见性由 sync:pull 的 scope 推出，不借用进货能力
+    func testStockAndCostVisibilityDerivesFromPullScope() {
+        XCTAssertEqual(PullScope.of(.family), .fullStore)
+        XCTAssertEqual(PullScope.of(.review), .fullStore)
+        XCTAssertEqual(PullScope.of(.cashier), .cashierProjection)
+        XCTAssertNil(PullScope.of(.revoked), "被踢设备拉不到数据")
+        for role in Role.allCases {
+            let full = PullScope.of(role) == .fullStore
+            XCTAssertEqual(DataVisibility.seesStock(role), full, "\(role)")
+            XCTAssertEqual(DataVisibility.seesCost(role), full, "\(role)")
+        }
+        XCTAssertFalse(DataVisibility.seesStock(.cashier))
+        XCTAssertFalse(DataVisibility.seesCost(.cashier))
+        XCTAssertFalse(DataVisibility.seesStock(.revoked))
+    }
+
+    /// 本地库存不存私有数据与界面显示用的是同一个判断
+    func testSessionPrivateDataFollowsVisibility() throws {
+        for role in [Role.family, .cashier, .review] {
+            let s = try LocalSession(deviceId: uuid(1), storeId: uuid(2), role: role, tokenRef: "t", storeName: "店", deviceLabel: "机")
+            XCTAssertEqual(s.holdsPrivateData, DataVisibility.seesCost(role), "\(role)")
+        }
     }
 }

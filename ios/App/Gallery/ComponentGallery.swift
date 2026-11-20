@@ -97,11 +97,11 @@ struct ComponentGallery: View {
                 HStack {
                     Text("青岛啤酒 500ml").font(TypeScale.body)
                     Spacer()
-                    QuantityStepper(value: $qtySmall, compact: true)
+                    QuantityStepper(value: $qtySmall, compact: true).accessibilityIdentifier("gallery.stepperCompact")
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Text("青岛啤酒 500ml").font(TypeScale.body)
-                    QuantityStepper(value: $qtySmall, compact: true)
+                    QuantityStepper(value: $qtySmall, compact: true).accessibilityIdentifier("gallery.stepperCompact")
                 }
             }
             .foregroundStyle(Tokens.Palette.ink)
