@@ -572,7 +572,7 @@
           "$ref": "#/$defs/base_qty"
         }
       },
-      "description": "不带 unit_cost_fen = 没填进价；带 0 = 明确零成本（§5.2）。对已有商品的期初只能联网提交，服务器要求带 base_ver（版本不对拒 stale）；新商品第二步的离线期初不带 base_ver（§5.6 第 1、3 条）。base_qty 可选（见 PR 疑问）"
+      "description": "不带 unit_cost_fen = 没填进价；带 0 = 明确零成本（§5.2）。base_ver、base_qty 都可选，服务器判断办法（§5.6 第 2、3 条，schema 判断不了商品新旧）：不带 base_ver 的 opening 只在这个商品 stock_ver = 0（还没有过任何库存变动）时接受，否则拒 stale 并带回最新账面数；带了 base_ver 的按版本比对，不一致拒 stale。服务器只比对 base_ver，base_qty 只留档和排查，不参与判断。"
     },
     "payload_product_review_complete": {
       "type": "object",
@@ -617,7 +617,7 @@
           "$ref": "#/$defs/base_qty"
         }
       },
-      "description": "22b 待确认补全：进价必填（可以为 0）；记一条 opening 流水，清 needs_review；只能联网提交（§4.3、§5.6）。base_qty 可选（§5.6 第 2 条，见 PR 疑问）"
+      "description": "22b 待确认补全：进价必填（可以为 0）；记一条 opening 流水（id = entry_id），清 needs_review；只能联网提交。必带 base_ver（不一致拒 stale），base_qty 可选、只留档（§4.3、§5.6）"
     },
     "payload_count": {
       "type": "object",
@@ -645,7 +645,8 @@
         "base_ver": {
           "$ref": "#/$defs/ver"
         }
-      }
+      },
+      "description": "盘点：base_ver、base_qty 都必带；服务器只比对 base_ver，base_qty 只留档（§5.6）。d = 0 也记一条全 0 的 count（§5.2）"
     },
     "payload_expiry_dispose": {
       "type": "object",

@@ -756,11 +756,10 @@ components:
           enum: [forbidden, stale, id_conflict, invalid]
         remap:
           type: object
-          description: "§4.2 的 remap?: {product_id: 新id}。这个 op 引用的商品已成为别名（§4.4 条码已登记），product_id 是赢家商品的 id，手机把本地引用改写过去"
-          additionalProperties: false
-          required: [product_id]
-          properties:
-            product_id: { $ref: "#/components/schemas/Uuid" }
+          minProperties: 1
+          propertyNames: { format: uuid }
+          additionalProperties: { $ref: "#/components/schemas/Uuid" }
+          description: "§4.2 的 remap?: {旧商品id: 赢家商品id, …}。键是这个 op 里引用到的、已经成为别名的商品 id，值是赢家商品的 id；可以有多对（一笔 sale_batch 的好几行可能各引用一个别名）。任何引用了别名的 op 都可能带它，不只是 product_upsert。手机收到后把本地所有对旧 id 的引用改写成新 id"
         current:
           type: object
           description: status=rejected 且 code=stale 时带回最新账面数（stock_qty、stock_ver）或批次状态（qty_left、handle_ver、closed）
@@ -775,7 +774,13 @@ components:
       if: { properties: { status: { const: rejected } } }
       then: { required: [code] }
       examples:
-        - { id: 00000000-0000-4000-8000-000000000004, status: applied, remap: { product_id: 00000000-0000-4000-8000-000000000999 } }
+        - { id: 00000000-0000-4000-8000-000000000004, status: applied, remap: { 00000000-0000-4000-8000-000000000202: 00000000-0000-4000-8000-000000000999 } }
+        # 一笔 sale_batch 的两行各引用了一个别名商品，两对映射一起返回
+        - id: 00000000-0000-4000-8000-000000000001
+          status: applied
+          remap:
+            00000000-0000-4000-8000-000000000201: 00000000-0000-4000-8000-000000000901
+            00000000-0000-4000-8000-000000000203: 00000000-0000-4000-8000-000000000903
         - { id: 00000000-0000-4000-8000-000000000014, status: rejected, code: stale, current: { stock_qty: 8, stock_ver: 12 } }
         - { id: 00000000-0000-4000-8000-000000000001, status: applied, replayed: true }
     SyncResponse:

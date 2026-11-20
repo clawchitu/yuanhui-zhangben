@@ -158,7 +158,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `cost_adjust`（调整） | 0 | 0 | 0 | 0 | 调整额（可正可负），界面显示为「调整」 |
 | `cost_fix`（成本补记） | 0 | 被补记的那些卖出行的实收合计 | 0 | 补记的进价合计 | 0（§5.2） |
 
-**撤销的记法（规则）**：原流水打 `voided_at`（界面上划线显示）；同时新增一行**冲销流水**，`type` 与原行相同、`reverses_entry_id` 指向原行、所有数量和金额取反、`occurred_at` = 撤销发生的时间。报表对所有行（原行 + 冲销行）按各自的 `occurred_at` 求和，所以「撤销算在撤销那天」；当天撤当天的（绝大多数情况）正好抵消。列表界面不显示冲销行。好处：已经过去的月份的月初货值不会被事后改动，对账等式永远是同一张流水表的求和。
+**撤销的记法（规则）**：原流水打 `voided_at`（界面上划线显示）；同时新增一行**冲销流水**，`type` 与原行相同、`reverses_entry_id` 指向原行、所有数量和金额取反、`occurred_at` = 撤销发生的时间。报表对所有行（原行 + 冲销行）按各自的 `occurred_at` 求和，所以「撤销算在撤销那天」；当天撤当天的（绝大多数情况）正好抵消。列表界面不显示冲销行。`unit_cost_fen` 是单价不是金额，冲销行**照抄原行、不取反**（进货的冲销行、`cost_fix` 的冲销行都一样）。好处：已经过去的月份的月初货值不会被事后改动，对账等式永远是同一张流水表的求和。
 
 不变式（S04–S06 的性质测试逐条断言）：
 - I1 每个商品：`Σ entries.qty_delta = products.stock_qty`
@@ -204,7 +204,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 响应：
 ```
-{ results: [ {id, status: applied|rejected|held, code?, remap?: {product_id: 新id}, current?: {...}, replayed?: bool} ],
+{ results: [ {id, status: applied|rejected|held, code?, remap?: {旧商品id: 赢家商品id, …}, current?: {...}, replayed?: bool} ],
   changes: { products[], barcodes[], removed[], entries[], batches[], lots[] },
   cursors: {catalog, ledger}, has_more: {catalog, ledger}, total_products,
   server_time, epoch, min_build,
@@ -214,6 +214,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 - **变更序号**：店铺锁内每改动一行，就从 `stores.rev` 取一个新号写到这一行的 `rev`。同一店内 `rev` 不重复，一个 op 改了 5 行就占 5 个号，所以 `rev > cursor` 分页永远不会切在同一个号中间。所有会改到同步数据的写入（包括图片任务写 `image_key`、定时任务、设备改名之外的任何后台写）都必须先拿店铺锁、走同一个取号函数。被删的行（解除整件码等）写一条 `removed` 墓碑，也有 `rev`。
 - **两条独立的流，各有游标**：`catalog`（商品、条码、墓碑）和 `ledger`（流水、批次头、保质期批次）。每页 500 行，`has_more` 为真就继续拉。
 - **首次同步（review 四-4）**：先把 `catalog` 拉到底就进首页、可以开始卖；`ledger` 和图片在后台继续，图片不占同步队列、不阻塞扫码。拉取期间别的手机继续记账没有关系：新改的行序号更大，排在后面，不会漏。
+- **`remap` 的形状**：一个对象，键是这个 op 里引用到的、已经成为别名的商品 id，值是赢家商品的 id；可以有多对（一笔卖出的好几行可能各引用一个别名）。任何引用了别名的 op 都可能带它，不只是 `product_upsert`。手机收到后把本地所有对旧 id 的引用改写成新 id。
 - **结果可重放**：服务器把每个 op 的结果（应用 / 拒绝及原因 / 暂存 / remap）存在 `ops.result`。重发同一个 id，返回当初的结果并带 `replayed: true`，不返回笼统的「重复」。同一个 id 但 payload 哈希不同 → 拒 `id_conflict`，不应用。
 - **epoch 握手**：请求带手机记着的 `epoch`，必填、不允许为空；手机的第一个 `epoch` 来自登录或兑码的响应（§7）。与服务器不一致时，服务器**不应用**这次请求里的任何 op，只返回 `epoch_mismatch` 和新 epoch，手机按 §4.6 处理后再发。
 - **按角色裁剪**（在 `sync/projection.ts` 一处实现）：收银员拿不到 `product_private` 里的任何字段、任何进货/盘点/损耗流水、别的手机的流水、保质期批次、`cogs_fen`/`value_delta_fen`/`unit_cost_fen`。响应 JSON 里**不出现这些键**，不是置空。
@@ -229,8 +230,8 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `product_edit` | `product_id` + 要改的字段（名称、卖价、基本单位、`low_at`、保质期设置、停用）；逐字段后写者赢 | 家用 |
 | `barcode_link` / `barcode_unlink` | `barcode, product_id, pack_qty, unit_name, pack_price_fen`（单件码不带价，§3.2） | 家用 |
 | `stock_in` | `entry_id, product_id, barcode, pack_qty, pack_count, unit_cost_fen, expiry_date?` | 家用 |
-| `opening` | `entry_id, product_id, counted_qty, unit_cost_fen?, expiry_date?, base_ver?`（新商品第二步「货架上现在有几个」） | 家用 |
-| `product_review_complete` | `entry_id, product_id, unit_cost_fen（必填，可为 0）, counted_qty, base_ver, 保质期设置?`（22b 待确认补全；`entry_id` 是它生成的那条 `opening` 流水的 id）→ 记一条 `opening` 流水，清 `needs_review` | 家用，**只能联网提交**（§5.6） |
+| `opening` | `entry_id, product_id, counted_qty, unit_cost_fen?, expiry_date?, base_ver?, base_qty?`（新商品第二步「货架上现在有几个」；`base_ver` 何时必带见 §5.6） | 家用 |
+| `product_review_complete` | `entry_id, product_id, unit_cost_fen（必填，可为 0）, counted_qty, base_ver, base_qty?, 保质期设置?`（22b 待确认补全；`entry_id` 是它生成的那条 `opening` 流水的 id）→ 记一条 `opening` 流水，清 `needs_review` | 家用，**只能联网提交**（§5.6） |
 | `count` | `entry_id, product_id, counted_qty, base_qty, base_ver` | 家用，**只能联网提交**（§5.6） |
 | `expiry_dispose` | `lot_id, handle_ver, actual_qty, action: sold_out\|discard\|return, entry_id` | 家用 |
 | `lot_snooze` | `lot_id, handle_ver, actual_qty, days` | 家用 |
@@ -328,12 +329,12 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
   - 这些货从来没进过货值（当时 `v = 0`），所以对账不受影响；利润在补记那天一次性计入（与「撤销算在撤销那天」同一原则，过去月份的数字不变）。
   - 补记过的卖出之后被撤销，共三条流水：正常的冲销行（只加回数量）；一条冲销的 `cost_fix`（该行的 −实收、−数量 × `b`，`b` 取自当初那条 `cost_fix` 的 `unit_cost_fen`）；一条 `cost_adjust`（+数量 × `b`）。最后这条是让回到货架的货按补记的进价计入货值，否则货值不变、数量变多，平均进价被拉低，以后的卖出会少记成本。先撤销、后补进价：已撤销的行不参与补记。
   - **`k` 只增不减**：撤销那次让进价变成已知的进货或期初，`k` 不回到假，`c` 保留，已经记的 `cost_fix` 不冲；撤销后按下面「撤销」一条的归位规则处理。
-- **盘点** 数到 `N`（`N >= 0`），`d = N − q`（并发规则见 §5.6）：
+- **盘点** 数到 `N`（`N >= 0`），`d = N − q`（并发规则见 §5.6）。**`d = 0`（点「没错」）也要记一条 `count` 流水**，数量和金额都是 0、不标 `cost_missing`（不论进价是否已知）：盘点进度「已数 N 种」和 `last_count_at` 都靠它。这是「金额为 0 不记」通则之外的，那条通则只管 `cost_adjust` 和 `cost_fix`。`d ≠ 0` 时：
   - `k` 为真且 `q > 0`：盘亏金额 = `N = 0 ? v : roundDiv(v × |d|, q)`；盘盈金额 = `d × u`。
   - `k` 为真且 `q <= 0`：货值设为 `N × c`，差额即盘盈金额。
   - `k` 为假：只改数量，金额为 0。
 - **过期扔掉、退给供货商** `n` 个：成本取法与卖出相同。扔掉记损耗，**不减「赚了」**，在报表「过期损耗」单列；退货不计盈亏。
-- **进价未知（`k` 为假）时的非卖出流水**：过期扔掉、退货、数量有变化的盘点，金额都记 0 并标 `cost_missing = true`；它们**不参加成本补记**（补记只针对卖出），报表在对应的损耗行旁注明「有 N 笔没算进价」。没填进价的 `opening` 不标。
+- **进价未知（`k` 为假）时的非卖出流水**：过期扔掉、退货、数量有变化的盘点，金额都记 0 并标 `cost_missing = true`（数量没变的盘点不标）；它们**不参加成本补记**（补记只针对卖出），报表在对应的损耗行旁注明「有 N 笔没算进价」。没填进价的 `opening` 不标。
 - **撤销**：卖出 → 加回数量和当时记下的 `cogs`；进货 → 减去数量和总价；其余类型同理取反。撤销后若违反 I3，用一条 `cost_adjust` 归位，**归位目标统一是 `v = q × c`**：`k` 为真，且（`q <= 0` 而 `v ≠ q × c`，或 `q > 0` 而 `v < 0`）时触发。`q > 0` 且 `v >= 0` 时不动。
 - 必过向量：
   - 库存 6 包、货值 ¥242.80，进 5 条 × ¥400（1 条 = 10 包）→ 56 包，这批每包 ¥40.00，平均 **¥40.05**。
@@ -374,7 +375,8 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 本地前缀匹配：输入满 8 位起，列出**所有**条码以输入为前缀的候选；只剩一个候选时才自动选中；未选中时主按钮置灰。绝不自动选第一个。
 
 - 候选按「商品 + 换算数量」去重：同一商品的两个单件码算一个候选；同一商品的单件码和整箱码是**两个**候选（卖的数量和价钱不同，行上要写明「罐」还是「箱（24 罐）」）。
-- 排序：与输入完全相等的条码排第一，其余按条码字符串升序。最多显示前 4 行，超过时提示「还有 N 个，接着输」。
+- 一个候选有多个条码都匹配时（同一商品的两个单件码），取一个**代表条码**用来排序、显示和加入购物篮：有与输入完全相等的就取它，否则取匹配条码里字符串最小的。
+- 排序：按代表条码，与输入完全相等的排第一，其余按字符串升序。最多显示前 4 行，超过时提示「还有 N 个，接着输」。
 - 输入正好等于一个 8 位码、同时又是更长条码的前缀时：两个都列出，不自动选（完全相等的排第一）。
 
 其他：收银员看到的候选行不带库存。`contracts/vectors/prefix.json`：同厂商两个商品（6902514300011、6902514300028），输入 `69025143` 时两个都列出。
@@ -384,8 +386,8 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 问题：A 数到 10 个，这期间 B 卖了 2 个；如果 A 的盘点晚到并把库存设回 10，就吞掉了 B 的两个。反过来，一笔盘点前发生、盘点后才传上来的卖出，会被多扣一次。规则：
 
 1. **盘点、待确认补全、对已有商品的期初，只能联网提交，不进离线队列。** 手机先把自己的 outbox 传完，再发这一条。没网时这些页面提示「要联网才能盘点」。
-2. op 带 `base_qty`（数的时候账上显示几个）和 `base_ver`（当时的 `products.stock_ver`；每次库存变动 +1）。服务器发现 `stock_ver` 已经变了 → 拒 `stale`，带回最新账面数。手机显示「刚才别的手机又记了账，账上现在是 8 个。你数的 10 个还对吗？」，确认或改数后带新版本重发。
-3. **新商品登记第二步的期初**可以离线（商品是新的，没有可冲突的账面数），随 `product_upsert` 一起排队。如果这个条码其实已被别的手机登记（发生别名合并），这条期初被拒 `stale`，提示重新数。
+2. op 带 `base_ver`（当时的 `products.stock_ver`；每次库存变动 +1）和 `base_qty`（数的时候账上显示几个）。**服务器只比对 `base_ver`**，`base_qty` 只用来留档和排查，不参与判断：`count` 两个都必带；`product_review_complete` 必带 `base_ver`，`base_qty` 可选；`opening` 两个都可选，但受第 3 条约束。服务器发现 `stock_ver` 已经变了 → 拒 `stale`，带回最新账面数。手机显示「刚才别的手机又记了账，账上现在是 8 个。你数的 10 个还对吗？」，确认或改数后带新版本重发。
+3. **新商品登记第二步的期初**可以离线（商品是新的，没有可冲突的账面数），随 `product_upsert` 一起排队，不带 `base_ver`。服务器的判断办法（schema 判断不了商品新旧）：**不带 `base_ver` 的 `opening` 只在这个商品的 `stock_ver = 0`（还没有过任何库存变动）时接受**，否则拒 `stale` 并带回最新账面数，提示重新数；带了 `base_ver` 的按第 2 条比对。条码其实已被别的手机登记（发生别名合并）时，赢家商品通常已有库存变动，自然落入被拒这一支。
 4. **迟到的流水**：任何影响库存的 op 入账时，如果它的 `occurred_at` 早于这个商品最近一次盘点 / 期初的时间（`products.last_count_at`），说明数的时候这些货已经不在货架上了。处理：流水照常入账（收入、成本照记），同时自动追加一条 `count` 类型的补偿流水（数量和货值正好抵消这笔流水对库存的影响，`flags.late_before_count`），库存保持为盘点得到的数。效果：原先被算成盘亏的那几个，改由这笔卖出解释。
 5. 不做「盘点期间暂停其他手机记账」，店里不能因为有人在盘点就卖不了东西。
 
@@ -986,4 +988,14 @@ S01 的 PR（#4）在描述里列了 14 条计划没写清的地方。裁定如�
 | Q12 | 单件码和整件码同时匹配；超过 4 个显示哪 4 个；完全相等又是前缀 | 按「商品 + 换算数量」去重，单件和整箱是两个候选；完全相等的排第一，其余按条码升序，显示前 4 个；两个都列、不自动选 | §5.5 |
 | Q13 | `/v1/health` 还是 `/healthz` | `/healthz`。契约按 §7 写是对的，S02 改服务器代码 | §7、S02 |
 | Q14 | 首次同步没有 epoch | 登录、兑码、演示登录的响应带 `epoch`；`/v1/sync` 的 `epoch` 必填，不允许为空 | §4.2、§7 |
+
+S01 改完后（提交 e1046a0）又留了 5 条，裁定如下：
+
+| # | 疑问 | 裁定 | 改在哪里 |
+|---|---|---|---|
+| R1 | `opening` / `product_review_complete` 带不带 `base_qty` | 服务器只比对 `base_ver`，`base_qty` 只留档。`count` 两个都必带；`product_review_complete` 必带 `base_ver`、`base_qty` 可选；`opening` 两个都可选，但不带 `base_ver` 的只在商品 `stock_ver = 0` 时接受，否则拒 `stale`（执行者设成可选是对的） | §4.3、§5.6 |
+| R2 | `remap` 只装得下一个商品 | 改成映射 `{旧商品id: 赢家商品id, …}`，可以有多对，任何引用了别名的 op 都可能带 | §4.2 |
+| R3 | 一个候选有多个匹配条码时取哪个 | 取代表条码：完全相等的优先，否则最小的匹配条码；排序、显示、加入购物篮都用它（执行者的做法正确） | §5.5 |
+| R4 | 冲销 `cost_fix` 行存不存 `unit_cost_fen` | 存，照抄原行不取反；所有冲销行的 `unit_cost_fen` 都这样（执行者的做法正确） | §3.3 |
+| R5 | 进价未知且盘点数等于账面数时记不记 | 记。`d = 0` 的盘点一律记一条数量和金额为 0 的 `count`，不标 `cost_missing`，不论进价是否已知 | §5.2 |
 

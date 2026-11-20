@@ -68,7 +68,7 @@
 | 字段 | 含义 |
 |---|---|
 | `type, qty_delta, amount_fen, list_amount_fen, cogs_fen, value_delta_fen, cost_missing` | 同 `entries` 表（§3.3）；没列在 §3.3 里的取 0 / false |
-| `unit_cost_fen` | stock_in 行：录入的每件单价；cost_fix 行（含冲销的 cost_fix）：补记用的单位成本 `b`，撤销时从这里取 `b`。其他类型不断言 |
+| `unit_cost_fen` | stock_in 行：录入的每件单价；cost_fix 行：补记用的单位成本 `b`，撤销时从这里取 `b`。冲销行照抄原行、**不取反**（进货的冲销行、cost_fix 的冲销行都一样，§3.3）。其他类型不断言 |
 | `reverses_step` | 冲销行：冲的是第几步产生的、同 `type` 的那行（`reverses_entry_id`） |
 | `covers_steps` | cost_fix 行：补记了哪几步的卖出行（这些行要写上 `cost_fix_entry_id`，且本身的 cogs / value_delta 不改） |
 
@@ -76,9 +76,9 @@
 
 §14 裁定后要特别注意的几条（都有用例）：
 
-- 金额为 0 的 `cost_adjust` 不记；没有可补记行的 `cost_fix` 也不记（cost-02、07、21、22）。
+- 金额为 0 的 `cost_adjust` 不记；没有可补记行的 `cost_fix` 也不记（cost-02、07、21、22）。这条通则**只管** `cost_adjust` 和 `cost_fix`：盘点数等于账面数（d = 0，点「没错」）照记一条数量、金额全 0 的 `count`，不标 `cost_missing`，不论进价是否已知（cost-23、24）。
 - 进价已知时没填进价的期初，流水记 **`count`**，金额按盘点规则（cost-16）。
-- 进价未知时，扔掉、退货、数量有变化的盘点：金额 0、`cost_missing = true`、不参加补记（cost-13、22）。没填进价的 `opening` 不标。
+- 进价未知时，扔掉、退货、数量有变化的盘点：金额 0、`cost_missing = true`、不参加补记（cost-13、22）。数量没变的盘点、没填进价的 `opening` 不标。
 - 补记后撤销卖出：冲销卖出行 + 冲销 `cost_fix`（`b` 取自原 cost_fix 的 `unit_cost_fen`）+ `cost_adjust`（+数量 × `b`）（cost-19）。
 - `k` 只增不减：撤销让进价变已知的那次进货，`k`、`c` 不回退，已记的 `cost_fix` 不冲（cost-09 最后一步）。
 - 撤销后违反 I3 时归位目标统一是 `v = q × c`，`q > 0` 而 `v < 0` 时也触发（cost-21）。
@@ -149,9 +149,10 @@
 | `5.2-期初-填了` | 期初填了进价（含明确 0） | cost-04, 05, 15, 22 |
 | `5.2-期初-没填` | 期初没填进价（k 假只设数量；k 真记 count、按盘点） | cost-04, 16 |
 | `5.2-成本补记` | cost_fix（存 unit_cost_fen），补记前后撤销，损耗不参加 | cost-04, 09, 10, 19, 20, 22 |
-| `5.2-盘点-已知且正` | 盘点，k 真且 q > 0：盘亏、盘盈、数到 0 | cost-11 |
+| `5.2-盘点-已知且正` | 盘点，k 真且 q > 0：盘亏、盘盈、数到 0、数对了 | cost-11, 24 |
 | `5.2-盘点-已知且非正` | 盘点，k 真且 q ≤ 0 | cost-06, 12 |
-| `5.2-盘点-未知` | 盘点，k 假（金额 0、标 cost_missing） | cost-13 |
+| `5.2-盘点-未知` | 盘点，k 假（金额 0；d ≠ 0 时标 cost_missing） | cost-13, 23 |
+| `5.2-盘点-没错` | 盘点数等于账面数，照记全 0 的 count | cost-23, 24 |
 | `5.2-未知-非卖出` | 进价未知时扔掉、退货、盘点标 cost_missing | cost-13, 22 |
 | `5.2-k只增` | 撤销让进价变已知的进货，k / c 不回退，cost_fix 不冲 | cost-09 |
 | `5.2-过期退货` | 过期扔掉、退给供货商 | cost-14, 22 |

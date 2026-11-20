@@ -820,7 +820,8 @@
         "cogs_fen": 0,
         "value_delta_fen": -1000,
         "cost_missing": false,
-        "reverses_step": 2
+        "reverses_step": 2,
+        "unit_cost_fen": 200
        }
       ],
       "state": {
@@ -1522,7 +1523,8 @@
         "cogs_fen": 0,
         "value_delta_fen": -200000,
         "cost_missing": false,
-        "reverses_step": 0
+        "reverses_step": 0,
+        "unit_cost_fen": 40000
        },
        {
         "type": "cost_adjust",
@@ -2039,7 +2041,8 @@
         "cogs_fen": 0,
         "value_delta_fen": -1000,
         "cost_missing": false,
-        "reverses_step": 0
+        "reverses_step": 0,
+        "unit_cost_fen": 100
        },
        {
         "type": "cost_adjust",
@@ -2161,6 +2164,94 @@
       }
      },
      "calc": "填了进价：v=5×200=1000；补记只针对卖出，这里没有待补记的卖出行 → 不记 cost_fix"
+    }
+   ]
+  },
+  {
+   "id": "cost-23",
+   "rules": [
+    "5.2-盘点-未知",
+    "5.2-盘点-没错"
+   ],
+   "title": "进价未知，盘点数等于账面数（点「没错」）：照记一条全 0 的 count，不标 cost_missing",
+   "initial": {
+    "q": 10,
+    "v": 0,
+    "c": null,
+    "k": false,
+    "u": null
+   },
+   "steps": [
+    {
+     "action": {
+      "type": "count",
+      "counted_qty": 10
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "count",
+        "qty_delta": 0,
+        "amount_fen": 0,
+        "list_amount_fen": 0,
+        "cogs_fen": 0,
+        "value_delta_fen": 0,
+        "cost_missing": false
+       }
+      ],
+      "state": {
+       "q": 10,
+       "v": 0,
+       "c": null,
+       "k": false,
+       "u": null
+      }
+     },
+     "calc": "d=0：记一条 count，数量、金额全 0，cost_missing=false（盘点进度和 last_count_at 靠它）"
+    }
+   ]
+  },
+  {
+   "id": "cost-24",
+   "rules": [
+    "5.2-盘点-已知且正",
+    "5.2-盘点-没错"
+   ],
+   "title": "进价已知，盘点数等于账面数：照记一条全 0 的 count",
+   "initial": {
+    "q": 5,
+    "v": 1000,
+    "c": 200,
+    "k": true,
+    "u": 200
+   },
+   "steps": [
+    {
+     "action": {
+      "type": "count",
+      "counted_qty": 5
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "count",
+        "qty_delta": 0,
+        "amount_fen": 0,
+        "list_amount_fen": 0,
+        "cogs_fen": 0,
+        "value_delta_fen": 0,
+        "cost_missing": false
+       }
+      ],
+      "state": {
+       "q": 5,
+       "v": 1000,
+       "c": 200,
+       "k": true,
+       "u": 200
+      }
+     },
+     "calc": "d=0：盘亏盘盈都是 0，照记一条 count，状态不变"
     }
    ]
   }
