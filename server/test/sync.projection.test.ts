@@ -129,6 +129,46 @@ describe("收银员的拉取响应", () => {
   });
 });
 
+describe("收银员的墓碑按角色过滤（§14 S04 待办、S05-5）", () => {
+  it("收银员只收条码 / 别名墓碑和本机卖出流水、批次头的墓碑；不收 lot、别机的、进货的、找不到原行的；家用全收", async () => {
+    const { shop, app, boss, cas, pid, sales } = await richShop();
+    const si = await insertStockIn(tdb.kysely, { storeId: shop.storeId, deviceId: boss.deviceId, productId: pid, at: new Date(NOW - 1800_000) });
+    const { randomUUID } = await import("node:crypto");
+    const { withStoreLock } = await import("../src/sync/lock.ts");
+    const tomb = {
+      barcode: ["barcode", "6900000000999"],
+      alias: ["product_alias", randomUUID()],
+      ownEntry: ["entry", sales.casToday.entryIds[0]!],
+      ownOldEntry: ["entry", sales.casOld.entryIds[0]!],
+      ownBatch: ["batch", sales.casToday.batchId],
+      otherEntry: ["entry", sales.bossToday.entryIds[0]!],
+      otherBatch: ["batch", sales.bossToday.batchId],
+      stockInEntry: ["entry", si.entryId],
+      lot: ["lot", si.lotId],
+      goneEntry: ["entry", randomUUID()],
+      goneBatch: ["batch", randomUUID()],
+    } as const;
+    await withStoreLock(tdb.kysely, shop.storeId, async (tx) => {
+      for (const [kind, row_id] of Object.values(tomb))
+        await tx.trx.insertInto("removed").values({ store_id: shop.storeId, kind, row_id, rev: String(await tx.nextRev()) }).execute();
+    });
+    const got = async (token: string) => {
+      const out: string[] = [];
+      let cursors = { catalog: 0, ledger: 0 };
+      for (;;) {
+        const b = await syncOk(app, token, { epoch: shop.epoch, cursors });
+        for (const r of b.changes.removed as Array<{ kind: string; row_id: string }>) out.push(`${r.kind}:${r.row_id}`);
+        cursors = b.cursors;
+        if (!b.has_more.catalog && !b.has_more.ledger) return out.sort();
+      }
+    };
+    const key = (t: readonly [string, string]) => `${t[0]}:${t[1]}`;
+    expect(await got(cas.token)).toEqual([tomb.barcode, tomb.alias, tomb.ownEntry, tomb.ownOldEntry, tomb.ownBatch].map(key).sort());
+    expect(await got(boss.token)).toEqual(Object.values(tomb).map(key).sort());
+    await app.close();
+  });
+});
+
 describe("收银员推 op", () => {
   it("带进价或任何家用字段的登记被拒 forbidden；只有名称和卖价的 quick 登记成功且 needs_review=true", async () => {
     const shop = await makeLoginShop(tdb);

@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
-import { CostError, INT32, INT64, unitCost, type CostState } from "../src/ledger/cost.ts";
+import { CostError, FEN, INT32, unitCost, type CostState } from "../src/ledger/cost.ts";
 import { roundDiv } from "../src/ledger/rounddiv.ts";
 import { assertLedger, MemLedger, type Action, type Row } from "../src/ledger/invariants.ts";
 import { CONTRACTS_DIR } from "./helpers/contract.ts";
@@ -37,8 +37,8 @@ function toAction(a: Any, stepRows: number[][]): Action {
 }
 
 describe("cost.json", () => {
-  it("24 组，必过向量 8 组都在", () => {
-    expect(cases.length).toBe(24);
+  it("26 组，必过向量 8 组都在", () => {
+    expect(cases.length).toBe(26);
     expect(cases.filter((c) => c.must_pass).map((c) => c.id)).toEqual(["cost-01", "cost-02", "cost-03", "cost-04", "cost-05", "cost-06", "cost-19", "cost-21"]);
   });
   for (const c of cases) {
@@ -46,6 +46,12 @@ describe("cost.json", () => {
       const l = new MemLedger(toState(c.initial));
       const stepRows: number[][] = [];
       c.steps.forEach((s: Any, i: number) => {
+        if (s.expect.error !== undefined) {
+          // 被拒的一步（§14 S05-4）：抛 CostError，状态和已有流水不变，不占步号以外的任何东西
+          expectRejected(l, toAction(s.action, stepRows));
+          stepRows.push([]);
+          return;
+        }
         const rows = l.apply(toAction(s.action, stepRows));
         stepRows.push(rows);
         const want = s.expect.entries as Any[];
@@ -213,20 +219,21 @@ describe("列范围（stock_qty、qty_delta 是 integer，金额是 bigint）", 
     expect(l.state).toEqual({ q: 1n, v: 999_999_890_000_001n, c: 99_999_999n, k: true });
     // 不加检查时这一步得到 cogs_fen = 9,999,998,900,000,010,000 > 2^63 − 1
     expectRejected(l, { type: "sale", pack_qty: 1n, pack_count: 10_000n, amount_fen: 100n, list_amount_fen: 100n });
-    // 同样越界的扔掉、退货也拒；不越界的卖出照常
+    // 同样越界的扔掉、退货也拒；卖 9,000 个货值约 −9.0e18，存得进 bigint 但超出契约 SignedFen，也拒；不越界的卖出照常
     expectRejected(l, { type: "expire_loss", qty: 10_000n });
     expectRejected(l, { type: "supplier_return", qty: 10_000n });
-    l.apply({ type: "sale", pack_qty: 1n, pack_count: 9_000n, amount_fen: 100n, list_amount_fen: 100n });
+    expectRejected(l, { type: "sale", pack_qty: 1n, pack_count: 9_000n, amount_fen: 100n, list_amount_fen: 100n });
+    l.apply({ type: "sale", pack_qty: 1n, pack_count: 1n, amount_fen: 100n, list_amount_fen: 100n });
     assertLedger(l.initial, l.state, l.rows);
   });
 
-  it("货值恰好 2^63 − 1 收，再多 1 分拒", () => {
+  it("货值恰好 2^53 − 1（契约 SignedFen 上限，比 bigint 列严）收，再多 1 分拒", () => {
     const T = 99_999_999n;
-    const ok = new MemLedger({ q: 1n, v: INT64.max - T, c: 1n, k: true });
+    const ok = new MemLedger({ q: 1n, v: FEN.max - T, c: 1n, k: true });
     ok.apply({ type: "stock_in", pack_qty: 1n, pack_count: 1n, unit_cost_fen: T });
-    expect(ok.state.v).toBe(INT64.max);
+    expect(ok.state.v).toBe(FEN.max);
     assertLedger(ok.initial, ok.state, ok.rows);
-    expectRejected(new MemLedger({ q: 1n, v: INT64.max - T + 1n, c: 1n, k: true }), { type: "stock_in", pack_qty: 1n, pack_count: 1n, unit_cost_fen: T });
+    expectRejected(new MemLedger({ q: 1n, v: FEN.max - T + 1n, c: 1n, k: true }), { type: "stock_in", pack_qty: 1n, pack_count: 1n, unit_cost_fen: T });
   });
 
   it("库存数恰好 2^31 − 1 收，再多 1 个拒；负库存恰好 −2^31 收，再少 1 个拒", () => {
@@ -250,12 +257,12 @@ describe("列范围的性质测试：贴着列上限的状态 + §5.0 上限内�
   const initialNear: fc.Arbitrary<CostState> = fc.oneof(
     near(INT32.min, INT32.max, 30_000_000n).map((q) => ({ q, v: 0n, c: null, k: false })),
     fc
-      .record({ q: fc.oneof(fc.bigInt({ min: 1n, max: 100n }), near(1n, INT32.max, 30_000_000n)), v: near(0n, INT64.max, 10n ** 16n), c: fc.bigInt({ min: 0n, max: 99_999_999n }) })
+      .record({ q: fc.oneof(fc.bigInt({ min: 1n, max: 100n }), near(1n, INT32.max, 30_000_000n)), v: near(0n, FEN.max, 10n ** 15n), c: fc.bigInt({ min: 0n, max: 99_999_999n }) })
       .map(({ q, v, c }) => ({ q, v, c, k: true })),
     fc
       .record({ q: fc.oneof(fc.bigInt({ min: -100n, max: 0n }), near(INT32.min, 0n, 30_000_000n)), f: fc.bigInt({ min: 0n, max: 1_000_000n }) })
       .map(({ q, f }) => {
-        const cmax = q === 0n ? 99_999_999n : INT64.max / -q; // 保证 c 和 q × c 都存得下
+        const cmax = q === 0n ? 99_999_999n : FEN.max / -q; // 保证 c 和 q × c 都存得下
         const c = (cmax * f) / 1_000_000n;
         return { q, v: q * c, c, k: true };
       }),

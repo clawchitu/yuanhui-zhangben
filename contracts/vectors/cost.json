@@ -2254,6 +2254,123 @@
      "calc": "d=0：盘亏盘盈都是 0，照记一条 count，状态不变"
     }
    ]
+  },
+  {
+   "id": "cost-25",
+   "rules": [
+    "5.2-范围"
+   ],
+   "title": "货值恰好到契约 SignedFen 上限 2^53−1 收，再多 1 分拒（状态不变）",
+   "initial": {
+    "q": 1,
+    "v": 9007199154740992,
+    "c": 1,
+    "k": true,
+    "u": 9007199154740992
+   },
+   "steps": [
+    {
+     "action": {
+      "type": "stock_in",
+      "pack_qty": 1,
+      "pack_count": 1,
+      "unit_cost_fen": 99999999
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "stock_in",
+        "qty_delta": 1,
+        "amount_fen": 99999999,
+        "list_amount_fen": 99999999,
+        "cogs_fen": 0,
+        "value_delta_fen": 99999999,
+        "cost_missing": false,
+        "unit_cost_fen": 99999999
+       }
+      ],
+      "state": {
+       "q": 2,
+       "v": 9007199254740991,
+       "c": 99999999,
+       "k": true,
+       "u": 4503599627370496
+      }
+     },
+     "calc": "k 真 q>0：q=2，v=9007199154740992+99999999=9007199254740991=2^53−1，恰好等于上限，收；c=b=99999999；u=roundDiv(9007199254740991,2)=4503599627370496"
+    },
+    {
+     "action": {
+      "type": "stock_in",
+      "pack_qty": 1,
+      "pack_count": 1,
+      "unit_cost_fen": 1
+     },
+     "expect": {
+      "error": "invalid"
+     },
+     "calc": "v 将为 9007199254740992 > 2^53−1（还在 bigint 列范围内，但契约 SignedFen 下发不了）→ 拒 invalid，状态不变"
+    }
+   ]
+  },
+  {
+   "id": "cost-26",
+   "rules": [
+    "5.2-范围"
+   ],
+   "title": "负货值恰好到 −(2^53−1) 收，再卖 1 个拒（Codex 复现的负向越界）",
+   "initial": {
+    "q": -441650590,
+    "v": -9007199234346590,
+    "c": 20394401,
+    "k": true,
+    "u": 20394401
+   },
+   "steps": [
+    {
+     "action": {
+      "type": "sale",
+      "pack_qty": 1,
+      "pack_count": 1,
+      "amount_fen": 0,
+      "list_amount_fen": 0
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "sale",
+        "qty_delta": -1,
+        "amount_fen": 0,
+        "list_amount_fen": 0,
+        "cogs_fen": 20394401,
+        "value_delta_fen": -20394401,
+        "cost_missing": false
+       }
+      ],
+      "state": {
+       "q": -441650591,
+       "v": -9007199254740991,
+       "c": 20394401,
+       "k": true,
+       "u": 20394401
+      }
+     },
+     "calc": "k 真 q≤0：cogs=1×c=20394401，v=-9007199234346590−20394401=-9007199254740991=−(2^53−1)，恰好等于下限，收（9007199254740991=6361×69431×20394401，q=−6361×69431）"
+    },
+    {
+     "action": {
+      "type": "sale",
+      "pack_qty": 1,
+      "pack_count": 1,
+      "amount_fen": 0,
+      "list_amount_fen": 0
+     },
+     "expect": {
+      "error": "invalid"
+     },
+     "calc": "v 将为 -9007199275135392 < −(2^53−1) → 拒 invalid，状态不变"
+    }
+   ]
   }
  ]
 }

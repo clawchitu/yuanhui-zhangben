@@ -4,13 +4,13 @@
 // 注销可以撤回，不是终局，不能用 rejected 表达（手机会当成「没记上」不再重发，撤回后丢账）。被踢设备同样处理。
 //
 // 每个 op 的处理顺序：
-//  0. 存不进库、算不了哈希的 op（\u0000、不成对的代理项、解析不出时间的 occurred_at、payload 嵌套超过 16 层或节点超过 1 万个）
+//  0. 存不进库、算不了哈希的 op（\u0000、不成对的代理项、解析不出时间或年份 0000 的 occurred_at、payload 嵌套超过 16 层或节点超过 1 万个）
 //     → rejected: invalid，不留档（§14 S04-13）。这一步是迭代的，之后的递归处理栈深度有界。
-//     兜底：每个 op 在自己的 savepoint 里处理，Postgres 报数据类错误（SQLSTATE 22xxx）时只回滚这个 op、拒 invalid、不留档，
-//     按 error 级别记日志（预检查漏掉了什么，要人看）。S05 接入记账 op 时要重新定这条兜底（§14 S04-14）。
-//     任何 op 的内容都不许让整个请求 500、连累同批的其他 op。
+//     兜底（§14 S04-14、S05-4 第三层）：每个 op 在自己的 savepoint 里处理。Postgres 报数据类错误（SQLSTATE 22xxx）时，
+//     商品类 op 只回滚这个 op、单个拒 invalid、不留档，不连累同批的其他 op；记账类 op（LEDGER_OPS）预检查之后仍报 22xxx
+//     说明预检查有漏洞，直接抛出、整个请求 500、同批回滚，不留半截账。两种都按 error 级别记日志（要人看）。
 //  1. 按 (store_id, id) 找留档：有 → 内容哈希相同就原样返回当初的结果（replayed: true），不同就 id_conflict（不留档、不应用）。
-//  2. 本段还没实现的 op 类型（卖出、进货、盘点等，S05/S06）→ rejected: invalid，不留档，等实现后重发能正常处理。
+//  2. 还没实现的 op 类型（盘点、补全、处理快过期，S06）→ rejected: invalid，不留档，等实现后重发能正常处理。
 //  3. 手机时钟超前 5 分钟以上 → occurred_at 改成服务器收到的时间，flags.clock_adjusted（§4.4）。
 //  4. 按 permissions.json 判权限（guard.decideOp；被踢设备按 §4.5 的列）。
 //  5. 按 ops.schema.json 校验 payload（§5.0 上限）→ 不过就 rejected: invalid。
@@ -27,6 +27,8 @@ import { identityOf } from "../auth/authenticate.ts";
 import type { Guard } from "../auth/guard.ts";
 import type { Identity } from "../auth/permissions.ts";
 import { applyBarcodeLink, applyBarcodeUnlink, applyProductEdit, applyProductUpsert, type ApplyContext, type Outcome } from "./catalog.ts";
+import { applyOpening, applySaleBatch, applyStockIn } from "../ledger/apply.ts";
+import { applyVoid, voidTargetSale } from "../ledger/void.ts";
 import { STORE_QUEUE_LIMIT, withStoreLock, type StoreTx } from "./lock.ts";
 import { opSchemaValid, type OpType } from "./validate.ts";
 
@@ -71,14 +73,21 @@ export class EpochMismatch extends Error {
   }
 }
 
-type Handler = (tx: StoreTx, ctx: ApplyContext, payload: never) => Promise<Outcome>;
-/** S04 实现的 op 类型；其余在 S05/S06 加进来 */
+type Handler = (tx: StoreTx, ctx: ApplyContext & { opId: string; flags: Record<string, unknown> }, payload: never) => Promise<Outcome>;
+/** 已实现的 op 类型：S04 商品类，S05b 卖出 / 撤销 / 进货 / 期初；其余（盘点、补全、处理快过期）在 S06 加进来（§14 S04-1、S05-6 ⑩） */
 const HANDLERS: Partial<Record<OpType, Handler>> = {
   product_upsert: applyProductUpsert as Handler,
   product_edit: applyProductEdit as Handler,
   barcode_link: applyBarcodeLink as Handler,
   barcode_unlink: applyBarcodeUnlink as Handler,
+  sale_batch: applySaleBatch as Handler,
+  stock_in: applyStockIn as Handler,
+  opening: applyOpening as Handler,
+  void: applyVoid as Handler,
 };
+
+/** 记账类 op：预检查之后写库再出 22xxx 只能是服务器自己错了，整个请求 500，不单个拒收（§14 S04-14、S05-4 第三层） */
+export const LEDGER_OPS: ReadonlySet<OpType> = new Set<OpType>(["sale_batch", "void", "stock_in", "opening", "product_review_complete", "count", "expiry_dispose", "lot_snooze"]);
 
 function canonical(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
@@ -159,7 +168,10 @@ function storablePayload(payload: unknown): boolean {
  */
 export function storable(op: IncomingOp): boolean {
   // 闰秒写法 23:59:60 等：ajv 的 date-time 放行，但解析不出时间
-  if (!Number.isFinite(Date.parse(op.occurred_at))) return false;
+  const t = Date.parse(op.occurred_at);
+  if (!Number.isFinite(t)) return false;
+  // 年份 0000（含带时区偏移、换算成 UTC 落到公元前的）：不是公历年份，ops.occurred_at 存不下（§14 S05-4 第一层），所有 op 类型都判
+  if (op.occurred_at.startsWith("0000") || new Date(t).getUTCFullYear() < 1) return false;
   return storablePayload(op.payload);
 }
 
@@ -193,6 +205,11 @@ async function processOpSafely(log: OpLogger | undefined, ...args: Parameters<ty
     return r;
   } catch (e) {
     const code = (e as { code?: unknown }).code;
+    if (typeof code === "string" && code.startsWith("22") && LEDGER_OPS.has(op.type)) {
+      // 记账类：不回滚成单个拒收（那等于告诉手机「没记上」、不再重发，丢账）。整个请求 500，手机按 id 幂等重发（§14 S04-14）
+      log?.error({ op_id: op.id, op_type: op.type, sqlstate: code, err: (e as Error).message }, "sync：记账 op 预检查后写库仍报数据类错误，整个请求失败");
+      throw e;
+    }
     if (typeof code === "string" && code.startsWith("22")) {
       await sql`ROLLBACK TO SAVEPOINT op`.execute(tx.trx);
       // 预检查本该拦住：走到这里说明有一类输入没想到，或者服务器自己算错了，要人看
@@ -290,6 +307,8 @@ async function processOp(
     revokedAt: device.revokedAt,
     opOccurredAt: occurredAt,
     deletePending: device.deletePending,
+    // 收银员撤销：只认本机、服务器收到那天（上海）的卖出，不信 op 的 occurred_at（§6 第③条）
+    ...(op.type === "void" ? { targetSale: await voidTargetSale(tx, op.payload) } : {}),
   });
   // 注销期间在 pushOps 里整批跳过，到不了这里（§14 S04-2）
   if (!v.ok) return reject("forbidden");
@@ -301,8 +320,15 @@ async function processOp(
   if (v.held) return record({ id: op.id, status: "held" });
   if (device.identity === "revoked") flags.late_from_revoked = true;
 
-  // 7. 应用
-  const out = await handler(tx, { deviceId, now, occurredAt }, op.payload as never);
+  // 7. 应用。先写 ops 这一行（entries.op_id 的外键指向它），应用完再写上结果
+  await record({ id: op.id, status: "applied" });
+  const out = await handler(tx, { deviceId, now, occurredAt, opId: id, flags }, op.payload as never);
   const result: OpResult = { id: op.id, ...out };
-  return record(result, out.status === "rejected" ? out.code : null);
+  await tx.trx
+    .updateTable("ops")
+    .set({ status: result.status, reject_code: out.status === "rejected" ? out.code : null, result: JSON.stringify(result) })
+    .where("store_id", "=", tx.storeId)
+    .where("id", "=", id)
+    .execute();
+  return result;
 }
