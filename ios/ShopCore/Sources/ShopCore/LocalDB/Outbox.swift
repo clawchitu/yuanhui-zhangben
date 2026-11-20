@@ -82,26 +82,43 @@ extension LocalDB {
 
     /// 期初只有「新商品登记第二步」能离线排队（§5.6 第 1、3 条）：不带 `base_ver`；本店 outbox 里有这个商品的
     /// 登记（`product_upsert`，没被拒）；本地基线没有过库存变动（`stock_ver` 为 0 或还没有基线）；本店 outbox 里
-    /// 也没有别的、没被拒的库存增减。否则就是已有商品，排空 outbox 后在线提交。
+    /// 也没有别的、没被拒的**库存类 op**（期初、进货、卖货、盘点、补全、处理快过期）涉及这个商品。否则就是已有商品，
+    /// 排空 outbox 后在线提交。
+    ///
+    /// 看的是 op 本身（类型 + 商品），不看 `outbox_effect`：调用方可以不传增减，数量为 0 的增减也不保存，
+    /// 只看增减会让第二条无版本期初混进队列（Codex 第二轮 P2）。
     static func checkOfflineOpening(_ db: Database, _ o: OpeningPayload, store: UUID) throws {
         let online = invalid("已有商品的期初只能联网提交，不进离线队列（§5.6）")
         guard o.baseVer == nil else { throw online }
         let upserts = try Data.fetchAll(db, sql: """
             SELECT op_json FROM outbox WHERE store_id = ? AND type = 'product_upsert' AND status <> 'rejected'
             """, arguments: [store.uuidString])
-        let registered = upserts.contains { data in
-            let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            return ((obj?["payload"] as? [String: Any])?["product_id"] as? String).flatMap(UUID.init(uuidString:)) == o.productId
-        }
-        guard registered else { throw online }
+        guard upserts.contains(where: { Self.payloadProductIds($0).contains(o.productId) }) else { throw online }
         let ver = try Int64.fetchOne(db, sql: "SELECT stock_ver FROM product_private WHERE product_id = ?",
                                      arguments: [o.productId.uuidString])
         guard (ver ?? 0) == 0 else { throw online }
-        let moved = try Bool.fetchOne(db, sql: """
-            SELECT EXISTS (SELECT 1 FROM outbox_effect e JOIN outbox x ON x.store_id = e.store_id AND x.id = e.op_id
-                           WHERE e.store_id = ? AND e.product_id = ? AND x.status <> 'rejected')
-            """, arguments: [store.uuidString, o.productId.uuidString]) ?? false
-        guard !moved else { throw online }
+        // 本地有这个商品的保质期批次 = 进过货或记过期初
+        let hasLot = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM lot WHERE product_id = ?)",
+                                       arguments: [o.productId.uuidString]) ?? false
+        guard !hasLot else { throw online }
+        let types = Self.stockOpTypes.map { "'\($0.rawValue)'" }.joined(separator: ", ")
+        let history = try Data.fetchAll(db, sql: """
+            SELECT op_json FROM outbox WHERE store_id = ? AND status <> 'rejected' AND type IN (\(types))
+            """, arguments: [store.uuidString])
+        guard !history.contains(where: { Self.payloadProductIds($0).contains(o.productId) }) else { throw online }
+    }
+
+    /// 带商品 id、会动这个商品库存的 op 类型（§4.3）。`void` 撤的那条流水本身已经算在里面；`expiry_dispose`
+    /// 只带批次 id，批次的前提是进过货或记过期初，已由上面的批次检查和这里的 `stock_in` / `opening` 挡住
+    static let stockOpTypes: [OpType] = [.opening, .stockIn, .saleBatch, .count, .productReviewComplete]
+
+    /// op 字节里涉及的商品：`payload.product_id`，以及 `payload.lines[].product_id`（卖货）
+    static func payloadProductIds(_ data: Data) -> Set<UUID> {
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let payload = obj["payload"] as? [String: Any] else { return [] }
+        var ids: [Any?] = [payload["product_id"]]
+        for line in payload["lines"] as? [[String: Any]] ?? [] { ids.append(line["product_id"]) }
+        return Set(ids.compactMap { ($0 as? String).flatMap(UUID.init(uuidString:)) })
     }
 
     /// 当前会话待传的 op，按产生顺序（重启后顺序不变）
@@ -172,6 +189,7 @@ extension LocalDB {
             }
             if let cur = try Self.currentSession(db) { try Self.deleteConfirmedForeignOps(db, current: cur) }
         }
+        try faultHook?(.afterResultsBeforeCompact)
         try compactIfPossible()
     }
 

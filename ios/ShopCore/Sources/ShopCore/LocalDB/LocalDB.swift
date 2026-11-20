@@ -27,6 +27,10 @@ public enum LocalDBFaultPoint: Sendable {
     case afterEntriesBeforeOutbox
     /// 换身份（清投影、换会话）的事务已提交、压缩还没做
     case afterIdentitySwitchBeforeCompact
+    /// 压缩（VACUUM + 截断 WAL）已做成、「待压缩」标记还没清
+    case afterCompactBeforeClearingMark
+    /// `recordResults` 的事务已提交（可能刚记下「待压缩」）、它自己的压缩还没开始
+    case afterResultsBeforeCompact
 }
 
 public enum LocalDBError: Error, Equatable, Sendable {
@@ -167,28 +171,39 @@ public final class LocalDB: Sendable {
         guard try needsCompaction() else { return true }
         for attempt in 0..<Self.compactionAttempts {
             if attempt > 0 { usleep(UInt32(30_000 * attempt)) }
-            if try compactOnce() {
-                // 截断确认做成之后才清标记；在这之前死掉，下次打开会再做一遍（重做无害）
-                try setMeta(.compactPending, nil)
-                return true
-            }
+            if try compactOnce() { return true }
         }
         return false
     }
 
-    /// VACUUM 整理掉空闲页，再把 WAL 并回主文件并截断为 0。GRDB 的 `checkpoint(.truncate)` 在被读者挡住时
-    /// 抛 `SQLITE_BUSY`（`PRAGMA wal_checkpoint` 只在结果行里返回 busy = 1，不报错），这里据此返回 false。
+    /// 在**同一段**串行写访问里：VACUUM 整理掉空闲页，把 WAL 并回主文件并截断为 0，确认做成后清「待压缩」标记。
+    /// 别的线程的写（例如 `recordResults` 删旧进货 op 并记标记）只能排在这一段之前或之后：之前的被这次 VACUUM 覆盖，
+    /// 之后的重新记下标记、由它自己补做，不会被这里误清（Codex 第二轮 P1）。清标记在截断之后：在这之前死掉，
+    /// 下次打开会再做一遍（重做无害）。
+    ///
+    /// GRDB 的 `checkpoint(.truncate)` 在被读者挡住时抛 `SQLITE_BUSY`（`PRAGMA wal_checkpoint` 只在结果行里返回
+    /// busy = 1，不报错），这里据此返回 false，标记保留。
     func compactOnce() throws -> Bool {
         try writer.writeWithoutTransaction { db in
+            guard try Self.compactPending(db) else { return true }
             do {
                 try db.execute(sql: "VACUUM")
-                guard try String.fetchOne(db, sql: "PRAGMA journal_mode") == "wal" else { return true }
-                let r = try db.checkpoint(.truncate)
-                return r.walFrameCount == 0 || r.walFrameCount == r.checkpointedFrameCount
+                if try String.fetchOne(db, sql: "PRAGMA journal_mode") == "wal" {
+                    let r = try db.checkpoint(.truncate)
+                    guard r.walFrameCount == 0 || r.walFrameCount == r.checkpointedFrameCount else { return false }
+                }
             } catch let e as DatabaseError where e.resultCode == .SQLITE_BUSY || e.resultCode == .SQLITE_LOCKED {
                 return false
             }
+            try faultHook?(.afterCompactBeforeClearingMark)
+            try db.execute(sql: "DELETE FROM meta WHERE key = ?", arguments: [MetaKey.compactPending.rawValue])
+            return true
         }
+    }
+
+    static func compactPending(_ db: Database) throws -> Bool {
+        try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM meta WHERE key = ?)",
+                          arguments: [MetaKey.compactPending.rawValue]) ?? false
     }
 
     // MARK: - meta

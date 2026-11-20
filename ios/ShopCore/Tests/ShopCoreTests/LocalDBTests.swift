@@ -760,5 +760,102 @@ final class LocalDBTests: XCTestCase {
         XCTAssertInvalid(try db.enqueue(try opening(fresh, 0x56)), "已有库存变动，再来一条期初要联网")
         XCTAssertEqual(try db.pendingOps().map(\.type), [.productUpsert, .opening])
     }
-}
 
+    /// 历史期初看 op 本身，不看增减：数量为 0 的期初（增减为 0 不保存）、省略 effects 的期初、省略 effects 的进货，
+    /// 之后再来一条无版本期初都要联网（Codex 第二轮 P2）。被拒的不算
+    func testOpeningHistoryJudgedByOpsNotEffects() throws {
+        let db = try open()
+        try db.beginSession(session(.family, device: 1))
+        try DemoSeed.install(into: db)
+        func register(_ pid: UUID, _ barcode: String) throws {
+            try db.enqueue(Op(payload: try ProductUpsertPayload.full(productId: pid, barcode: barcode, name: "新商品",
+                                                                     priceFen: Fen(500), baseUnit: "个")))
+        }
+        func opening(_ pid: UUID, _ n: Int, qty: Int64) throws -> Op {
+            Op(id: uuid(0x5100 + n), payload: try OpeningPayload(entryId: uuid(0x5200 + n), productId: pid, countedQty: qty))
+        }
+
+        let zero = uuid(0x5B)
+        try register(zero, "6900000000987")
+        try db.enqueue(try opening(zero, 1, qty: 0), effects: [StockEffect(productId: zero, qtyDelta: 0)])
+        XCTAssertInvalid(try db.enqueue(try opening(zero, 2, qty: 5)), "数量为 0 的期初也是一次期初")
+
+        let omitted = uuid(0x5C)
+        try register(omitted, "6900000000970")
+        try db.enqueue(try opening(omitted, 3, qty: 7))   // 省略 effects
+        XCTAssertInvalid(try db.enqueue(try opening(omitted, 4, qty: 7)), "省略 effects 的期初也算")
+
+        let stocked = uuid(0x5D)
+        try register(stocked, "6900000000963")
+        try db.enqueue(Op(payload: try StockInPayload(entryId: uuid(0x5301), productId: stocked, barcode: "6900000000963",
+                                                      packQty: 1, packCount: 3, unitCostFen: Fen(100))))
+        XCTAssertInvalid(try db.enqueue(try opening(stocked, 5, qty: 3)), "进过货（省略 effects）就不是新商品")
+
+        // 被拒的期初不算：重新数一次可以离线排队
+        let rejected = uuid(0x5E)
+        try register(rejected, "6900000000956")
+        try db.enqueue(try opening(rejected, 6, qty: 0))
+        try db.recordResults([try OpResult(id: uuid(0x5106), status: .rejected, code: "stale")], storeId: Self.familyStore)
+        try db.enqueue(try opening(rejected, 7, qty: 2))
+
+        XCTAssertEqual(try db.pendingOps().filter { $0.type == .opening }.map(\.id), [uuid(0x5101), uuid(0x5103), uuid(0x5107)])
+    }
+
+    // MARK: - 压缩标记的并发（Codex 第二轮 P1）
+
+    final class Interleave: @unchecked Sendable {
+        let lock = NSLock()
+        var armed = false
+        var errors: [Error] = []
+        let bCommitted = DispatchSemaphore(value: 0)
+        let aDone = DispatchSemaphore(value: 0)
+        let bDone = DispatchSemaphore(value: 0)
+        var db: LocalDB?
+        func take() -> Bool { lock.withLock { defer { armed = false }; return armed } }
+        func fail(_ e: Error) { lock.withLock { errors.append(e) } }
+    }
+
+    /// 线程 A 压缩做成、还没清标记时，线程 B 的 `recordResults` 删掉旧会话带进价的进货 op 并记标记，
+    /// 且 B 在 A 清完之后才查标记：B 的压缩请求不能被 A 清掉，最后标记清掉时文件里也扫不到进价。
+    /// 旧代码（截断与清标记分两段写访问）上 B 会提交在 A 清标记之前、查标记在之后，跳过压缩，文件里留着进价。
+    func testCompactionMarkNotLostWhenResultsInterleave() throws {
+        let box = Interleave()
+        let db = try open { point in
+            switch point {
+            case .afterCompactBeforeClearingMark:
+                guard box.take(), let db = box.db else { return }
+                DispatchQueue.global().async {
+                    do {
+                        try db.recordResults([try OpResult(id: uuid(0xC2), status: .applied)], storeId: Self.familyStore)
+                    } catch { box.fail(error) }
+                    box.bDone.signal()
+                }
+                // 新代码里 B 被写队列挡住，这里等满 1 秒后照常清标记；旧代码里 B 立刻提交
+                _ = box.bCommitted.wait(timeout: .now() + 1)
+            case .afterResultsBeforeCompact:
+                box.bCommitted.signal()
+                // B 查标记一定排在 A 清完之后
+                _ = box.aDone.wait(timeout: .now() + 10)
+            default: return
+            }
+        }
+        box.db = db
+        try db.beginSession(session(.family, device: 1))
+        try db.applyBaseline(try baselineWithMarker())
+        try stockInWithMarker(db, opId: uuid(0xC2))
+        try db.beginSession(session(.cashier, device: 2))
+        XCTAssertFalse(try db.needsCompaction())
+        XCTAssertTrue(try fileContainsMarker(), "对照：未确认的旧进货 op 还在")
+
+        try db.setMeta(.compactPending, "1")   // 有一次待做的压缩（例如上次被读事务挡住）
+        box.lock.withLock { box.armed = true }
+        try db.compactIfNeeded()               // 线程 A
+        box.aDone.signal()
+        XCTAssertEqual(box.bDone.wait(timeout: .now() + 20), .success)
+        XCTAssertTrue(box.errors.isEmpty, "\(box.errors)")
+
+        XCTAssertEqual(try db.allOutbox().count, 0, "旧会话的进货 op 拿到结果就删")
+        XCTAssertFalse(try db.needsCompaction())
+        XCTAssertFalse(try fileContainsMarker(), "B 的压缩请求没被 A 清掉")
+    }
+}
