@@ -31,3 +31,5 @@
 scripts/merge-pr.sh <PR号> --dry-run   # 只检查
 scripts/merge-pr.sh <PR号>             # 检查通过后 squash 合并
 ```
+
+<!-- S00 示例 PR：只改文档 -->
