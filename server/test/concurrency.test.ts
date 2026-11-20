@@ -4,7 +4,8 @@ import type { FastifyInstance } from "fastify";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
-import { bearer, login, makeApp, makeLoginShop, PASSWORD } from "./helpers/auth.ts";
+import { bearer, errorLog, login, makeApp, makeLoginShop, PASSWORD } from "./helpers/auth.ts";
+import { createDb } from "../src/db.ts";
 import { verifyPassword } from "../src/auth/password.ts";
 
 let tdb: TestDb;
@@ -88,7 +89,8 @@ describe("并发登录（§14 S03-3）", () => {
 
   it("20 个错密码 + 1 个对密码同时发：结束后账号是锁定的；对的那个只有赶在锁生效前才拿到令牌", async () => {
     const shop = await makeLoginShop(tdb);
-    const app = makeApp(tdb);
+    const log = errorLog();
+    const app = makeApp(tdb, { logStream: log.stream });
     const rightId = randomUUID();
     const reqs = [
       ...Array.from({ length: 20 }, (_, i) => loginReq(shop.username, `wrong-${i}`)),
@@ -98,7 +100,7 @@ describe("并发登录（§14 S03-3）", () => {
     await app.close();
     const wrong = rs.slice(0, 20).map((r) => r.statusCode);
     const right = rs[20]!;
-    expect(wrong.every((c) => c === 401 || c === 423), wrong.join(",")).toBe(true);
+    expect(wrong.every((c) => c === 401 || c === 423), wrong.join(",") + log).toBe(true);
     const acct = await accountRow(shop.accountId);
     // 锁一定在，没被正确密码清掉
     expect(acct.locked_until).not.toBeNull();
@@ -113,6 +115,30 @@ describe("并发登录（§14 S03-3）", () => {
       expect([right.statusCode, right.json().code]).toEqual([423, "locked"]);
       expect(dev).toBeUndefined();
       expect(wrong.filter((c) => c === 401)).toHaveLength(4);
+    }
+  });
+
+  it("一大批登录同时到、连接池是冷的：新连接不会因为 argon2 占满线程池而超时（§14 T2，不报 500）", async () => {
+    // CI 上 3 个 500 的根因：新建连接的 SCRAM 认证（WebCrypto PBKDF2）和 argon2 共用 libuv 线程池，
+    // 排在整批 argon2 后面，超过 connectionTimeoutMillis。本机 trust 认证不走 SCRAM，这条只在要口令的库（CI）上有区分力；
+    // 不依赖认证方式的那条在 password.test.ts。
+    const shop = await makeLoginShop(tdb);
+    const cold = createDb({ connectionString: process.env.DATABASE_URL!, searchPath: tdb.schema, max: 4, connectionTimeoutMillis: 1000 });
+    try {
+      await cold.pool.query("select 1"); // 池里只有 1 条现成的连接，其余要现建
+      const log = errorLog();
+      const app = makeApp(tdb, { db: cold, logStream: log.stream, rateLimits: { login: { limit: 1000, windowMs: 60_000 } } });
+      const rs = await Promise.all(
+        [...Array.from({ length: 100 }, (_, i) => loginReq(shop.username, `wrong-${i}`)), loginReq(shop.username, PASSWORD)].map((q) =>
+          app.inject(q),
+        ),
+      );
+      await app.close();
+      const codes = rs.map((r) => r.statusCode);
+      expect(codes.filter((c) => c >= 500), codes.join(",") + log).toEqual([]);
+      expect(log.lines).toEqual([]);
+    } finally {
+      await cold.close();
     }
   });
 });
