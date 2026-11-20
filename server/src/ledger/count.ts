@@ -5,6 +5,7 @@ import { resolveProductId } from "../sync/aliases.ts";
 import type { StoreTx } from "../sync/lock.ts";
 import type { Outcome } from "../sync/catalog.ts";
 import { count } from "./cost.ts";
+import { deductLots } from "./lots.ts";
 import { bad, entryFree, guarded, loadProduct, staleOf, stateOf, writeStep, type LedgerContext } from "./apply.ts";
 
 interface CountPayload {
@@ -23,5 +24,7 @@ export async function applyCount(tx: StoreTx, ctx: LedgerContext, p: CountPayloa
     await entryFree(tx, p.entry_id);
     const step = count<string>(stateOf(prod), BigInt(p.counted_qty));
     await writeStep(tx, ctx, prod, { id: p.entry_id, unitName: prod.base_unit }, step, { counted: true });
+    // 盘亏按到期日扣批次（§5.4）；盘盈不动批次
+    await deductLots(tx, prod.id, p.entry_id, -Number(step.entries[0]!.qty_delta));
   });
 }

@@ -31,6 +31,7 @@ import { applyOpening, applySaleBatch, applyStockIn } from "../ledger/apply.ts";
 import { applyVoid, voidTargetSale } from "../ledger/void.ts";
 import { applyCount } from "../ledger/count.ts";
 import { applyReviewComplete } from "../ledger/costfix.ts";
+import { applyExpiryDispose, applyLotSnooze } from "../ledger/lots.ts";
 import { STORE_QUEUE_LIMIT, withStoreLock, type StoreTx } from "./lock.ts";
 import { opSchemaValid, type OpType } from "./validate.ts";
 
@@ -76,7 +77,7 @@ export class EpochMismatch extends Error {
 }
 
 type Handler = (tx: StoreTx, ctx: ApplyContext & { opId: string; flags: Record<string, unknown> }, payload: never) => Promise<Outcome>;
-/** 已实现的 op 类型：S04 商品类，S05b 卖出 / 撤销 / 进货 / 期初；其余（盘点、补全、处理快过期）在 S06 加进来（§14 S04-1、S05-6 ⑩） */
+/** 已实现的 op 类型：S04 商品类，S05b 卖出 / 撤销 / 进货 / 期初；S06 加了盘点、补全、处理快过期（过渡分支在 S06 合并前删）（§14 S04-1、S05-6 ⑩） */
 const HANDLERS: Partial<Record<OpType, Handler>> = {
   product_upsert: applyProductUpsert as Handler,
   product_edit: applyProductEdit as Handler,
@@ -88,6 +89,8 @@ const HANDLERS: Partial<Record<OpType, Handler>> = {
   void: applyVoid as Handler,
   count: applyCount as Handler,
   product_review_complete: applyReviewComplete as Handler,
+  expiry_dispose: applyExpiryDispose as Handler,
+  lot_snooze: applyLotSnooze as Handler,
 };
 
 /** 记账类 op：预检查之后写库再出 22xxx 只能是服务器自己错了，整个请求 500，不单个拒收（§14 S04-14、S05-4 第三层） */

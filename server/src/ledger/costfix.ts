@@ -6,6 +6,7 @@ import { Remap, resolveProductId } from "../sync/aliases.ts";
 import type { StoreTx } from "../sync/lock.ts";
 import type { Outcome } from "../sync/catalog.ts";
 import { opening } from "./cost.ts";
+import { createLot } from "./lots.ts";
 import { bad, entryFree, guarded, loadProduct, missingSales, staleOf, stateOf, writeStep, type LedgerContext } from "./apply.ts";
 
 interface ReviewCompletePayload {
@@ -36,5 +37,7 @@ export async function applyReviewComplete(tx: StoreTx, ctx: LedgerContext, p: Re
       .where("store_id", "=", tx.storeId)
       .where("id", "=", prod.id)
       .execute();
+    // 补全是一次期初：管保质期的商品生成一个批次（补全不带到期日，expiry_date = null；保质期设置以这次带的为准）
+    await createLot(tx, { ...prod, track_expiry: p.track_expiry ?? prod.track_expiry }, p.entry_id, p.counted_qty, null);
   });
 }

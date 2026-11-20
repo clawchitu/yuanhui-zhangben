@@ -10,6 +10,7 @@ import type { StoreTx } from "../sync/lock.ts";
 import { Remap } from "../sync/aliases.ts";
 import type { Outcome } from "../sync/catalog.ts";
 import { VOIDABLE, voidEntry, type Draft, type EntryType } from "./cost.ts";
+import { onVoid } from "./lots.ts";
 import { bad, guarded, loadProduct, stateOf, writeStep, type LedgerContext } from "./apply.ts";
 
 type EntryRow = Selectable<Database["entries"]>;
@@ -83,6 +84,7 @@ async function voidOne(tx: StoreTx, ctx: LedgerContext, e: EntryRow) {
     .where("store_id", "=", tx.storeId)
     .where("id", "=", e.id)
     .execute();
+  await onVoid(tx, ctx, e);
 }
 
 export async function applyVoid(tx: StoreTx, ctx: LedgerContext, p: VoidPayload): Promise<Outcome> {

@@ -12,6 +12,7 @@ import { Remap, resolveProductId } from "../sync/aliases.ts";
 import { DEFAULT_BASE_UNIT, type ApplyContext, type Outcome } from "../sync/catalog.ts";
 import { allocate, AllocationError, LIMITS } from "./allocation.ts";
 import { CostError, opening, sale, stockIn, type CostState, type MissingSale, type Step } from "./cost.ts";
+import { createLot, deductLots } from "./lots.ts";
 
 export interface LedgerContext extends ApplyContext {
   opId: string;
@@ -217,6 +218,7 @@ export async function applyStockIn(tx: StoreTx, ctx: LedgerContext, p: StockInPa
       packCount: p.pack_count,
       expiryDate: p.expiry_date ?? null,
     }, step);
+    await createLot(tx, prod, p.entry_id, Number(n), p.expiry_date ?? null);
   });
 }
 
@@ -247,6 +249,8 @@ export async function applyOpening(tx: StoreTx, ctx: LedgerContext, p: OpeningPa
     const b = p.unit_cost_fen === undefined ? null : BigInt(p.unit_cost_fen);
     const step = opening(stateOf(prod), BigInt(p.counted_qty), b, await missingSales(tx, prod.id));
     await writeStep(tx, ctx, prod, { id: p.entry_id, unitName: prod.base_unit, expiryDate: p.expiry_date ?? null }, step, { counted: true });
+    // 期初生成一个批次（数量 = 数到的数），不扣已有批次（§5.4；批次之和不强求等于库存）
+    await createLot(tx, prod, p.entry_id, p.counted_qty, p.expiry_date ?? null);
   });
 }
 
@@ -326,6 +330,7 @@ export async function applySaleBatch(tx: StoreTx, ctx: LedgerContext, p: SaleBat
         packQty: l.pack_qty,
         packCount: l.pack_count,
       }, step);
+      await deductLots(tx, prod.id, l.entry_id, l.pack_qty * l.pack_count);
     }
   });
 }

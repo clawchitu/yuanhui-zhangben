@@ -282,8 +282,8 @@ describe("注销期间", () => {
   });
 });
 
-describe("本段还没实现的 op 类型（§14 S04-1、S05-6 ⑩）", () => {
-  it("过渡分支只对 S05b 的四种记账 op 去掉：sale_batch / stock_in / opening / void 正常入账并留档；S06 已接入的 count / product_review_complete 正常处理（这里版本过时 → stale 并留档）；expiry_dispose / lot_snooze 仍 rejected invalid、不留档", async () => {
+describe("全部 op 类型都已接入（§14 S04-1、S05-6 ⑩）", () => {
+  it("S05b 的四种记账 op 正常入账并留档；S06 的 count / product_review_complete（版本过时 → stale）、expiry_dispose / lot_snooze（批次不存在 → invalid）都正常处理并留档", async () => {
     const shop = await makeLoginShop(tdb);
     const app = makeApp(tdb);
     const boss = await login(app, shop.username);
@@ -303,24 +303,23 @@ describe("本段还没实现的 op 类型（§14 S04-1、S05-6 ⑩）", () => {
     ];
     // 都按 ops.schema.json 写成格式正确的 payload，排除「格式不对才拒」
     const lot = randomUUID();
-    const s06done = [
+    const stale = [
       op("count", { entry_id: randomUUID(), product_id: pid, counted_qty: 1, base_qty: 0, base_ver: 0 }),
       op("product_review_complete", { entry_id: randomUUID(), product_id: pid, unit_cost_fen: 100, counted_qty: 1, base_ver: 0 }),
     ];
-    const s06 = [
+    const lots = [
       op("expiry_dispose", { lot_id: lot, handle_ver: 0, actual_qty: 1, action: "discard", entry_id: randomUUID() }),
       op("lot_snooze", { lot_id: lot, handle_ver: 0, actual_qty: 1, days: 3 }),
     ];
-    const r = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [...ledger, ...s06done, ...s06], pull: false });
+    const r = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [...ledger, ...stale, ...lots], pull: false });
     await app.close();
     expect(r.results).toEqual([
       ...ledger.map((o) => ({ id: o.id, status: "applied" })),
-      ...s06done.map((o) => ({ id: o.id, status: "rejected", code: "stale", current: expect.objectContaining({ stock_qty: expect.any(Number), stock_ver: expect.any(Number) }) })),
-      ...s06.map((o) => ({ id: o.id, status: "rejected", code: "invalid" })),
+      ...stale.map((o) => ({ id: o.id, status: "rejected", code: "stale", current: expect.objectContaining({ stock_qty: expect.any(Number), stock_ver: expect.any(Number) }) })),
+      ...lots.map((o) => ({ id: o.id, status: "rejected", code: "invalid" })),
     ]);
     const logged = new Set((await opsOf(shop.storeId)).map((o) => o.id));
-    for (const o of [...ledger, ...s06done]) expect(logged.has(o.id)).toBe(true);
-    for (const o of s06) expect(logged.has(o.id)).toBe(false);
+    for (const o of [...ledger, ...stale, ...lots]) expect(logged.has(o.id)).toBe(true);
     const types = await tdb.kysely.selectFrom("entries").select("type").where("store_id", "=", shop.storeId).execute();
     expect(new Set(types.map((t) => t.type))).toEqual(new Set(["opening", "stock_in", "sale", "cost_adjust"]));
   });

@@ -149,7 +149,7 @@ export async function deductLots(tx: StoreTx, productId: string, entryId: string
 /**
  * 撤销一行流水时的批次动作（§5.4 生命周期表）：
  * - 卖出 / 盘亏：按 lot_moves 原样加回；对应批次已关闭的这部分不加回、也不重开。
- * - 来源进货 / 期初：这次生成的批次关闭，closed_reason = voided；已扣过的 lot_moves 保留不动。
+ * - 来源进货 / 期初（不论流水类型，按 source_entry_id 找）：这次生成的批次关闭，closed_reason = voided；已扣过的 lot_moves 保留不动。
  * - 扔掉 / 退货：批次重新打开，qty_left 恢复为处理前的值（存在流水 flags 里）。
  */
 export async function onVoid(tx: StoreTx, ctx: LedgerContext, e: EntryRow) {
@@ -167,7 +167,8 @@ export async function onVoid(tx: StoreTx, ctx: LedgerContext, e: EntryRow) {
         .execute();
     }
   }
-  if (e.type === "stock_in" || e.type === "opening") {
+  {
+    // 来源流水（进货、期初；没填进价的期初可能记成 count）生成的批次
     const src = await lotsOf(tx).select("id").where("source_entry_id", "=", e.id).where("closed_at", "is", null).execute();
     for (const l of src) {
       await tx.trx
