@@ -5,3 +5,4 @@ export function buildApp(): FastifyInstance {
   app.get("/v1/health", async () => ({ ok: true }));
   return app;
 }
+// S00 示例 PR：只改 server/
