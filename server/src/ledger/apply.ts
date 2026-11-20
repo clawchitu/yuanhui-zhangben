@@ -20,7 +20,7 @@ export interface LedgerContext extends ApplyContext {
 }
 
 export class LedgerInvalid extends Error {}
-function bad(msg: string): never {
+export function bad(msg: string): never {
   throw new LedgerInvalid(msg);
 }
 
@@ -32,7 +32,7 @@ const withRemap = (remap: Remap) => {
 };
 
 /** 一个 op 一个内层 savepoint：可预检查的问题回滚这个 op 写过的行，返回 invalid（push.ts 留档） */
-async function guarded(tx: StoreTx, remap: Remap, fn: () => Promise<Outcome | void>): Promise<Outcome> {
+export async function guarded(tx: StoreTx, remap: Remap, fn: () => Promise<Outcome | void>): Promise<Outcome> {
   await sql`SAVEPOINT ledger`.execute(tx.trx);
   try {
     const out = await fn();
@@ -48,16 +48,16 @@ async function guarded(tx: StoreTx, remap: Remap, fn: () => Promise<Outcome | vo
   }
 }
 
-async function loadProduct(tx: StoreTx, id: string) {
+export async function loadProduct(tx: StoreTx, id: string) {
   return tx.trx.selectFrom("products").selectAll().where("store_id", "=", tx.storeId).where("id", "=", id).executeTakeFirst();
 }
 
-function stateOf(p: ProductRow): CostState {
+export function stateOf(p: ProductRow): CostState {
   return { q: BigInt(p.stock_qty), v: BigInt(p.stock_value_fen), c: p.last_cost_fen === null ? null : BigInt(p.last_cost_fen), k: p.cost_known };
 }
 
 /** 等待成本补记的卖出行（§5.2）：cost_missing、未撤销、未补记、不是冲销行，按应用顺序 */
-async function missingSales(tx: StoreTx, pid: string): Promise<MissingSale<string>[]> {
+export async function missingSales(tx: StoreTx, pid: string): Promise<MissingSale<string>[]> {
   const rows = await tx.trx
     .selectFrom("entries")
     .select(["id", "qty_delta", "amount_fen"])
@@ -88,8 +88,11 @@ async function nextSeq(tx: StoreTx): Promise<bigint> {
   return BigInt((r?.m as string | number | null) ?? 0) + 1n;
 }
 
-interface MainRow {
-  id: string;
+export interface MainRow {
+  /** 主流水的 id（op 里给的）；冲销时不给，取新 uuid */
+  id?: string;
+  /** 冲销行照抄原行的商品名快照；不给就用商品现在的名字 */
+  nameSnapshot?: string;
   batchId?: string;
   barcode?: string | null;
   unitName?: string | null;
@@ -99,10 +102,10 @@ interface MainRow {
 }
 
 /** 把 cost.ts 的一步写进 entries（第一条是主流水），再改商品投影 */
-async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRow, main: MainRow, step: Step<string>, o: { counted?: boolean } = {}) {
+export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRow, main: MainRow, step: Step<string>, o: { counted?: boolean } = {}) {
   let seq = await nextSeq(tx);
   for (const [i, d] of step.entries.entries()) {
-    const id = i === 0 ? main.id.toLowerCase() : randomUUID();
+    const id = i === 0 && main.id !== undefined ? main.id.toLowerCase() : randomUUID();
     await tx.trx
       .insertInto("entries")
       .values({
@@ -110,12 +113,12 @@ async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRow, main
         store_id: tx.storeId,
         seq: String(seq++),
         op_id: ctx.opId,
-        batch_id: main.batchId ?? null,
+        batch_id: i === 0 ? (main.batchId ?? null) : null,
         type: d.type,
         reverses_entry_id: "reverses" in d ? (d.reverses as string) : null,
         product_id: prod.id,
         barcode: i === 0 ? (main.barcode ?? null) : null,
-        name_snapshot: prod.name,
+        name_snapshot: i === 0 ? (main.nameSnapshot ?? prod.name) : prod.name,
         unit_name: i === 0 ? (main.unitName ?? null) : null,
         pack_qty: i === 0 ? (main.packQty ?? null) : null,
         pack_count: i === 0 ? (main.packCount ?? null) : null,

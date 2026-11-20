@@ -10,7 +10,7 @@
 //     按 error 级别记日志（预检查漏掉了什么，要人看）。S05 接入记账 op 时要重新定这条兜底（§14 S04-14）。
 //     任何 op 的内容都不许让整个请求 500、连累同批的其他 op。
 //  1. 按 (store_id, id) 找留档：有 → 内容哈希相同就原样返回当初的结果（replayed: true），不同就 id_conflict（不留档、不应用）。
-//  2. 本段还没实现的 op 类型（卖出、进货、盘点等，S05/S06）→ rejected: invalid，不留档，等实现后重发能正常处理。
+//  2. 还没实现的 op 类型（盘点、补全、处理快过期，S06）→ rejected: invalid，不留档，等实现后重发能正常处理。
 //  3. 手机时钟超前 5 分钟以上 → occurred_at 改成服务器收到的时间，flags.clock_adjusted（§4.4）。
 //  4. 按 permissions.json 判权限（guard.decideOp；被踢设备按 §4.5 的列）。
 //  5. 按 ops.schema.json 校验 payload（§5.0 上限）→ 不过就 rejected: invalid。
@@ -28,6 +28,7 @@ import type { Guard } from "../auth/guard.ts";
 import type { Identity } from "../auth/permissions.ts";
 import { applyBarcodeLink, applyBarcodeUnlink, applyProductEdit, applyProductUpsert, type ApplyContext, type Outcome } from "./catalog.ts";
 import { applyOpening, applySaleBatch, applyStockIn } from "../ledger/apply.ts";
+import { applyVoid, voidTargetSale } from "../ledger/void.ts";
 import { STORE_QUEUE_LIMIT, withStoreLock, type StoreTx } from "./lock.ts";
 import { opSchemaValid, type OpType } from "./validate.ts";
 
@@ -73,7 +74,7 @@ export class EpochMismatch extends Error {
 }
 
 type Handler = (tx: StoreTx, ctx: ApplyContext & { opId: string; flags: Record<string, unknown> }, payload: never) => Promise<Outcome>;
-/** 已实现的 op 类型：S04 商品类，S05b 卖出 / 进货 / 期初；其余在 S05b 后续提交（void）和 S06 加进来（§14 S04-1、S05-6 ⑩） */
+/** 已实现的 op 类型：S04 商品类，S05b 卖出 / 撤销 / 进货 / 期初；其余（盘点、补全、处理快过期）在 S06 加进来（§14 S04-1、S05-6 ⑩） */
 const HANDLERS: Partial<Record<OpType, Handler>> = {
   product_upsert: applyProductUpsert as Handler,
   product_edit: applyProductEdit as Handler,
@@ -82,6 +83,7 @@ const HANDLERS: Partial<Record<OpType, Handler>> = {
   sale_batch: applySaleBatch as Handler,
   stock_in: applyStockIn as Handler,
   opening: applyOpening as Handler,
+  void: applyVoid as Handler,
 };
 
 /** 记账类 op：预检查之后写库再出 22xxx 只能是服务器自己错了，整个请求 500，不单个拒收（§14 S04-14、S05-4 第三层） */
@@ -302,6 +304,8 @@ async function processOp(
     revokedAt: device.revokedAt,
     opOccurredAt: occurredAt,
     deletePending: device.deletePending,
+    // 收银员撤销：只认本机、服务器收到那天（上海）的卖出，不信 op 的 occurred_at（§6 第③条）
+    ...(op.type === "void" ? { targetSale: await voidTargetSale(tx, op.payload) } : {}),
   });
   // 注销期间在 pushOps 里整批跳过，到不了这里（§14 S04-2）
   if (!v.ok) return reject("forbidden");
