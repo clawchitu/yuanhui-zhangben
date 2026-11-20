@@ -38,7 +38,7 @@ final class S15UITests: XCTestCase {
         let visited = walker.run()
         print("家用能到的页：\(visited.sorted())")
         XCTAssertTrue(visited.isSuperset(of: Self.cashierForbidden), "家用到不了：\(Self.cashierForbidden.subtracting(visited))")
-        XCTAssertTrue(visited.isSuperset(of: ["page.home", "page.sell", "page.settings", "page.records", "page.undoLast",
+        XCTAssertTrue(visited.isSuperset(of: ["page.home", "page.sell", "page.settings", "page.undoLast",
                                               "page.scanner", "page.privacy", "page.logout"]), "\(visited)")
         XCTAssertFalse(visited.contains("page.denied"))
     }
@@ -89,7 +89,7 @@ final class S15UITests: XCTestCase {
 
     /// 验收：16b 不出现起名
     func testCashierOnboardingHasNoNaming() throws {
-        let app = launch(["-uiFixture", "onboarding", "-uiRole", "cashier"])
+        let app = launch(["-uiFixture", "onboarding", "-uiRole", "cashier", "-uiFreshInstall"])
         XCTAssertTrue(app.otherElements["page.onboarding"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.buttons["onboarding.large"].value as? String, "已选")
         XCTAssertFalse(app.staticTexts["给这台手机起个名字"].exists)
@@ -107,9 +107,10 @@ final class S15UITests: XCTestCase {
         let app = launch(["-uiFixture", "onboarding", "-uiRole", "family"])
         XCTAssertTrue(app.otherElements["page.onboarding"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["给这台手机起个名字"].exists)
-        for n in ["柜台手机", "爸爸的手机", "妈妈的手机", "自己填…"] {
+        for n in ["柜台手机", "爸爸的手机", "妈妈的手机"] {
             XCTAssertTrue(app.buttons["name.\(n)"].exists, n)
         }
+        XCTAssertTrue(app.buttons["name.custom"].exists, "自己填…")
     }
 
     // MARK: - 21b

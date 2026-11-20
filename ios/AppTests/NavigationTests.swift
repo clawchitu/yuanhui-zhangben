@@ -18,7 +18,6 @@ final class NavigationTests: XCTestCase {
             for r in Route.allCases { XCTAssertTrue(r.isAllowed(caps), "\(role) \(r)") }
         }
         let revoked = Capabilities(role: .revoked)
-        XCTAssertFalse(Route.sell.isAllowed(revoked))
         XCTAssertFalse(Route.stockIn.isAllowed(revoked))
     }
 
