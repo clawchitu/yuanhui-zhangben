@@ -78,6 +78,18 @@ schemes:
         - package: ShopCore/ShopCoreTests
     archive:
       config: Release
+  # 只给 scripts/release-check.sh 用：Release 配置构建 App，只跑 ReleaseBuildUITests（§14 S15-4）
+  YuanhuiZhangben-ReleaseCheck:
+    build:
+      targets:
+        YuanhuiZhangben: all
+        YuanhuiZhangbenUITests: [test]
+    test:
+      config: Release
+      environmentVariables:
+        YH_RELEASE_CHECK: "1"
+      targets:
+        - YuanhuiZhangbenUITests
   YuanhuiZhangben-Beta:
     build:
       targets:

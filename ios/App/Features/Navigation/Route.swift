@@ -46,14 +46,14 @@ enum Route: String, Hashable, CaseIterable, Sendable {
     /// 页面根视图的辅助功能标识（UI 测试用它判断「到了哪一页」）
     var pageId: String { "page.\(rawValue)" }
 
-    func title(role: Role) -> String {
+    func title(_ layout: ShellLayout) -> String {
         switch self {
         case .sell: "卖出"
         case .stockIn: "进货"
         case .reports: "看账"
         case .products: "商品"
-        case .settings: role == .cashier ? "设置" : "更多"
-        case .records: role == .cashier ? "我记的账" : "记的账"
+        case .settings: layout == .cashier ? "设置" : "更多"
+        case .records: layout == .cashier ? "我记的账" : "记的账"
         case .undoLast: "撤销"
         case .expiry: "快过期的"
         case .count: "盘点"
@@ -101,16 +101,27 @@ struct RouteView: View {
     @Environment(AppModel.self) private var model
     let route: Route
 
+    /// 这条路由在这些能力下出哪种页面（纯函数，单元测试逐个路由 × 身份测）
+    enum Content: Equatable {
+        case denied, settings, deviceName, placeholder
+    }
+
+    static func content(for route: Route, capabilities: Capabilities) -> Content {
+        guard route.isAllowed(capabilities) else { return .denied }
+        switch route {
+        case .settings: return .settings
+        case .deviceName: return .deviceName
+        default: return .placeholder
+        }
+    }
+
     var body: some View {
         Group {
-            if !route.isAllowed(model.capabilities) {
-                DeniedPage()
-            } else {
-                switch route {
-                case .settings: SettingsView()
-                case .deviceName: DeviceNameView()
-                default: PlaceholderPage(route: route, role: model.role)
-                }
+            switch Self.content(for: route, capabilities: model.capabilities) {
+            case .denied: DeniedPage()
+            case .settings: SettingsView()
+            case .deviceName: DeviceNameView()
+            case .placeholder: PlaceholderPage(route: route, layout: model.layout)
             }
         }
         .toolbar(.hidden, for: .navigationBar)
@@ -122,11 +133,11 @@ struct PlaceholderPage: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model
     let route: Route
-    let role: Role
+    let layout: ShellLayout
 
     var body: some View {
         VStack(spacing: 0) {
-            ModeBar(title: route.title(role: role), mode: route.mode, onBack: { dismiss() })
+            ModeBar(title: route.title(layout), mode: route.mode, onBack: { dismiss() })
             ScrollView {
                 VStack(spacing: 14) {
                     Image(systemName: "hammer")

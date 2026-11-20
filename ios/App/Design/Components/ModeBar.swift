@@ -29,12 +29,12 @@ struct ModeBar: View {
         HStack(spacing: 8) {
             ZStack(alignment: .leading) {
                 back
-                pending.hidden()
+                pending.hidden().accessibilityHidden(true)
             }
             titleText.lineLimit(1).fixedSize()
                 .frame(maxWidth: .infinity)
             ZStack(alignment: .trailing) {
-                back.hidden()
+                back.hidden().accessibilityHidden(true)  // 只占位，读屏和 UI 测试都不该看到第二个返回钮
                 pending
             }
         }
@@ -50,7 +50,7 @@ struct ModeBar: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity)
-                ZStack { back.hidden() }
+                ZStack { back.hidden().accessibilityHidden(true) }
             }
             if showsPending {
                 pending.frame(maxWidth: .infinity, alignment: .trailing).padding(.bottom, 6)

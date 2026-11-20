@@ -53,6 +53,8 @@ struct AppRoot: View {
                 ComponentGallery(page: page)
             case .app(let model, let initialPath):
                 MainView(initialPath: initialPath).environment(model)
+            case .signedOut:
+                SignedOutView()
             case .failed(let message):
                 StartupErrorView(message: message)
             }
@@ -62,21 +64,69 @@ struct AppRoot: View {
     enum Boot {
         case gallery(Int?)
         case app(AppModel, [Route])
+        /// 没有会话（Beta / Release）：「还没登录」占位页，S21 换成登录页
+        case signedOut
         case failed(String)
+    }
+
+    /// 本机正式库所在目录（Application Support）
+    static func storeDirectory() throws -> URL {
+        try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                    appropriateFor: nil, create: true)
     }
 
     @MainActor static func makeBoot(_ args: [String]) -> Boot {
         let screen = UIFixture.screen(from: args)
         if case .gallery(let page) = screen { return .gallery(page) }
         do {
+            #if DEBUG
             if let role = UIFixture.role(from: args) {
-                return .app(try fixtureModel(role: role, screen: screen, args: args), screen == .settings ? [.settings] : [])
+                let initial = (screen == .settings ? [Route.settings] : []) + UIFixture.injectedRoutes(from: args)
+                return .app(try fixtureModel(role: role, screen: screen, args: args), initial)
             }
-            return .app(try liveModel(), [])
+            #endif
+            return try liveBoot(directory: try storeDirectory(), policy: .current)
         } catch {
             return .failed(String(describing: error))
         }
     }
+
+    /// 正常启动（C 阶段还没有登录，S21 接）：打开本机正式库，有会话就进；没有会话按 `policy` 办（§14 S15-4）。
+    @MainActor static func liveBoot(directory: URL, policy: NoSessionPolicy) throws -> Boot {
+        let db = try LocalDB(path: directory.appendingPathComponent(liveDBName).path)
+        if let session = try db.currentSession() {
+            return .app(try liveModel(db: db, session: session), [])
+        }
+        switch policy {
+        case .signedOut:
+            return .signedOut
+        #if DEBUG
+        case .demoSession:
+            // 演示会话放在单独的演示库里，正式库一个字也不写
+            let demo = try LocalDB(path: directory.appendingPathComponent(demoDBName).path)
+            if try demo.currentSession() == nil {
+                try demo.beginSession(try LocalSession(deviceId: UUID(), storeId: DemoSeed.storeId, role: .family,
+                                                       tokenRef: "demo-local", storeName: "元辉烟酒店", deviceLabel: "新手机"))
+                try DemoSeed.install(into: demo)
+            }
+            guard let session = try demo.currentSession() else { throw ShopCoreError.invalid("没有会话") }
+            return .app(try liveModel(db: demo, session: session), [])
+        #endif
+        }
+    }
+
+    /// 本机正式库的文件名（登录后的真账都在这里）
+    static let liveDBName = "zhangben.sqlite"
+
+    @MainActor private static func liveModel(db: LocalDB, session: LocalSession) throws -> AppModel {
+        var figures = HomeFigures()
+        figures.pendingCount = try db.pendingOps().count
+        return AppModel(db: db, session: session, figures: figures)
+    }
+
+    #if DEBUG
+    /// Debug 的演示库，和正式库分开
+    static let demoDBName = "zhangben-demo.sqlite"
 
     /// 夹具：内存库 + 演示数据 + 稿子上的数和时间
     @MainActor static func fixtureModel(role: Role, screen: UIFixture.Screen?, args: [String]) throws -> AppModel {
@@ -101,21 +151,25 @@ struct AppRoot: View {
         return AppModel(db: db, session: session, figures: figures, today: UIFixture.designNow, defaults: defaults,
                         scrollToBottom: UIFixture.value(for: "-uiScrollTo", in: args) == "bottom")
     }
+    #endif
+}
 
-    /// 正常启动（C 阶段还没有登录，S21 接）：打开本机库；还没有会话就开一个家用演示会话并装上演示数据。
-    @MainActor static func liveModel() throws -> AppModel {
-        let dir = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
-                                              appropriateFor: nil, create: true)
-        let db = try LocalDB(path: dir.appendingPathComponent("zhangben.sqlite").path)
-        if try db.currentSession() == nil {
-            try db.beginSession(try LocalSession(deviceId: UUID(), storeId: DemoSeed.storeId, role: .family,
-                                                 tokenRef: "demo-local", storeName: "元辉烟酒店", deviceLabel: "新手机"))
-            try DemoSeed.install(into: db)
-        }
-        guard let session = try db.currentSession() else { throw ShopCoreError.invalid("没有会话") }
-        var figures = HomeFigures()
-        figures.pendingCount = try db.pendingOps().count
-        return AppModel(db: db, session: session, figures: figures)
+/// 本机没有会话时怎么办（§14 S15-4）。
+enum NoSessionPolicy: Equatable {
+    /// Beta / Release：出「还没登录」页，不建会话、不写演示数据
+    case signedOut
+    #if DEBUG
+    /// 只有 Debug 构建有：在单独的演示库里开一个家用演示会话、装上演示数据
+    case demoSession
+    #endif
+
+    /// 当前构建用哪种。非 Debug 构建里根本没有 `demoSession` 这个分支
+    static var current: NoSessionPolicy {
+        #if DEBUG
+        .demoSession
+        #else
+        .signedOut
+        #endif
     }
 }
 
@@ -138,6 +192,26 @@ struct MainView: View {
                     .navigationDestination(for: Route.self) { RouteView(route: $0) }
             }
         }
+    }
+}
+
+/// 没有会话时的中性占位页（Beta / Release）。不建会话、不写演示数据；S21 换成登录页。
+struct SignedOutView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(AppRoot.title).font(TypeScale.title.weight(.bold))
+            Text("还没登录").font(TypeScale.body)
+            Text("这一版还不能登录，请等新版本。")
+                .font(TypeScale.secondary)
+                .foregroundStyle(Tokens.Palette.ink2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(Tokens.Palette.ink)
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Tokens.Palette.paper.ignoresSafeArea())
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("page.signedOut")
     }
 }
 

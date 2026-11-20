@@ -45,6 +45,16 @@ enum HomeReminder: Hashable, Sendable {
     }
 }
 
+/// 首页（01 / 02）、设置页（21a / 21b）和各页标题用哪种版式。所有地方都从 `AppModel.layout` 取，判断依据只有一个：
+/// 有进货能力的是家用版式；没有的（收银员，以及被踢设备）一律收银员版式。
+enum ShellLayout: Equatable, Sendable {
+    case family, cashier
+
+    init(_ capabilities: Capabilities) {
+        self = capabilities.has(.stockIn) ? .family : .cashier
+    }
+}
+
 /// App 的状态：当前会话（角色、店名、手机名）、能力表、首次进入有没有做完。
 @MainActor @Observable
 final class AppModel {
@@ -60,6 +70,8 @@ final class AppModel {
     private let defaults: UserDefaults
 
     var role: Role { session.role }
+    /// 首页 / 设置页的版式（唯一来源）
+    var layout: ShellLayout { ShellLayout(capabilities) }
 
     init(db: LocalDB, session: LocalSession, figures: HomeFigures, today: Date = Date(),
          defaults: UserDefaults = .standard, scrollToBottom: Bool = false) {

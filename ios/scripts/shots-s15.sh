@@ -2,7 +2,8 @@
 # S15 截图：首页（01 / 02 / 24a / 25a）、首次进入（16 / 16b）、设置（21a / 21b），
 # 在 大字 / 标准 / 系统最大辅助字号（大字开 / 关）四种情况下各截一张；最大辅助字号下首页再截一张滚到底的。
 # 用法（在 ios/ 下）：scripts/shots-s15.sh [输出目录]
-# 默认新建一台 iPhone 13 专用模拟器并在结束后删掉；设了 SHOTS_UDID + SHOTS_APP 就用现成的（不删）。
+# 默认新建一台 iPhone 13 专用模拟器并在结束后删掉；设了 SHOTS_UDID + SHOTS_APP 就用现成的（不删，24 小时制要自己先设好）。
+# 拍完用 scripts/compare-s15.py 重做和设计稿的对照图（左稿右实拍）。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out="${1:-../docs/screenshots/s15}"
@@ -16,6 +17,12 @@ else
   dd=$(mktemp -d -t yuanhui-shots15)
   cleanup() { scripts/sim-destroy.sh "$udid"; rm -rf "$dd"; }
   trap cleanup EXIT
+  xcrun simctl boot "$udid"
+  xcrun simctl bootstatus "$udid" -b >/dev/null
+  # 状态栏按 24 小时制显示 19:48（和稿子一样）；改完要重启一次才生效
+  xcrun simctl spawn "$udid" defaults write -g AppleLanguages -array zh-Hans
+  xcrun simctl spawn "$udid" defaults write -g AppleICUForce24HourTime -bool true
+  xcrun simctl shutdown "$udid"
   xcrun simctl boot "$udid"
   xcrun simctl bootstatus "$udid" -b >/dev/null
   xcodebuild build -project YuanhuiZhangben.xcodeproj -scheme YuanhuiZhangben \
@@ -51,3 +58,4 @@ for screen in "home family" "home cashier" "home-unsynced family" "home-unsynced
   esac
 done
 xcrun simctl ui "$udid" content_size large
+/usr/bin/python3 scripts/compare-s15.py "$out"

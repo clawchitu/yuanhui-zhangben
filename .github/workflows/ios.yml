@@ -24,7 +24,7 @@ jobs:
   ios-ci:
     name: ios-ci
     runs-on: [self-hosted, macOS, yuanhui]
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: ios
@@ -38,6 +38,10 @@ jobs:
           udid=$(scripts/sim-create.sh "yuanhui-ci-${{ github.run_id }}-${{ github.run_attempt }}")
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
           echo "DERIVED=$RUNNER_TEMP/yuanhui-dd-${{ github.run_id }}" >> "$GITHUB_ENV"
+      - name: 先启动模拟器（UI 测试和 Release 检查都在同一台上跑，启动好了再开始）
+        run: |
+          xcrun simctl boot "${{ steps.sim.outputs.udid }}"
+          xcrun simctl bootstatus "${{ steps.sim.outputs.udid }}" -b >/dev/null
       - name: xcodebuild test
         run: |
           set -o pipefail
@@ -49,8 +53,13 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             | tee "$RUNNER_TEMP/xcodebuild.log" | grep -E "error:|warning: |Test Case|Executed|\*\* TEST" || true
           grep -q "\*\* TEST SUCCEEDED \*\*" "$RUNNER_TEMP/xcodebuild.log"
+      - name: Release 构建检查（没有演示会话和会话夹具，§14 S15-4）
+        run: |
+          scripts/release-check.sh "${{ steps.sim.outputs.udid }}" "$RUNNER_TEMP/yuanhui-dd-rel-${{ github.run_id }}" \
+            "$DERIVED/Build/Products/Debug-iphonesimulator/YuanhuiZhangben.app/YuanhuiZhangben.debug.dylib"
       - name: 清理自己建的模拟器
         if: always()
         run: |
           scripts/sim-destroy.sh "${{ steps.sim.outputs.udid }}"
           [ -n "${DERIVED:-}" ] && rm -rf "$DERIVED" || true
+          rm -rf "$RUNNER_TEMP/yuanhui-dd-rel-${{ github.run_id }}"

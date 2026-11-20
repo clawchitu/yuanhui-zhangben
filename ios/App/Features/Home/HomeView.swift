@@ -8,7 +8,7 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
 
     private var caps: Capabilities { model.capabilities }
-    private var isCashierLayout: Bool { !caps.has(.stockIn) }
+    private var isCashierLayout: Bool { model.layout == .cashier }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -248,16 +248,10 @@ struct RecentCard: View {
     let cashier: Bool
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 12) {
-                summary
-                Spacer(minLength: 0)
-                undo
-            }
-            VStack(alignment: .leading, spacing: 12) {
-                summary
-                undo
-            }
+        // 稿子 02：左边小字可以换成两行，「记错了」留在右边；左边那行「卖出 3 样 ¥53.00」都放不下（辅助字号）才上下排
+        TrailingAccessoryLayout(spacing: 12) {
+            summary
+            undo
         }
         .padding(.leading, 16)
         .padding(.trailing, 12)
@@ -311,6 +305,55 @@ struct RecentCard: View {
             }
             .buttonStyle(PressDimStyle())
             .accessibilityIdentifier("home.undo")
+        }
+    }
+}
+
+/// 两块横排：第二块（按钮）按自然大小靠右，第一块用剩下的宽度、可以换行；
+/// 第一块在剩下的宽度里放不下（里面有不换行的一行比剩下的宽）时，改成上下排、按钮靠左。
+/// （`ViewThatFits` 按一行的理想宽度判断，小字本可以换行也会被判成放不下，所以自己量。）
+struct TrailingAccessoryLayout: Layout {
+    var spacing: CGFloat = 12
+
+    private func horizontalSizes(width: CGFloat, _ subviews: Subviews) -> (CGSize, CGSize)? {
+        guard subviews.count == 2 else { return nil }
+        let trailing = subviews[1].sizeThatFits(.unspecified)
+        let room = width - trailing.width - spacing
+        guard room > 0 else { return nil }
+        let leading = subviews[0].sizeThatFits(ProposedViewSize(width: room, height: nil))
+        return leading.width <= room + 0.5 ? (leading, trailing) : nil
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let first = subviews.first else { return .zero }
+        guard let width = proposal.width, width.isFinite else {
+            let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+            return CGSize(width: sizes.map(\.width).reduce(0, +) + spacing * CGFloat(sizes.count - 1),
+                          height: sizes.map(\.height).max() ?? 0)
+        }
+        if let (l, t) = horizontalSizes(width: width, subviews) {
+            return CGSize(width: width, height: max(l.height, t.height))
+        }
+        let l = first.sizeThatFits(ProposedViewSize(width: width, height: nil))
+        let rest = subviews.dropFirst().map { $0.sizeThatFits(.unspecified).height }
+        return CGSize(width: width, height: l.height + rest.reduce(0) { $0 + spacing + $1 })
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let first = subviews.first else { return }
+        if let (l, t) = horizontalSizes(width: bounds.width, subviews) {
+            first.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading, proposal: ProposedViewSize(l))
+            subviews[1].place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing, proposal: ProposedViewSize(t))
+            return
+        }
+        let l = first.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+        first.place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: l.height))
+        var y = bounds.minY + l.height
+        for s in subviews.dropFirst() {
+            let size = s.sizeThatFits(.unspecified)
+            y += spacing
+            s.place(at: CGPoint(x: bounds.minX, y: y), proposal: ProposedViewSize(size))
+            y += size.height
         }
     }
 }

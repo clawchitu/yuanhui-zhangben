@@ -9,7 +9,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.largeTextModeKey) private var largeText = true
 
     private var caps: Capabilities { model.capabilities }
-    private var cashier: Bool { model.role == .cashier }
+    private var cashier: Bool { model.layout == .cashier }
 
     static var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
@@ -17,7 +17,7 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ModeBar(title: Route.settings.title(role: model.role), pendingCount: model.figures.pendingCount,
+            ModeBar(title: Route.settings.title(model.layout), pendingCount: model.figures.pendingCount,
                     onBack: { dismiss() })
             ScrollView {
                 VStack(spacing: 12) {
@@ -248,7 +248,7 @@ struct DeviceNameView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ModeBar(title: Route.deviceName.title(role: model.role), onBack: { dismiss() })
+            ModeBar(title: Route.deviceName.title(model.layout), onBack: { dismiss() })
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("家里人看「记的账」时，会看到是哪台手机记的。")
