@@ -283,18 +283,14 @@ describe("注销期间", () => {
 });
 
 describe("本段还没实现的 op 类型", () => {
-  it("sale_batch、stock_in 等（S05/S06）：rejected invalid 且不留档，之后的版本重发时能正常处理", async () => {
+  it("count 等（S06）：rejected invalid 且不留档，之后的版本重发时能正常处理（S05b 起 sale_batch / stock_in / opening 已实现）", async () => {
     const shop = await makeLoginShop(tdb);
     const app = makeApp(tdb);
     const boss = await login(app, shop.username);
-    const sale = op("sale_batch", {
-      batch_id: randomUUID(),
-      paid_total_fen: 300,
-      lines: [{ entry_id: randomUUID(), product_id: randomUUID(), barcode: "690", name: "x", unit_name: "个", pack_qty: 1, pack_count: 1, unit_price_fen: 300 }],
-    });
-    const r = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [sale] });
+    const c = op("count", { entry_id: randomUUID(), product_id: randomUUID(), counted_qty: 1, base_qty: 0, base_ver: 0 });
+    const r = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [c] });
     await app.close();
-    expect(r.results).toEqual([{ id: sale.id, status: "rejected", code: "invalid" }]);
+    expect(r.results).toEqual([{ id: c.id, status: "rejected", code: "invalid" }]);
     expect(await opsOf(shop.storeId)).toEqual([]);
   });
 });

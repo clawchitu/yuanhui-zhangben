@@ -27,6 +27,7 @@ import { identityOf } from "../auth/authenticate.ts";
 import type { Guard } from "../auth/guard.ts";
 import type { Identity } from "../auth/permissions.ts";
 import { applyBarcodeLink, applyBarcodeUnlink, applyProductEdit, applyProductUpsert, type ApplyContext, type Outcome } from "./catalog.ts";
+import { applyOpening, applySaleBatch, applyStockIn } from "../ledger/apply.ts";
 import { STORE_QUEUE_LIMIT, withStoreLock, type StoreTx } from "./lock.ts";
 import { opSchemaValid, type OpType } from "./validate.ts";
 
@@ -71,14 +72,20 @@ export class EpochMismatch extends Error {
   }
 }
 
-type Handler = (tx: StoreTx, ctx: ApplyContext, payload: never) => Promise<Outcome>;
-/** S04 实现的 op 类型；其余在 S05/S06 加进来 */
+type Handler = (tx: StoreTx, ctx: ApplyContext & { opId: string; flags: Record<string, unknown> }, payload: never) => Promise<Outcome>;
+/** 已实现的 op 类型：S04 商品类，S05b 卖出 / 进货 / 期初；其余在 S05b 后续提交（void）和 S06 加进来（§14 S04-1、S05-6 ⑩） */
 const HANDLERS: Partial<Record<OpType, Handler>> = {
   product_upsert: applyProductUpsert as Handler,
   product_edit: applyProductEdit as Handler,
   barcode_link: applyBarcodeLink as Handler,
   barcode_unlink: applyBarcodeUnlink as Handler,
+  sale_batch: applySaleBatch as Handler,
+  stock_in: applyStockIn as Handler,
+  opening: applyOpening as Handler,
 };
+
+/** 记账类 op：预检查之后写库再出 22xxx 只能是服务器自己错了，整个请求 500，不单个拒收（§14 S04-14、S05-4 第三层） */
+export const LEDGER_OPS: ReadonlySet<OpType> = new Set<OpType>(["sale_batch", "void", "stock_in", "opening", "product_review_complete", "count", "expiry_dispose", "lot_snooze"]);
 
 function canonical(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
@@ -193,6 +200,11 @@ async function processOpSafely(log: OpLogger | undefined, ...args: Parameters<ty
     return r;
   } catch (e) {
     const code = (e as { code?: unknown }).code;
+    if (typeof code === "string" && code.startsWith("22") && LEDGER_OPS.has(op.type)) {
+      // 记账类：不回滚成单个拒收（那等于告诉手机「没记上」、不再重发，丢账）。整个请求 500，手机按 id 幂等重发（§14 S04-14）
+      log?.error({ op_id: op.id, op_type: op.type, sqlstate: code, err: (e as Error).message }, "sync：记账 op 预检查后写库仍报数据类错误，整个请求失败");
+      throw e;
+    }
     if (typeof code === "string" && code.startsWith("22")) {
       await sql`ROLLBACK TO SAVEPOINT op`.execute(tx.trx);
       // 预检查本该拦住：走到这里说明有一类输入没想到，或者服务器自己算错了，要人看
@@ -301,8 +313,15 @@ async function processOp(
   if (v.held) return record({ id: op.id, status: "held" });
   if (device.identity === "revoked") flags.late_from_revoked = true;
 
-  // 7. 应用
-  const out = await handler(tx, { deviceId, now, occurredAt }, op.payload as never);
+  // 7. 应用。先写 ops 这一行（entries.op_id 的外键指向它），应用完再写上结果
+  await record({ id: op.id, status: "applied" });
+  const out = await handler(tx, { deviceId, now, occurredAt, opId: id, flags }, op.payload as never);
   const result: OpResult = { id: op.id, ...out };
-  return record(result, out.status === "rejected" ? out.code : null);
+  await tx.trx
+    .updateTable("ops")
+    .set({ status: result.status, reject_code: out.status === "rejected" ? out.code : null, result: JSON.stringify(result) })
+    .where("store_id", "=", tx.storeId)
+    .where("id", "=", id)
+    .execute();
+  return result;
 }

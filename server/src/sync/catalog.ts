@@ -15,7 +15,7 @@ export interface ApplyContext {
 
 export type Outcome =
   | { status: "applied"; remap?: Record<string, string> }
-  | { status: "rejected"; code: "invalid"; remap?: Record<string, string> };
+  | { status: "rejected"; code: "invalid" | "stale"; remap?: Record<string, string>; current?: Record<string, unknown> };
 
 const applied = (remap: Remap): Outcome => ({ status: "applied", ...withRemap(remap) });
 const invalid = (remap: Remap): Outcome => ({ status: "rejected", code: "invalid", ...withRemap(remap) });
