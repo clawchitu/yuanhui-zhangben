@@ -1,6 +1,6 @@
 # 元辉账本 开发计划 v2（2026-11-20）
 
-本文件取代 `design/plan.md`（11/16 旧版，只留作历史参考）。11/20 已按 Codex 的评审意见修订，逐条处理见 §13。决策来源按优先级：11/20 最新决定 > README「11/19 新增决策」> review-1119.md / review-1119-mockups.md / changes-1119.md > README 11/16。设计稿以 `design/png/` 下 53 张为准（总览 `overview.png`）。
+本文件取代 `design/plan.md`（11/16 旧版，只留作历史参考）。11/20 已按 Codex 的评审意见修订，逐条处理见 §13；S01 执行者提出的 14 条疑问的裁定见 §14。决策来源按优先级：11/20 最新决定 > README「11/19 新增决策」> review-1119.md / review-1119-mockups.md / changes-1119.md > README 11/16。设计稿以 `design/png/` 下 53 张为准（总览 `overview.png`）。
 
 执行者须知（每段开工前读）：
 - 每段是一个 PR，只读本段「要读」列出的章节和设计稿，不要通读全部 53 张。
@@ -215,7 +215,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 - **两条独立的流，各有游标**：`catalog`（商品、条码、墓碑）和 `ledger`（流水、批次头、保质期批次）。每页 500 行，`has_more` 为真就继续拉。
 - **首次同步（review 四-4）**：先把 `catalog` 拉到底就进首页、可以开始卖；`ledger` 和图片在后台继续，图片不占同步队列、不阻塞扫码。拉取期间别的手机继续记账没有关系：新改的行序号更大，排在后面，不会漏。
 - **结果可重放**：服务器把每个 op 的结果（应用 / 拒绝及原因 / 暂存 / remap）存在 `ops.result`。重发同一个 id，返回当初的结果并带 `replayed: true`，不返回笼统的「重复」。同一个 id 但 payload 哈希不同 → 拒 `id_conflict`，不应用。
-- **epoch 握手**：请求带手机记着的 `epoch`。与服务器不一致时，服务器**不应用**这次请求里的任何 op，只返回 `epoch_mismatch` 和新 epoch，手机按 §4.6 处理后再发。
+- **epoch 握手**：请求带手机记着的 `epoch`，必填、不允许为空；手机的第一个 `epoch` 来自登录或兑码的响应（§7）。与服务器不一致时，服务器**不应用**这次请求里的任何 op，只返回 `epoch_mismatch` 和新 epoch，手机按 §4.6 处理后再发。
 - **按角色裁剪**（在 `sync/projection.ts` 一处实现）：收银员拿不到 `product_private` 里的任何字段、任何进货/盘点/损耗流水、别的手机的流水、保质期批次、`cogs_fen`/`value_delta_fen`/`unit_cost_fen`。响应 JSON 里**不出现这些键**，不是置空。
 - 触发时机：每次写入后、网络恢复、回到前台、打开期间每 15 秒。右上角常驻状态「已同步 / N 笔待传」。outbox 里有超过 24 小时的 → 首页提醒条（25a）；与快过期黄条同时存在时两条都显示，没同步的在上。
 
@@ -225,12 +225,12 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 |---|---|---|
 | `sale_batch` | `batch_id, paid_total_fen, lines[{entry_id, product_id, barcode, name, unit_name, pack_qty, pack_count, unit_price_fen}]`；原价由服务器按行算，优惠分摊由服务器算 | 家用、收银员 |
 | `void` | `target: {batch_id}` 或 `{entry_id}` | 家用：任意；收银员：仅本机的卖出，且原卖出的日期 = 服务器收到撤销那天（§6） |
-| `product_upsert` | `product_id, barcode, name, price_fen, base_unit, quick: bool`；家用号可带 `track_expiry, expiry_warn_days, shelf_life_months, low_at` | 家用；收银员只能 `quick=true`（只有名称和卖价，服务器强制 `needs_review=true`，带了别的字段就拒） |
-| `product_edit` | `product_id` + 要改的字段（名称、卖价、`low_at`、保质期设置、停用）；逐字段后写者赢 | 家用 |
+| `product_upsert` | `product_id, barcode, name, price_fen, quick: bool`；`quick=false` 时必带 `base_unit`，还可带 `track_expiry, expiry_warn_days, shelf_life_months, low_at`；`quick=true` 时**不带** `base_unit`，服务器默认「个」 | 家用；收银员只能 `quick=true`（只有名称和卖价，服务器强制 `needs_review=true`，带了别的字段就拒） |
+| `product_edit` | `product_id` + 要改的字段（名称、卖价、基本单位、`low_at`、保质期设置、停用）；逐字段后写者赢 | 家用 |
 | `barcode_link` / `barcode_unlink` | `barcode, product_id, pack_qty, unit_name, pack_price_fen`（单件码不带价，§3.2） | 家用 |
 | `stock_in` | `entry_id, product_id, barcode, pack_qty, pack_count, unit_cost_fen, expiry_date?` | 家用 |
 | `opening` | `entry_id, product_id, counted_qty, unit_cost_fen?, expiry_date?, base_ver?`（新商品第二步「货架上现在有几个」） | 家用 |
-| `product_review_complete` | `product_id, unit_cost_fen, counted_qty, base_ver, 保质期设置?`（22b 待确认补全）→ 记一条 `opening` 流水，清 `needs_review` | 家用，**只能联网提交**（§5.6） |
+| `product_review_complete` | `entry_id, product_id, unit_cost_fen（必填，可为 0）, counted_qty, base_ver, 保质期设置?`（22b 待确认补全；`entry_id` 是它生成的那条 `opening` 流水的 id）→ 记一条 `opening` 流水，清 `needs_review` | 家用，**只能联网提交**（§5.6） |
 | `count` | `entry_id, product_id, counted_qty, base_qty, base_ver` | 家用，**只能联网提交**（§5.6） |
 | `expiry_dispose` | `lot_id, handle_ver, actual_qty, action: sold_out\|discard\|return, entry_id` | 家用 |
 | `lot_snooze` | `lot_id, handle_ver, actual_qty, days` | 家用 |
@@ -263,8 +263,8 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 | op | 处理 |
 |---|---|
-| `sale_batch`，以及这笔卖出用到的 `quick` 登记 | `occurred_at <= revoked_at` → 直接入账，打 `flags.late_from_revoked`，在「记的账」里带小标记 |
-| 其他类型（进货、期初、盘点、撤销、改商品、处理快过期） | `occurred_at <= revoked_at` → **不直接入账**，记为 `held`。当前的家用手机在「已登录的手机」里看到「『某手机』被退出前还有 N 笔别的账」，逐笔「记上 / 不要」（用 26 号通用确认面板）。盘点、期初这类依赖当时账面数的，确认时版本已变就只能丢弃，提示重新盘 |
+| `sale_batch`，以及 `quick` 的 `product_upsert`（不必证明它被哪笔卖出用到：它只会新建一个待确认商品，条码已存在时什么都不改） | `occurred_at <= revoked_at` → 直接入账，打 `flags.late_from_revoked`，在「记的账」里带小标记 |
+| 其他类型（非 `quick` 的登记、进货、期初、盘点、撤销、改商品、整件码、处理快过期） | `occurred_at <= revoked_at` → **不直接入账**，记为 `held`。当前的家用手机在「已登录的手机」里看到「『某手机』被退出前还有 N 笔别的账」，逐笔「记上 / 不要」（用 26 号通用确认面板）。盘点、期初这类依赖当时账面数的，确认时版本已变就只能丢弃，提示重新盘 |
 | `occurred_at > revoked_at` 的任何 op | 拒收 |
 
 - 补传窗口：被踢后 30 天。说明：`occurred_at` 是手机填的，服务器无法证明它的真假；窗口和暂存的作用是把最坏情况限制在「多出几笔带标记、看得见、可以撤的卖出」，不是可信的时间证明。
@@ -277,7 +277,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 - 手机上已确认的 op 保留 14 天。
 - 恢复后运维给店铺换新 `epoch`。手机下一次同步得到 `epoch_mismatch`：丢弃投影和游标 → 重新全量拉取 → 把保留的 op 全部重新标为待传 → 正常同步。服务器上还在的 op 按 id 幂等跳过，丢了的重新入账。
-- 讲清楚的限制：① 重传的先后顺序可能与原来不同，平均进价和个别流水的成本可能与恢复前差几分钱；② 备份之后才开通的设备，令牌在恢复后的库里不存在，无法认证。这类设备要重新开通，然后由运维临时打开「恢复模式」，设备通过 `POST /v1/recovery/import` 用新令牌补交保留的 op（按原 id 幂等，打 `flags.recovered`）。恢复模式平时关闭，步骤写进 runbook。
+- 讲清楚的限制：① 重传的先后顺序可能与原来不同，平均进价和个别流水的成本可能与恢复前差几分钱；② 备份之后才开通的设备，令牌在恢复后的库里不存在，无法认证。这类设备要重新开通，然后由运维临时打开「恢复模式」，设备（家用或收银员）通过 `POST /v1/recovery/import` 用新令牌补交保留的 op（按原 id 幂等，打 `flags.recovered`）。恢复模式平时关闭，步骤写进 runbook。
 
 ---
 
@@ -289,7 +289,12 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 - 金额是 64 位有符号整数（分）。服务器上凡是金额相乘的中间运算一律用 `BigInt`；手机只做两种乘法（优惠分摊、进货页的预计平均），用带溢出检查的 `Int64` 乘法，溢出按无效输入处理。JSON 里金额和数量都是整数，不带小数点、不用字符串。
 - `roundDiv(a, b)`（`b > 0`）：四舍五入到整数，恰好一半时远离零；对负数对称，`roundDiv(−a, b) = −roundDiv(a, b)`。本节所有「除」都指它。
-- 服务器校验的上限（超出拒 `invalid`，手机端输入框同样限制）：单价和单行金额 ≤ 99,999,999 分；件数 ≤ 99,999；`pack_qty` ≤ 9,999；一笔卖出 ≤ 200 行；数量和金额不为负。在这些上限内，JSON 数字不超过 2^53，分摊的中间乘积不超过 2^63。
+- 服务器校验的上限（超出拒 `invalid`，手机端输入框同样限制）：
+  - 单价、进货的每件单价、单行金额（单价 × 件数；进货是件数 × 每件单价，即进货总价）≤ 99,999,999 分；
+  - 一笔卖出的实收 `paid_total_fen` ≤ 19,999,999,800 分（= 200 行 × 单行上限；多收也不能超过它）；
+  - 件数 `pack_count` ≤ 99,999；`pack_qty` ≤ 9,999；**基本单位数量**（件数 × 换算、盘点数、期初数、处理快过期时的实际数、扔掉和退货的数量）≤ 9,999,999；`base_qty`（账面数，可以为负）绝对值 ≤ 9,999,999；
+  - 一笔卖出 ≤ 200 行；除 `base_qty` 外数量和金额不为负。
+  - 在这些上限内，JSON 数字不超过 2^53，分摊的中间乘积 `2 × L_i × P + L` 不超过 2^63。「件数 × 换算」「件数 × 单价」这类乘积上限 JSON schema 表达不了，由服务器在应用 op 时校验。
 - S01 的向量要覆盖：负数的 `roundDiv`、恰好一半、上限值、全零购物篮、接近溢出的中间乘积。
 
 ### 5.1 优惠分摊（服务器 + 手机各实现一遍，向量一致）
@@ -310,24 +315,26 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 - **进货** `n` 个基本单位、总价 `T`（整件码先换算：5 箱 × 24 = 120 罐），这批单位成本 `b = roundDiv(T, n)`：
   - `k` 为真且 `q > 0`：`q += n; v += T; c = b`。
-  - 否则（`q <= 0`，或进价一直没填）：`q += n`；目标货值 = `q > 0 ? roundDiv(T × q, n) : q × b`；进货行照记 `value_delta = T`，再记一条 `cost_adjust` = 目标货值 − (`v + T`)；`v` = 目标货值，`c = b`，`k = 真`。
+  - 否则（`q <= 0`，或进价一直没填）：`q += n`；目标货值 = `q > 0 ? roundDiv(T × q, n) : q × b`；进货行照记 `value_delta = T`，再记一条 `cost_adjust` = 目标货值 − (`v + T`)；`v` = 目标货值，`c = b`，`k = 真`。**差额为 0 时不记这一条**（通则：金额为 0 的 `cost_adjust` 一律不记；没有可补记行的 `cost_fix` 也不记）。
 - **卖出** `n` 个：
   - `k` 为假：`cogs = 0`，`cost_missing = true`，`value_delta = 0`，只减数量。这行不进「赚了」，报表写「有 N 样进价没填」。**库存是正的也一样。**
   - `k` 为真且 `q > 0`：`take = min(n, q)`；`cogs = (take = q ? v : roundDiv(v × take, q)) + (n − take) × u`；若 `n >= q` 则 `c = u`。然后 `q −= n; v −= cogs`。
   - `k` 为真且 `q <= 0`：`cogs = n × c`；`q −= n; v −= cogs`。
 - **整件卖**：卖价用整件码自己的价，成本 = 换算后的基本单位数按上面算。
-- **期初库存 / 待确认补全**（数到 `N`，进价 `b` 可不填）。**按期初记，不算进货**（review 四-2）：
+- **期初库存 / 待确认补全**（数到 `N`；`opening` 的进价 `b` 可不填，`product_review_complete` 的进价**必须填**，可以填 0）。**按期初记，不算进货**（review 四-2）：
   - 填了进价（包括明确填 0）：`k = 真，c = b`，货值设为 `N × b`，数量设为 `N`；差额写在 `opening` 流水的 `qty_delta / value_delta_fen`。
-  - 没填进价：若 `k` 已经为真，按盘点规则处理；否则只把数量设为 `N`，`v` 保持 0，`k` 保持假，界面黄字提醒。
-- **成本补记**（进价从「没填」变成「已知」的那一刻，`b` 为这次得到的单位成本）：把这个商品此前所有 `cost_missing`、未撤销、未补记过的卖出行找出来，记**一条** `cost_fix` 流水：`amount_fen` = 这些行的实收合计，`cogs_fen` = 这些行的数量合计 × `b`，`qty_delta = 0`，`value_delta_fen = 0`，`occurred_at` = 现在；原行写上 `cost_fix_entry_id`，原行本身的 `cogs_fen / value_delta_fen` **不改**。不做「回填原行」。
+  - 没填进价：若 `k` 已经为真，这一条就是一次盘点：流水类型记 **`count`**（不是 `opening`），金额按盘点规则算，月报算在「盘点少了的」里；否则只把数量设为 `N`，`v` 保持 0，`k` 保持假，界面黄字提醒。
+- **成本补记**（进价从「没填」变成「已知」的那一刻，`b` 为这次得到的单位成本）：把这个商品此前所有 `cost_missing`、未撤销、未补记过的卖出行找出来，记**一条** `cost_fix` 流水：`amount_fen` = 这些行的实收合计，`cogs_fen` = 这些行的数量合计 × `b`，`qty_delta = 0`，`value_delta_fen = 0`，`occurred_at` = 现在；`unit_cost_fen` 存 `b`；原行写上 `cost_fix_entry_id`，原行本身的 `cogs_fen / value_delta_fen` **不改**。不做「回填原行」。
   - 这些货从来没进过货值（当时 `v = 0`），所以对账不受影响；利润在补记那天一次性计入（与「撤销算在撤销那天」同一原则，过去月份的数字不变）。
-  - 补记过的卖出之后被撤销：除正常的冲销行外，再记一条冲销的 `cost_fix`（该行的 −实收、−数量 × `b`）。先撤销、后补进价：已撤销的行不参与补记。
+  - 补记过的卖出之后被撤销，共三条流水：正常的冲销行（只加回数量）；一条冲销的 `cost_fix`（该行的 −实收、−数量 × `b`，`b` 取自当初那条 `cost_fix` 的 `unit_cost_fen`）；一条 `cost_adjust`（+数量 × `b`）。最后这条是让回到货架的货按补记的进价计入货值，否则货值不变、数量变多，平均进价被拉低，以后的卖出会少记成本。先撤销、后补进价：已撤销的行不参与补记。
+  - **`k` 只增不减**：撤销那次让进价变成已知的进货或期初，`k` 不回到假，`c` 保留，已经记的 `cost_fix` 不冲；撤销后按下面「撤销」一条的归位规则处理。
 - **盘点** 数到 `N`（`N >= 0`），`d = N − q`（并发规则见 §5.6）：
   - `k` 为真且 `q > 0`：盘亏金额 = `N = 0 ? v : roundDiv(v × |d|, q)`；盘盈金额 = `d × u`。
   - `k` 为真且 `q <= 0`：货值设为 `N × c`，差额即盘盈金额。
   - `k` 为假：只改数量，金额为 0。
 - **过期扔掉、退给供货商** `n` 个：成本取法与卖出相同。扔掉记损耗，**不减「赚了」**，在报表「过期损耗」单列；退货不计盈亏。
-- **撤销**：卖出 → 加回数量和当时记下的 `cogs`；进货 → 减去数量和总价；其余类型同理取反。撤销后若违反 I3，用一条 `cost_adjust` 归位。
+- **进价未知（`k` 为假）时的非卖出流水**：过期扔掉、退货、数量有变化的盘点，金额都记 0 并标 `cost_missing = true`；它们**不参加成本补记**（补记只针对卖出），报表在对应的损耗行旁注明「有 N 笔没算进价」。没填进价的 `opening` 不标。
+- **撤销**：卖出 → 加回数量和当时记下的 `cogs`；进货 → 减去数量和总价；其余类型同理取反。撤销后若违反 I3，用一条 `cost_adjust` 归位，**归位目标统一是 `v = q × c`**：`k` 为真，且（`q <= 0` 而 `v ≠ q × c`，或 `q > 0` 而 `v < 0`）时触发。`q > 0` 且 `v >= 0` 时不动。
 - 必过向量：
   - 库存 6 包、货值 ¥242.80，进 5 条 × ¥400（1 条 = 10 包）→ 56 包，这批每包 ¥40.00，平均 **¥40.05**。
   - 可乐 5 箱 × ¥48（1 箱 = 24 罐）→ 一共 ¥240.00，入账 120 罐，每罐 ¥2.00（设计稿 06a）。
@@ -335,11 +342,13 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
   - 期初 10 个没填进价，卖 1 个 → `cogs = 0`、`cost_missing`、不进「赚了」；随后补进价 ¥2.00 → 一条 `cost_fix`，货值 = 9 × 2.00。
   - 明确填进价 0 的赠品：卖出 `cogs = 0`、**不**标 `cost_missing`。
   - 库存为 0、已知进价 ¥3.00，盘点数到 2 → 货值 ¥6.00。
+  - 撤销归位（库存为正、货值为负）：进 10 个共 1000 分，再进 10 个共 100 分，卖 5 个（`cogs` 275），撤销第一次进货 → `q = 5`，`v = −175`，`c = 10` → 归位到 `v = 50`，`cost_adjust` +225。
+  - 补记后撤销：期初 10 个没填进价，卖 1 个、再卖 2 个，补进价 ¥2.00（货值 1400），撤销卖 2 个的那笔 → 冲销 `cost_fix`（−400）加 `cost_adjust` +400，货值 1800，9 个，平均仍是 ¥2.00。
 
 ### 5.3 对账与报表口径
 
 - 本月对账（设计稿 10）：`月初货值 + 本月进货 − 卖掉的货的进价 − 盘点少了的 − 过期扔掉的 − 退给供货商的 (± 期初登记和调整，非零才显示这一行) = 现在店里货值`。**每一项都是 `entries.value_delta_fen` 按类型的分组求和**（「卖掉的货的进价」= 卖出行 `value_delta_fen` 之和取负，不是 `cogs_fen` 之和），所以等式恒成立。
-- 赚了 = Σ 进价已知的卖出行 `(amount_fen − cogs_fen)` + Σ `cost_fix` 行 `(amount_fen − cogs_fen)`。尚未补记的 `cost_missing` 行不计入，并在报表上计数。卡片下写「赚了 = 卖出 − 进价，损耗和盘点少的另算」。
+- 赚了 = Σ 进价已知的卖出行 `(amount_fen − cogs_fen)` + Σ `cost_fix` 行 `(amount_fen − cogs_fen)`。尚未补记的 `cost_missing` 卖出行不计入，并在报表上计数；标了 `cost_missing` 的损耗行另行计数（§5.2）。卡片下写「赚了 = 卖出 − 进价，损耗和盘点少的另算」。
 - 卖了 = Σ 卖出行 `amount_fen`（`cost_fix` 行的 `amount_fen` 不算进「卖了」，否则重复）。
 - 优惠 = Σ `(list_amount_fen − amount_fen)`。
 - 日和月的界线按 `occurred_at` 的上海时间。
@@ -347,8 +356,8 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 ### 5.4 保质期批次（只管提醒）
 
 - 管保质期的商品，每次进货 / 期初生成一个批次；没填到期日也生成（`expiry_date = null`，不提醒）。到期日两种填法：直接填；或生产日期 + 保质期月数（按日历月加，月末对齐：1/31 + 1 个月 = 2/28 或 2/29）。必过向量：2026-11-12 + 6 个月 = 2027-05-12；2026-11-19 + 12 个月 = 2027-11-19。
-- 卖出、盘亏按到期日从早到晚扣批次（空日期排最后），写 `lot_moves`。
-- 提醒：`今天 >= expiry_date − expiry_warn_days`，批次未关闭、`qty_left > 0`、不在「过几天再提醒」期内。首页黄条数的是**商品种数**。
+- 卖出、盘亏按到期日从早到晚扣批次（空日期排最后），写 `lot_moves`。到期日相同（或都为空）的批次，先扣先建的（来源流水 `seq` 小的在前）。
+- 提醒：`今天 >= expiry_date − expiry_warn_days`，批次未关闭、`qty_left > 0`、不在「过几天再提醒」期内。`今天 < snoozed_until` 才算在期内，**到 `snoozed_until` 当天就恢复提醒**。首页黄条数的是**商品种数**。
 - **处理时一律以人数的为准**（20、20b）：先填「货架上这批实际还有几个」，再选：卖完了（关批次，不动库存）/ 下架扔掉（记 `expire_loss`，数量 = 实际数）/ 退给供货商（记 `supplier_return`）/ 还在卖过几天再提醒（批次数量改成实际数，`snoozed_until = 今天 + 天数`）。批次数量之和**不强求**等于库存，批次不准不会把账带歪。
 - **防两台手机各处理一次**：每个批次有 `handle_ver`，只在「处理」和「过几天再提醒」时 +1（普通卖出扣批次不改它）。`expiry_dispose / lot_snooze` 带手机看到的 `handle_ver`；批次已关闭或版本不一致 → 拒 `stale`，手机刷新后让人重新确认。
 - **批次的生命周期**（`closed_at` 只由下面两种情况设置；卖到 `qty_left = 0` 不算关闭，只是不再提醒）：
@@ -362,7 +371,13 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 ### 5.5 手输条码匹配（review 四-1）
 
-本地前缀匹配：输入满 8 位起，列出**所有**条码以输入为前缀的商品（最多显示 4 行，超过提示继续输）；只剩一个匹配时才自动选中；未选中时主按钮置灰。绝不自动选第一个。收银员看到的候选行不带库存。`contracts/vectors/prefix.json`：同厂商两个商品（6902514300011、6902514300028），输入 `69025143` 时两个都列出。
+本地前缀匹配：输入满 8 位起，列出**所有**条码以输入为前缀的候选；只剩一个候选时才自动选中；未选中时主按钮置灰。绝不自动选第一个。
+
+- 候选按「商品 + 换算数量」去重：同一商品的两个单件码算一个候选；同一商品的单件码和整箱码是**两个**候选（卖的数量和价钱不同，行上要写明「罐」还是「箱（24 罐）」）。
+- 排序：与输入完全相等的条码排第一，其余按条码字符串升序。最多显示前 4 行，超过时提示「还有 N 个，接着输」。
+- 输入正好等于一个 8 位码、同时又是更长条码的前缀时：两个都列出，不自动选（完全相等的排第一）。
+
+其他：收银员看到的候选行不带库存。`contracts/vectors/prefix.json`：同厂商两个商品（6902514300011、6902514300028），输入 `69025143` 时两个都列出。
 
 ### 5.6 盘点、期初与别的手机同时记账
 
@@ -389,8 +404,8 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `POST /v1/auth/login`、`/pair/redeem`、`GET /v1/config` | 不需登录 | 不需登录 | 不需登录 | — |
 | `POST /v1/sync` 推 `sale_batch` | 能 | 能 | 能 | 只收被踢前的 |
 | 推 `void` | 任意一天、任意手机 | 只能本机的卖出，且卖出日期 = 服务器收到撤销那天 | 同家用 | 暂存，等家用确认 |
-| 推 `product_upsert` | 完整；条码已存在时不改原商品 | 只能 `quick`（名称 + 卖价）；条码已存在时不改原商品 | 同家用 | 只收被踢前、卖出用到的 `quick` 登记 |
-| 推 `product_edit / barcode_link / stock_in / opening / product_review_complete / count / expiry_dispose / lot_snooze` | 能 | **拒** | 能 | 暂存，等家用确认（§4.5） |
+| 推 `product_upsert` | 完整；条码已存在时不改原商品 | 只能 `quick`（名称 + 卖价）；条码已存在时不改原商品 | 同家用 | 被踢前的：`quick` 直接收，非 `quick` 暂存等家用确认 |
+| 推 `product_edit / barcode_link / barcode_unlink / stock_in / opening / product_review_complete / count / expiry_dispose / lot_snooze` | 能 | **拒** | 能 | 暂存，等家用确认（§4.5） |
 | `POST /v1/sync` 拉 | 全店 | 裁剪版（§4.2） | 演示店全店 | 不返回数据 |
 | `GET /v1/barcode-lookup/:code` | 能 | 能（只返回名称、规格、有没有图） | 能（演示店返回内置假数据，**不调付费接口**） | 拒 |
 | `GET /v1/images/:product_id` | 能 | 能 | 能 | 拒 |
@@ -402,6 +417,11 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `POST /v1/account/password` | 能 | 拒 | 能（每天重置时恢复） | 拒 |
 | `POST /v1/account/delete-request` / `delete-cancel` | 能 | 拒 | 能（每天重置时恢复） | 拒 |
 | `POST /v1/auth/logout` | 能 | 能 | 能 | — |
+| `GET /v1/me` | 能 | 能 | 能 | 拒（返回 `revoked`） |
+| `POST /v1/recovery/import` | 仅恢复模式打开时能 | 仅恢复模式打开时能 | 拒 | 拒 |
+| `GET /healthz`、`POST /v1/auth/demo`（开关打开时） | 不需登录 | 不需登录 | 不需登录 | — |
+
+`/v1/recovery/import` 里的每个 op 仍按提交设备的角色过上面的 op 权限。权限表里不允许留「待定」的格子。
 
 跨店隔离：任何接口都只能碰令牌所属的店。S09 有专门测试：用审核号令牌把元辉店的每一种 id 都试一遍，全部 404 / 拒绝。
 
@@ -429,9 +449,9 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 | 方法 路径 | 用途 | 备注 |
 |---|---|---|
-| `GET /healthz` | 存活检查（查一次数据库） | 无鉴权，监控用 |
+| `GET /healthz` | 存活检查（查一次数据库） | 无鉴权，监控用。路径不带 `/v1`（不随接口版本变）；S00 骨架里的 `/v1/health` 在 S02 改成它 |
 | `GET /v1/config` | `min_build, demo_login_enabled, privacy_url, support_url` | 无鉴权 |
-| `POST /v1/auth/login` | `{username, password, device_id, label?}` → `{token, role, store, label, delete_pending_until?}` | 连错 5 次锁 15 分钟（25c），另有按 IP 限速；错误信息不区分「账号不存在」和「密码错」 |
+| `POST /v1/auth/login` | `{username, password, device_id, label?}` → `{token, role, store, label, epoch, delete_pending_until?}` | 连错 5 次锁 15 分钟（25c），另有按 IP 限速；错误信息不区分「账号不存在」和「密码错」 |
 | `POST /v1/auth/pair/redeem` | `{code, device_id}` → 同上 | 码用过或过期 → 明确错误码（25d） |
 | `POST /v1/auth/demo` | 一键进演示小店（「看看演示」，受 `demo_login_enabled` 开关控制，**默认关**，被打回再开） | 发的是演示店的家用设备令牌 |
 | `POST /v1/auth/logout` | 作废本机令牌 | 手机先尽量把 outbox 传完 |
@@ -450,7 +470,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `POST /v1/devices/revoke-others` | 让其他手机全部退出 | |
 | `GET /v1/held-ops` | 被退出的手机补传上来、等确认的账（进货、盘点、撤销等，§4.5） | 只有家用 |
 | `POST /v1/held-ops/:id/resolve` | `{action: accept\|discard}` | 盘点、期初类版本已变的只能丢弃 |
-| `POST /v1/recovery/import` | 服务器恢复模式下，重新开通的设备补交保留的 op（§4.6） | 平时关闭 |
+| `POST /v1/recovery/import` | 服务器恢复模式下，重新开通的家用或收银员设备补交保留的 op（§4.6） | 平时关闭；每个 op 仍按该设备的角色判权限 |
 | `PATCH /v1/devices/me` | 改这台手机的名字 | |
 | `POST /v1/account/password` | `{old, new}` | 不强制其他手机退出 |
 | `POST /v1/account/delete-request` | `{password}` → 记 `delete_requested_at`，全部设备退出 | 注销期间禁止写账和开通设备；非演示店先生成导出包交给黄总；7 天后删除在线数据和 OSS 图片，备份在此后 35 天内滚动清除（§9.4） |
@@ -501,7 +521,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 ### 阶段 B：服务器
 
 **S02 服务器骨架与全部表结构**
-- 产出：`app.ts / config.ts / db.ts`、`migrations/0001_init.sql`（§3 全部表、约束、索引）、`scripts/create-store.ts`、`create-account.ts`、`/healthz`、`/v1/config`、测试辅助（每个测试文件一个独立 schema 或事务回滚）、`Dockerfile`。
+- 产出：`app.ts / config.ts / db.ts`、`migrations/0001_init.sql`（§3 全部表、约束、索引）、`scripts/create-store.ts`、`create-account.ts`、`/healthz`（替换 S00 骨架里的 `/v1/health`）、`/v1/config`、测试辅助（每个测试文件一个独立 schema 或事务回滚）、`Dockerfile`。
 - 验收：迁移在空库上跑通且可重复执行；约束测试：重复 `(store_id, barcode)` 失败、`pack_qty=0` 失败、单件码带 `pack_price_fen` 失败、重复用户名（大小写不同）失败、同店重复 `rev` 失败；`/healthz` 在数据库断开时返回 503。
 
 **S03 登录、设备、开通、权限中间件**
@@ -943,4 +963,27 @@ Beta 的 HTTPS 按顺序尝试，在 S10a（服务器端）和 S11b（App 端）
 | 8 | 被踢设备的进货、盘点、撤销、改商品改为暂存等家用确认；收银员撤销按服务器收到的日期判，伪造时间无效（§4.5、§6、S05） | 被踢设备的**卖出**仍然直接入账、不进暂存：这正是 review-1119-mockups 第四节第 3 条要求的，收银员那几笔不能丢，而且卖出带标记、看得见、可以撤。收银员跨日撤销也没有做「转家用确认」的队列，直接拒绝并提示让家里人撤：少一个状态机，结果一样。 |
 | 14 | 写明「连得通不等于合规」；备案前只放假数据和试用数据；向阿里云确认列为提前记真实账的前置条件；补了离线试用的方案 C（§9.2） | 没有把「未确认前完全不用 IP 联调」作为规定：开发联调和 TestFlight 探针用的是假数据，这是本次任务明确要求计划覆盖的内容，不涉及对外经营。 |
 | 22 | S08 增加条款核对并留档；图片有总开关；条款明确禁止就关（S08、§10） | 条款没有提及时不默认永久禁用，而是先关着、交 Haoqiang 决定：这是一个需要登录的店内工具，图片不进截图和演示店，是否可接受属于业务判断，不该由计划替他定。 |
+
+---
+
+## 14. S01 疑问裁定（2026-11-20）
+
+S01 的 PR（#4）在描述里列了 14 条计划没写清的地方。裁定如下，结论已改进正文。
+
+| # | 疑问 | 裁定 | 改在哪里 |
+|---|---|---|---|
+| Q1 | 实收没有上限 | `paid_total_fen` ≤ 19,999,999,800 分（200 行 × 单行上限），多收也不能超过 | §5.0 |
+| Q2 | 调整额为 0 还记不记 | 不记。金额为 0 的 `cost_adjust` 一律不记；没有可补记行的 `cost_fix` 也不记 | §5.2 进货 |
+| Q3 | `product_review_complete` 的进价是否必填、缺 `entry_id`；`quick` 登记要不要 `base_unit` | 进价必填（可以填 0），只有 `opening` 可以不填；payload 加 `entry_id`；`quick` 登记不带 `base_unit`，服务器默认「个」，`product_edit` 可以改基本单位 | §4.3、§5.2 |
+| Q4 | 期初没填进价但进价已知时记成什么类型 | 记 `count`，金额按盘点规则，月报算在「盘点少了的」 | §5.2 |
+| Q5 | 撤销后库存为正、货值为负怎么归位 | 归位目标统一是 `v = q × c`；`q > 0` 且 `v < 0` 时也触发 | §5.2 撤销，新增必过向量 |
+| Q6 | 补记后撤销卖出，货以 0 成本回到货架，拉低平均进价 | 不接受。撤销时除冲销 `cost_fix` 外再记一条 `cost_adjust`（+数量 × `b`）；`cost_fix` 行存 `unit_cost_fen = b` | §5.2 成本补记，新增必过向量 |
+| Q7 | 进价未知时的扔掉、退货、盘点；撤销让进价变已知的那次进货 | 金额记 0、标 `cost_missing`、不参加补记，报表注明笔数；`k` 只增不减，撤销后不回到假，已记的 `cost_fix` 不冲 | §5.2、§5.3 |
+| Q8 | 被踢设备的 `product_upsert` | `quick` 的直接收（不要求证明被卖出用到）；非 `quick` 的暂存等家用确认 | §4.5、§6.1 |
+| Q9 | `/v1/me`、`/v1/recovery/import` 等不在权限表里 | `/v1/me`：三种身份能，被踢拒；`/v1/recovery/import`：恢复模式下家用和收银员能，审核和被踢拒；`/healthz`、`/v1/auth/demo` 不需登录；`barcode_unlink` 同 `barcode_link`。权限表不允许留待定 | §6.1、§7 |
+| Q10 | 数量上限 | 基本单位数量 ≤ 9,999,999；进货总价受单行金额上限约束（执行者的理解正确） | §5.0 |
+| Q11 | `snoozed_until` 当天提不提醒；同一到期日谁先扣 | 当天恢复提醒；先扣先建的批次 | §5.4 |
+| Q12 | 单件码和整件码同时匹配；超过 4 个显示哪 4 个；完全相等又是前缀 | 按「商品 + 换算数量」去重，单件和整箱是两个候选；完全相等的排第一，其余按条码升序，显示前 4 个；两个都列、不自动选 | §5.5 |
+| Q13 | `/v1/health` 还是 `/healthz` | `/healthz`。契约按 §7 写是对的，S02 改服务器代码 | §7、S02 |
+| Q14 | 首次同步没有 epoch | 登录、兑码、演示登录的响应带 `epoch`；`/v1/sync` 的 `epoch` 必填，不允许为空 | §4.2、§7 |
 

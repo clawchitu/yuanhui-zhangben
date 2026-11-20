@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "limits.schema.json",
+  "title": "schema 表达不了的乘积上限（§5.0），服务器应用 op 时校验",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "cases"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "op_type",
+          "fields",
+          "expected",
+          "note"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^lim-[0-9]{2}$"
+          },
+          "op_type": {
+            "enum": [
+              "stock_in",
+              "sale_line"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected": {
+            "enum": [
+              "ok",
+              "invalid"
+            ]
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pack_qty",
+              "pack_count"
+            ],
+            "properties": {
+              "pack_qty": {
+                "type": "integer"
+              },
+              "pack_count": {
+                "type": "integer"
+              },
+              "unit_cost_fen": {
+                "type": "integer"
+              },
+              "unit_price_fen": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "if": {
+          "properties": {
+            "op_type": {
+              "const": "stock_in"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "fields": {
+              "required": [
+                "unit_cost_fen"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "fields": {
+              "required": [
+                "unit_price_fen"
+              ],
+              "type": "object"
+            }
+          }
+        }
+      }
+    }
+  }
+}

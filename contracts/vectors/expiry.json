@@ -223,6 +223,19 @@
    },
    "expected": true,
    "note": "过了提醒期"
+  },
+  {
+   "id": "rem-12",
+   "today": "2026-11-25",
+   "lot": {
+    "expiry_date": "2026-11-26",
+    "expiry_warn_days": 7,
+    "qty_left": 5,
+    "closed": false,
+    "snoozed_until": "2026-11-25"
+   },
+   "expected": true,
+   "note": "到 snoozed_until 当天恢复提醒"
   }
  ],
  "deduct": [
@@ -234,21 +247,24 @@
      "expiry_date": "2026-12-01",
      "qty_left": 3,
      "closed": false,
-     "snoozed_until": null
+     "snoozed_until": null,
+     "seq": 2
     },
     {
      "lot_id": "B",
      "expiry_date": null,
      "qty_left": 5,
      "closed": false,
-     "snoozed_until": null
+     "snoozed_until": null,
+     "seq": 3
     },
     {
      "lot_id": "C",
      "expiry_date": "2026-11-25",
      "qty_left": 2,
      "closed": false,
-     "snoozed_until": null
+     "snoozed_until": null,
+     "seq": 1
     }
    ],
    "qty": 4,
@@ -275,21 +291,24 @@
      "expiry_date": "2026-12-01",
      "qty_left": 3,
      "closed": false,
-     "snoozed_until": null
+     "snoozed_until": null,
+     "seq": 2
     },
     {
      "lot_id": "B",
      "expiry_date": null,
      "qty_left": 5,
      "closed": false,
-     "snoozed_until": null
+     "snoozed_until": null,
+     "seq": 3
     },
     {
      "lot_id": "C",
      "expiry_date": "2026-11-25",
      "qty_left": 2,
      "closed": false,
-     "snoozed_until": null
+     "snoozed_until": null,
+     "seq": 1
     }
    ],
    "qty": 12,
@@ -320,21 +339,24 @@
      "expiry_date": "2026-11-20",
      "qty_left": 4,
      "closed": true,
-     "snoozed_until": null
+     "snoozed_until": null,
+     "seq": 1
     },
     {
      "lot_id": "E",
      "expiry_date": "2026-11-28",
      "qty_left": 0,
      "closed": false,
-     "snoozed_until": null
+     "snoozed_until": null,
+     "seq": 2
     },
     {
      "lot_id": "F",
      "expiry_date": "2026-11-29",
      "qty_left": 6,
      "closed": false,
-     "snoozed_until": "2026-12-05"
+     "snoozed_until": "2026-12-05",
+     "seq": 3
     }
    ],
    "qty": 3,
@@ -348,6 +370,90 @@
     "unassigned": 0
    },
    "note": "已关闭的不扣，qty_left=0 的跳过，「过几天再提醒」中的照常扣"
+  },
+  {
+   "id": "ded-04",
+   "lots": [
+    {
+     "lot_id": "X",
+     "expiry_date": "2026-12-01",
+     "qty_left": 3,
+     "closed": false,
+     "snoozed_until": null,
+     "seq": 20
+    },
+    {
+     "lot_id": "Y",
+     "expiry_date": "2026-12-01",
+     "qty_left": 3,
+     "closed": false,
+     "snoozed_until": null,
+     "seq": 10
+    }
+   ],
+   "qty": 4,
+   "expected": {
+    "moves": [
+     {
+      "lot_id": "Y",
+      "qty": 3
+     },
+     {
+      "lot_id": "X",
+      "qty": 1
+     }
+    ],
+    "unassigned": 0
+   },
+   "note": "到期日相同：先扣先建的（seq 小的 Y），与数组顺序无关"
+  },
+  {
+   "id": "ded-05",
+   "lots": [
+    {
+     "lot_id": "N1",
+     "expiry_date": null,
+     "qty_left": 2,
+     "closed": false,
+     "snoozed_until": null,
+     "seq": 30
+    },
+    {
+     "lot_id": "N2",
+     "expiry_date": null,
+     "qty_left": 2,
+     "closed": false,
+     "snoozed_until": null,
+     "seq": 5
+    },
+    {
+     "lot_id": "M",
+     "expiry_date": "2026-12-10",
+     "qty_left": 1,
+     "closed": false,
+     "snoozed_until": null,
+     "seq": 40
+    }
+   ],
+   "qty": 4,
+   "expected": {
+    "moves": [
+     {
+      "lot_id": "M",
+      "qty": 1
+     },
+     {
+      "lot_id": "N2",
+      "qty": 2
+     },
+     {
+      "lot_id": "N1",
+      "qty": 1
+     }
+    ],
+    "unassigned": 0
+   },
+   "note": "有日期的先扣；都为空日期的按 seq：N2（5）先于 N1（30）"
   }
  ],
  "handle_ver": [

@@ -25,7 +25,8 @@
         "required": [
           "product_id",
           "name",
-          "barcode"
+          "barcode",
+          "pack_qty"
         ],
         "properties": {
           "product_id": {
@@ -39,6 +40,11 @@
           "barcode": {
             "type": "string",
             "pattern": "^[0-9]{8,14}$"
+          },
+          "pack_qty": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9999
           }
         }
       }
@@ -64,14 +70,17 @@
             "type": "string",
             "pattern": "^[0-9]+$"
           },
+          "note": {
+            "type": "string"
+          },
           "expected": {
             "type": "object",
             "additionalProperties": false,
             "required": [
               "listed",
               "candidates",
-              "shown_count",
-              "too_many",
+              "shown",
+              "more_count",
               "auto_select"
             ],
             "properties": {
@@ -81,29 +90,86 @@
               "candidates": {
                 "type": "array",
                 "items": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "uniqueItems": true
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "product_id",
+                    "pack_qty",
+                    "barcode"
+                  ],
+                  "properties": {
+                    "product_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "pack_qty": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "barcode": {
+                      "type": "string",
+                      "pattern": "^[0-9]{8,14}$"
+                    }
+                  }
+                }
               },
-              "shown_count": {
+              "shown": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "product_id",
+                    "pack_qty",
+                    "barcode"
+                  ],
+                  "properties": {
+                    "product_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "pack_qty": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "barcode": {
+                      "type": "string",
+                      "pattern": "^[0-9]{8,14}$"
+                    }
+                  }
+                }
+              },
+              "more_count": {
                 "type": "integer",
-                "minimum": 0,
-                "maximum": 4
-              },
-              "too_many": {
-                "type": "boolean"
+                "minimum": 0
               },
               "auto_select": {
-                "type": [
-                  "string",
-                  "null"
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "product_id",
+                      "pack_qty"
+                    ],
+                    "properties": {
+                      "product_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "pack_qty": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
+                  }
                 ]
               }
             }
-          },
-          "note": {
-            "type": "string"
           }
         }
       }

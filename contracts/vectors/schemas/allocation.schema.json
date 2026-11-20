@@ -66,6 +66,10 @@
                 },
                 "pack_count": {
                   "type": "integer"
+                },
+                "pack_qty": {
+                  "type": "integer",
+                  "description": "缺省为 1；只用于基本单位数量上限（pack_qty × pack_count ≤ 9,999,999）"
                 }
               }
             }

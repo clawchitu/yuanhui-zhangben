@@ -152,7 +152,8 @@
                 "expiry_date",
                 "qty_left",
                 "closed",
-                "snoozed_until"
+                "snoozed_until",
+                "seq"
               ],
               "properties": {
                 "lot_id": {
@@ -178,6 +179,11 @@
                     "null"
                   ],
                   "format": "date"
+                },
+                "seq": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "来源流水的 entries.seq；到期日相同（或都为空）时小的先扣"
                 }
               }
             }

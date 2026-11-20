@@ -9,17 +9,15 @@
   },
   "decisions": {
     "public": "不需登录",
-    "allow": "能（有 conditions 时全部满足才能，否则 rejected: forbidden）",
+    "allow": "能（有 conditions 时全部满足才能，否则拒：HTTP 403 / op rejected: forbidden）",
     "deny": "拒（HTTP 403 / op rejected: forbidden）",
     "held": "不直接入账，记为 held 等家用确认（有 conditions 时不满足就拒）",
-    "not_applicable": "这个身份不会调用（计划写「—」）",
-    "undecided": "计划没写，等决定；guard 一律按 deny 处理，proposed 只是建议"
+    "not_applicable": "这个身份不会调用（计划写「—」）"
   },
   "conditions": {
     "own_device_sale": "被撤销的卖出是本设备记的",
     "sale_day_eq_server_receive_day": "被撤销的卖出的 occurred_at（上海时区）日期 = 服务器收到这次撤销的日期",
     "quick_only": "product_upsert 必须 quick=true，只带名称和卖价，带了别的字段就拒",
-    "used_by_sale_from_same_device": "这次 quick 登记被同一设备上传的某笔 sale_batch 用到",
     "occurred_at_lte_revoked_at": "op.occurred_at <= devices.revoked_at",
     "within_revoke_window": "服务器收到时距 revoked_at 不超过 30 天（§4.5 补传窗口）",
     "not_self": "目标设备不是调用者自己",
@@ -30,7 +28,9 @@
     "跨店隔离：任何接口只能碰令牌所属的店；别的店的 id 一律 404（§6.1）",
     "review 身份只存在于演示店；演示店里也能开通演示用的收银员设备，那些设备按 cashier 列（§6）",
     "账号注销期间（accounts.delete_requested_at 非空）禁止写账和开通设备（§7）",
-    "所有身份的 op 还要过 §5.0 的上限校验，超出 rejected: invalid（§4.4）"
+    "所有身份的 op 还要过 §5.0 的上限校验，超出 rejected: invalid（§4.4）",
+    "op 行带 match 时按 payload 字段选行（product_upsert 按 quick 分两行）；每种 op 的行必须覆盖它的全部取值",
+    "权限表不允许留待定的格子（§6.1）；contracts:check 遇到待定会失败"
   ],
   "rules": [
     {
@@ -48,10 +48,10 @@
         "decision": "public"
       },
       "revoked": {
-        "decision": "public"
+        "decision": "not_applicable"
       },
-      "source": "§7",
-      "note": "存活检查，无鉴权"
+      "source": "§6.1、§7",
+      "note": "存活检查，无鉴权；路径不带 /v1"
     },
     {
       "id": "GET /v1/config",
@@ -68,7 +68,7 @@
         "decision": "public"
       },
       "revoked": {
-        "decision": "public"
+        "decision": "not_applicable"
       },
       "source": "§6.1、§7"
     },
@@ -136,8 +136,8 @@
       "revoked": {
         "decision": "not_applicable"
       },
-      "source": "§7",
-      "note": "§6.1 没列；§7 写明是「一键进演示」，开关默认关，发演示店家用令牌"
+      "source": "§6.1、§7",
+      "note": "开关打开时不需登录；发演示店家用令牌"
     },
     {
       "id": "POST /v1/auth/logout",
@@ -164,23 +164,19 @@
       "method": "GET",
       "path": "/v1/me",
       "family": {
-        "decision": "undecided",
-        "proposed": "allow"
+        "decision": "allow"
       },
       "cashier": {
-        "decision": "undecided",
-        "proposed": "allow"
+        "decision": "allow"
       },
       "review": {
-        "decision": "undecided",
-        "proposed": "allow"
+        "decision": "allow"
       },
       "revoked": {
-        "decision": "undecided",
-        "proposed": "deny"
+        "decision": "deny",
+        "note": "返回 revoked"
       },
-      "source": "§7",
-      "note": "§6.1 没列，见 PR 疑问 Q9；guard 对 undecided 一律按 deny 处理"
+      "source": "§6.1"
     },
     {
       "id": "POST /v1/sync",
@@ -510,32 +506,25 @@
       "method": "POST",
       "path": "/v1/recovery/import",
       "family": {
-        "decision": "undecided",
+        "decision": "allow",
         "conditions": [
           "recovery_mode_on"
-        ],
-        "proposed": "allow"
+        ]
       },
       "cashier": {
-        "decision": "undecided",
+        "decision": "allow",
         "conditions": [
           "recovery_mode_on"
-        ],
-        "proposed": "allow"
+        ]
       },
       "review": {
-        "decision": "undecided",
-        "conditions": [
-          "recovery_mode_on"
-        ],
-        "proposed": "deny"
+        "decision": "deny"
       },
       "revoked": {
-        "decision": "undecided",
-        "proposed": "deny"
+        "decision": "deny"
       },
-      "source": "§4.6、§7",
-      "note": "§6.1 没列，见 PR 疑问 Q9"
+      "source": "§6.1、§4.6",
+      "note": "里面的每个 op 仍按提交设备的角色过对应 op:* 行的权限"
     },
     {
       "id": "POST /v1/account/password",
@@ -651,35 +640,60 @@
       "note": "收银员的日期判断用上海时区，按服务器收到撤销的时间，不信手机"
     },
     {
-      "id": "op:product_upsert",
+      "id": "op:product_upsert[quick]",
       "kind": "op",
       "op": "product_upsert",
+      "match": {
+        "quick": true
+      },
       "family": {
-        "decision": "allow",
-        "note": "条码已存在时不改原商品，只返回 remap"
+        "decision": "allow"
       },
       "cashier": {
         "decision": "allow",
-        "conditions": [
-          "quick_only"
-        ],
-        "note": "条码已存在时不改原商品；非 quick 拒 forbidden"
+        "note": "只有名称和卖价，带了别的字段就拒；服务器强制 needs_review=true"
       },
       "review": {
-        "decision": "allow",
-        "note": "同家用"
+        "decision": "allow"
       },
       "revoked": {
         "decision": "allow",
         "conditions": [
-          "quick_only",
-          "used_by_sale_from_same_device",
           "occurred_at_lte_revoked_at",
           "within_revoke_window"
         ],
-        "note": "非 quick 的或没被卖出用到的怎么处理，见 PR 疑问 Q8"
+        "note": "直接入账（不必证明被哪笔卖出用到），打 flags.late_from_revoked；不满足条件就 rejected"
       },
-      "source": "§6.1、§4.5"
+      "source": "§6.1、§4.5",
+      "note": "条码已存在时不改原商品，只返回 remap"
+    },
+    {
+      "id": "op:product_upsert[full]",
+      "kind": "op",
+      "op": "product_upsert",
+      "match": {
+        "quick": false
+      },
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny",
+        "note": "收银员只能 quick"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "held",
+        "conditions": [
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "不满足条件就 rejected；满足条件记 held，等家用确认（§4.5）"
+      },
+      "source": "§6.1、§4.5",
+      "note": "条码已存在时不改原商品，只返回 remap"
     },
     {
       "id": "op:product_edit",
@@ -748,8 +762,7 @@
         ],
         "note": "不满足条件就 rejected；满足条件记 held，等家用确认（§4.5）"
       },
-      "source": "§4.3",
-      "note": "§6.1 没单列 unlink；§4.3 和 link 一起写「家用」，这里与 link 相同"
+      "source": "§6.1"
     },
     {
       "id": "op:stock_in",

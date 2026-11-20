@@ -2761,6 +2761,95 @@
     ]
    },
    "calc": "边界值等于上限不算超"
+  },
+  {
+   "id": "alloc-25",
+   "rules": [
+    "5.0-上限",
+    "5.1-多收",
+    "5.1-单行"
+   ],
+   "title": "实收上限本身合法：单行 99,999,999，多收到 19,999,999,800",
+   "lines": [
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 19999999800,
+   "expect": {
+    "list_fen": [
+     99999999
+    ],
+    "list_total_fen": 99999999,
+    "amount_fen": [
+     19999999800
+    ]
+   },
+   "calc": "单行 roundDiv(99999999×19999999800,99999999)=19999999800；乘积约 2×10^18 < 2^63"
+  },
+  {
+   "id": "alloc-26",
+   "rules": [
+    "5.0-上限"
+   ],
+   "title": "实收超上限 19,999,999,801 → 拒",
+   "lines": [
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 19999999801,
+   "expect": {
+    "error": "invalid"
+   },
+   "calc": "paid_total_fen ≤ 19,999,999,800"
+  },
+  {
+   "id": "alloc-27",
+   "rules": [
+    "5.0-上限",
+    "5.1-单行"
+   ],
+   "title": "基本单位数量上限本身合法：pack_qty 9,999 × 1,000 件 = 9,999,000",
+   "lines": [
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1000,
+     "pack_qty": 9999
+    }
+   ],
+   "paid_total_fen": 1000,
+   "expect": {
+    "list_fen": [
+     1000
+    ],
+    "list_total_fen": 1000,
+    "amount_fen": [
+     1000
+    ]
+   },
+   "calc": "9999×1000=9999000 ≤ 9999999；原价 1×1000=1000"
+  },
+  {
+   "id": "alloc-28",
+   "rules": [
+    "5.0-上限"
+   ],
+   "title": "基本单位数量超上限：pack_qty 9,999 × 1,001 件 = 10,008,999 → 拒",
+   "lines": [
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1001,
+     "pack_qty": 9999
+    }
+   ],
+   "paid_total_fen": 1001,
+   "expect": {
+    "error": "invalid"
+   },
+   "calc": "件数 × 换算 > 9,999,999"
   }
  ]
 }

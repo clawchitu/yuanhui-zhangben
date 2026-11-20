@@ -2229,7 +2229,6 @@
     "barcode": "1",
     "name": "x",
     "price_fen": 1,
-    "base_unit": "个",
     "quick": true,
     "track_expiry": true
    }
@@ -2375,7 +2374,7 @@
   }
  },
  {
-  "why": "product_review_complete 缺进价（按 §4.3，见疑问 Q3）",
+  "why": "product_review_complete 缺进价（§4.3 必填）",
   "op": {
    "id": "00000000-0000-4000-8000-000000000070",
    "type": "product_review_complete",
@@ -2383,7 +2382,122 @@
    "payload": {
     "product_id": "00000000-0000-4000-8000-000000000202",
     "counted_qty": 12,
+    "base_ver": 4,
+    "entry_id": "00000000-0000-4000-8000-000000000113"
+   }
+  }
+ },
+ {
+  "why": "实收超上限 19,999,999,801",
+  "op": {
+   "id": "00000000-0000-4000-8000-000000000071",
+   "type": "sale_batch",
+   "occurred_at": "2026-11-19T10:15:00+08:00",
+   "payload": {
+    "batch_id": "00000000-0000-4000-8000-000000000304",
+    "paid_total_fen": 19999999801,
+    "lines": [
+     {
+      "entry_id": "00000000-0000-4000-8000-000000000101",
+      "product_id": "00000000-0000-4000-8000-000000000201",
+      "barcode": "6902514300011",
+      "name": "康师傅红烧牛肉面",
+      "unit_name": "桶",
+      "pack_qty": 1,
+      "pack_count": 2,
+      "unit_price_fen": 450
+     }
+    ]
+   }
+  }
+ },
+ {
+  "why": "盘点数超上限 10,000,000",
+  "op": {
+   "id": "00000000-0000-4000-8000-000000000072",
+   "type": "count",
+   "occurred_at": "2026-11-19T10:15:00+08:00",
+   "payload": {
+    "entry_id": "00000000-0000-4000-8000-000000000114",
+    "product_id": "00000000-0000-4000-8000-000000000203",
+    "counted_qty": 10000000,
+    "base_qty": 0,
+    "base_ver": 1
+   }
+  }
+ },
+ {
+  "why": "base_qty 低于 −9,999,999",
+  "op": {
+   "id": "00000000-0000-4000-8000-000000000073",
+   "type": "count",
+   "occurred_at": "2026-11-19T10:15:00+08:00",
+   "payload": {
+    "entry_id": "00000000-0000-4000-8000-000000000114",
+    "product_id": "00000000-0000-4000-8000-000000000203",
+    "counted_qty": 0,
+    "base_qty": -10000000,
+    "base_ver": 1
+   }
+  }
+ },
+ {
+  "why": "quick 登记带了 base_unit",
+  "op": {
+   "id": "00000000-0000-4000-8000-000000000074",
+   "type": "product_upsert",
+   "occurred_at": "2026-11-19T10:15:00+08:00",
+   "payload": {
+    "product_id": "00000000-0000-4000-8000-000000000204",
+    "barcode": "6920202888899",
+    "name": "新品",
+    "price_fen": 100,
+    "quick": true,
+    "base_unit": "个"
+   }
+  }
+ },
+ {
+  "why": "非 quick 登记没带 base_unit",
+  "op": {
+   "id": "00000000-0000-4000-8000-000000000075",
+   "type": "product_upsert",
+   "occurred_at": "2026-11-19T10:15:00+08:00",
+   "payload": {
+    "product_id": "00000000-0000-4000-8000-000000000204",
+    "barcode": "6920202888899",
+    "name": "新品",
+    "price_fen": 100,
+    "quick": false
+   }
+  }
+ },
+ {
+  "why": "product_review_complete 缺 entry_id",
+  "op": {
+   "id": "00000000-0000-4000-8000-000000000076",
+   "type": "product_review_complete",
+   "occurred_at": "2026-11-19T10:15:00+08:00",
+   "payload": {
+    "product_id": "00000000-0000-4000-8000-000000000202",
+    "unit_cost_fen": 150,
+    "counted_qty": 12,
     "base_ver": 4
+   }
+  }
+ },
+ {
+  "why": "实际数超上限",
+  "op": {
+   "id": "00000000-0000-4000-8000-000000000077",
+   "type": "expiry_dispose",
+   "occurred_at": "2026-11-19T10:15:00+08:00",
+   "payload": {
+    "lot_id": "00000000-0000-4000-8000-000000000401",
+    "handle_ver": 1,
+    "actual_qty": 10000000,
+    "action": "discard",
+    "entry_id": "00000000-0000-4000-8000-000000000115"
    }
   }
  }

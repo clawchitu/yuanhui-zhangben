@@ -134,7 +134,8 @@
             ],
             "properties": {
               "id": {
-                "type": "string"
+                "type": "string",
+                "pattern": "^op:[a-z_]+(\\[[a-z_]+\\])?$"
               },
               "kind": {
                 "const": "op"
@@ -159,6 +160,17 @@
               },
               "revoked": {
                 "$ref": "#/$defs/cell"
+              },
+              "match": {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": {
+                  "type": [
+                    "boolean",
+                    "string",
+                    "integer"
+                  ]
+                }
               }
             }
           },
@@ -219,8 +231,7 @@
             "allow",
             "deny",
             "held",
-            "not_applicable",
-            "undecided"
+            "not_applicable"
           ]
         },
         "conditions": {
@@ -239,34 +250,8 @@
             "demo_fake_data"
           ]
         },
-        "proposed": {
-          "enum": [
-            "allow",
-            "deny",
-            "held"
-          ]
-        },
         "note": {
           "type": "string"
-        }
-      },
-      "if": {
-        "properties": {
-          "decision": {
-            "const": "undecided"
-          }
-        }
-      },
-      "then": {
-        "required": [
-          "proposed"
-        ]
-      },
-      "else": {
-        "not": {
-          "required": [
-            "proposed"
-          ]
         }
       }
     }

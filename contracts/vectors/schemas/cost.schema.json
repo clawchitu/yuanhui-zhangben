@@ -48,10 +48,6 @@
           "must_pass": {
             "type": "boolean"
           },
-          "pending_question": {
-            "type": "string",
-            "pattern": "^Q[0-9]+$"
-          },
           "initial": {
             "type": "object",
             "additionalProperties": false,
@@ -249,10 +245,6 @@
                 "calc": {
                   "type": "string",
                   "minLength": 1
-                },
-                "pending_question": {
-                  "type": "string",
-                  "pattern": "^Q[0-9]+$"
                 },
                 "expect": {
                   "type": "object",

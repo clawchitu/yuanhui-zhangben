@@ -642,9 +642,10 @@ components:
           schema:
             type: object
             additionalProperties: false
-            required: [token, role, store, label]
+            required: [token, role, store, label, epoch]
             properties:
               token: { type: string, description: 只在这里出现一次，手机存钥匙串 }
+              epoch: { $ref: "#/components/schemas/Uuid", description: 手机的第一个 epoch，之后每次 /v1/sync 都要带（§4.2） }
               role: { $ref: "#/components/schemas/Role" }
               store: { $ref: "#/components/schemas/Store" }
               label: { $ref: "#/components/schemas/DeviceLabel" }
@@ -731,10 +732,8 @@ components:
       required: [epoch, cursors, ops, app_build]
       properties:
         epoch:
-          oneOf:
-            - { $ref: "#/components/schemas/Uuid" }
-            - { type: "null" }
-          description: 手机记着的 epoch；还没同步过时为 null
+          $ref: "#/components/schemas/Uuid"
+          description: 手机记着的 epoch，必填、不允许为空；第一个来自登录 / 兑码 / 演示登录的响应（§4.2）
         cursors: { $ref: "#/components/schemas/Cursors" }
         ops:
           type: array
@@ -757,9 +756,11 @@ components:
           enum: [forbidden, stale, id_conflict, invalid]
         remap:
           type: object
-          description: 旧商品 id → 赢家商品 id（§4.4 条码已登记）
-          propertyNames: { format: uuid }
-          additionalProperties: { $ref: "#/components/schemas/Uuid" }
+          description: "§4.2 的 remap?: {product_id: 新id}。这个 op 引用的商品已成为别名（§4.4 条码已登记），product_id 是赢家商品的 id，手机把本地引用改写过去"
+          additionalProperties: false
+          required: [product_id]
+          properties:
+            product_id: { $ref: "#/components/schemas/Uuid" }
         current:
           type: object
           description: status=rejected 且 code=stale 时带回最新账面数（stock_qty、stock_ver）或批次状态（qty_left、handle_ver、closed）
@@ -773,6 +774,10 @@ components:
         replayed: { type: boolean, description: 重发同一 id 时为 true，结果与第一次相同 }
       if: { properties: { status: { const: rejected } } }
       then: { required: [code] }
+      examples:
+        - { id: 00000000-0000-4000-8000-000000000004, status: applied, remap: { product_id: 00000000-0000-4000-8000-000000000999 } }
+        - { id: 00000000-0000-4000-8000-000000000014, status: rejected, code: stale, current: { stock_qty: 8, stock_ver: 12 } }
+        - { id: 00000000-0000-4000-8000-000000000001, status: applied, replayed: true }
     SyncResponse:
       type: object
       additionalProperties: false
@@ -974,22 +979,24 @@ components:
         profit_fen: { $ref: "#/components/schemas/SignedFen", description: 赚了 = Σ 进价已知卖出行 (amount − cogs) + Σ cost_fix 行 (amount − cogs) }
         discount_fen: { $ref: "#/components/schemas/SignedFen", description: 优惠 = Σ (list_amount_fen − amount_fen) }
         cost_missing_count: { type: integer, minimum: 0, description: 有 N 样进价没填（尚未补记的 cost_missing 卖出涉及的商品种数） }
+        loss_cost_missing_count: { type: integer, minimum: 0, description: 标了 cost_missing 的损耗行（扔掉、退货、盘点）笔数，「有 N 笔没算进价」（§5.2、§5.3） }
         top_sellers: { type: array, items: { $ref: "#/components/schemas/ProductAmount" } }
         low_stock: { type: array, items: { $ref: "#/components/schemas/ProductAmount" } }
         expiring: { type: array, items: { $ref: "#/components/schemas/ProductAmount" } }
     ReconRow:
       type: object
       additionalProperties: false
-      required: [key, amount_fen]
+      required: [key, amount_fen, cost_missing_count]
       properties:
+        cost_missing_count: { type: integer, minimum: 0, description: 这一行里标了 cost_missing 的流水笔数；非零时行旁注明「有 N 笔没算进价」（§5.3）。卖出行指尚未补记的卖出 }
         key:
           enum: [stock_in, sale, count, expire_loss, supplier_return, opening_and_adjust]
-          description: 每一项 = 本月 entries.value_delta_fen 按类型分组求和；opening_and_adjust 是 opening + cost_adjust，非零才显示
+          description: 每一项 = 本月 entries.value_delta_fen 按类型分组求和；opening_and_adjust 是 opening + cost_adjust，非零才显示；进价已知时没填进价的期初记成 count，算在 count 行（§5.2）
         amount_fen: { $ref: "#/components/schemas/SignedFen" }
     ReportMonth:
       type: object
       additionalProperties: false
-      required: [month, sold_fen, profit_fen, stock_value_end_fen, discount_fen, expire_loss_fen, cost_missing_count, daily, reconciliation]
+      required: [month, sold_fen, profit_fen, stock_value_end_fen, discount_fen, expire_loss_fen, cost_missing_count, loss_cost_missing_count, daily, reconciliation]
       properties:
         month: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$" }
         sold_fen: { $ref: "#/components/schemas/SignedFen" }
@@ -997,7 +1004,8 @@ components:
         stock_value_end_fen: { $ref: "#/components/schemas/SignedFen", description: 现在店里货值（本月则为现在，过去的月份为月末） }
         discount_fen: { $ref: "#/components/schemas/SignedFen" }
         expire_loss_fen: { $ref: "#/components/schemas/SignedFen", description: Σ expire_loss 行 cogs_fen }
-        cost_missing_count: { type: integer, minimum: 0 }
+        cost_missing_count: { type: integer, minimum: 0, description: 有 N 样进价没填（尚未补记的 cost_missing 卖出涉及的商品种数） }
+        loss_cost_missing_count: { type: integer, minimum: 0, description: 标了 cost_missing 的损耗行（扔掉、退货、盘点）笔数 }
         daily:
           type: array
           items:

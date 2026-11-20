@@ -84,15 +84,6 @@
         "value_delta_fen": 24000,
         "cost_missing": false,
         "unit_cost_fen": 4800
-       },
-       {
-        "type": "cost_adjust",
-        "qty_delta": 0,
-        "amount_fen": 0,
-        "list_amount_fen": 0,
-        "cogs_fen": 0,
-        "value_delta_fen": 0,
-        "cost_missing": false
        }
       ],
       "state": {
@@ -103,8 +94,7 @@
        "u": 200
       }
      },
-     "calc": "n=120，T=24000，b=roundDiv(24000,120)=200；k 假 → 否则分支：q=120，目标货值=roundDiv(24000×120,120)=24000，cost_adjust=24000−(0+24000)=0",
-     "pending_question": "Q2"
+     "calc": "n=120，T=24000，b=roundDiv(24000,120)=200；k 假 → 否则分支：q=120，目标货值=roundDiv(24000×120,120)=24000，cost_adjust=24000−(0+24000)=0；差额为 0，不记 cost_adjust（§5.2 通则）"
     },
     {
      "action": {
@@ -297,7 +287,8 @@
         "cost_missing": false,
         "covers_steps": [
          1
-        ]
+        ],
+        "unit_cost_fen": 200
        }
       ],
       "state": {
@@ -465,15 +456,6 @@
         "value_delta_fen": 1000,
         "cost_missing": false,
         "unit_cost_fen": 1000
-       },
-       {
-        "type": "cost_adjust",
-        "qty_delta": 0,
-        "amount_fen": 0,
-        "list_amount_fen": 0,
-        "cogs_fen": 0,
-        "value_delta_fen": 0,
-        "cost_missing": false
        }
       ],
       "state": {
@@ -484,8 +466,7 @@
        "u": 333
       }
      },
-     "calc": "n=3，T=1000，b=333；目标=roundDiv(1000×3,3)=1000，调整 0",
-     "pending_question": "Q2"
+     "calc": "n=3，T=1000，b=333；目标=roundDiv(1000×3,3)=1000，调整 0；差额为 0，不记 cost_adjust（§5.2 通则）"
     },
     {
      "action": {
@@ -701,7 +682,9 @@
    "rules": [
     "5.2-卖出-未知",
     "5.2-进货-未知或非正",
-    "5.2-成本补记"
+    "5.2-成本补记",
+    "5.2-撤销",
+    "5.2-k只增"
    ],
    "title": "进价未知的正库存：卖出照样 cost_missing；之后进货得到进价 → 重估旧货 + 成本补记",
    "initial": {
@@ -808,7 +791,8 @@
         "cost_missing": false,
         "covers_steps": [
          1
-        ]
+        ],
+        "unit_cost_fen": 200
        }
       ],
       "state": {
@@ -820,6 +804,34 @@
       }
      },
      "calc": "n=5，T=1000，b=200；k 假 → 否则分支：q=13，目标=roundDiv(1000×13,5)=2600；调整=2600−(0+1000)=1600；补记：amount 600，cogs 2×200=400"
+    },
+    {
+     "action": {
+      "type": "void",
+      "target_step": 2
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "stock_in",
+        "qty_delta": -5,
+        "amount_fen": -1000,
+        "list_amount_fen": -1000,
+        "cogs_fen": 0,
+        "value_delta_fen": -1000,
+        "cost_missing": false,
+        "reverses_step": 2
+       }
+      ],
+      "state": {
+       "q": 8,
+       "v": 1600,
+       "c": 200,
+       "k": true,
+       "u": 200
+      }
+     },
+     "calc": "撤销让进价变已知的那次进货：q=13−5=8，v=2600−1000=1600；k 仍为真、c=200 保留，第 2 步的 cost_fix 不冲；q>0 且 v≥0，满足 I3（8×200=1600），不记 cost_adjust"
     }
    ]
   },
@@ -907,7 +919,8 @@
         "cost_missing": false,
         "covers_steps": [
          0
-        ]
+        ],
+        "unit_cost_fen": 200
        }
       ],
       "state": {
@@ -1065,7 +1078,8 @@
   {
    "id": "cost-13",
    "rules": [
-    "5.2-盘点-未知"
+    "5.2-盘点-未知",
+    "5.2-未知-非卖出"
    ],
    "title": "盘点（进价未知）：只改数量",
    "initial": {
@@ -1090,7 +1104,7 @@
         "list_amount_fen": 0,
         "cogs_fen": 0,
         "value_delta_fen": 0,
-        "cost_missing": false
+        "cost_missing": true
        }
       ],
       "state": {
@@ -1101,7 +1115,7 @@
        "u": null
       }
      },
-     "calc": "金额 0"
+     "calc": "k 假：金额 0，数量有变化 → 标 cost_missing（§5.2 进价未知时的非卖出流水）"
     }
    ]
   },
@@ -1224,8 +1238,7 @@
    "rules": [
     "5.2-期初-没填"
    ],
-   "pending_question": "Q4",
-   "title": "期初没填进价，但 k 已经为真 → 按盘点规则处理",
+   "title": "期初没填进价，但 k 已经为真 → 这一条就是一次盘点，流水记 count",
    "initial": {
     "q": 5,
     "v": 1000,
@@ -1243,11 +1256,11 @@
      "expect": {
       "entries": [
        {
-        "type": "opening",
+        "type": "count",
         "qty_delta": -2,
         "amount_fen": 0,
         "list_amount_fen": 0,
-        "cogs_fen": 0,
+        "cogs_fen": 400,
         "value_delta_fen": -400,
         "cost_missing": false
        }
@@ -1260,7 +1273,7 @@
        "u": 200
       }
      },
-     "calc": "按盘点：d=−2，盘亏=roundDiv(1000×2,5)=400；流水类型和 cogs 记法见疑问 Q4（这里按 §3.3 opening 行 cogs=0）"
+     "calc": "按盘点：d=3−5=−2，盘亏=roundDiv(1000×2,5)=400；type=count，cogs 400，value −400，月报算在「盘点少了的」"
     }
    ]
   },
@@ -1539,8 +1552,7 @@
     "5.2-成本补记",
     "5.2-撤销"
    ],
-   "pending_question": "Q6",
-   "title": "成本补记之后再撤销其中一笔卖出：再记一条冲销的 cost_fix",
+   "title": "必过：补记后撤销 —— 冲销卖出、冲销 cost_fix、再按补记进价把货值加回",
    "initial": {
     "q": 0,
     "v": 0,
@@ -1665,7 +1677,8 @@
         "covers_steps": [
          1,
          2
-        ]
+        ],
+        "unit_cost_fen": 200
        }
       ],
       "state": {
@@ -1703,20 +1716,31 @@
         "cogs_fen": -400,
         "value_delta_fen": 0,
         "cost_missing": false,
-        "reverses_step": 3
+        "reverses_step": 3,
+        "unit_cost_fen": 200
+       },
+       {
+        "type": "cost_adjust",
+        "qty_delta": 0,
+        "amount_fen": 0,
+        "list_amount_fen": 0,
+        "cogs_fen": 0,
+        "value_delta_fen": 400,
+        "cost_missing": false
        }
       ],
       "state": {
        "q": 9,
-       "v": 1400,
+       "v": 1800,
        "c": 200,
        "k": true,
-       "u": 156
+       "u": 200
       }
      },
-     "calc": "冲销卖出：qty +2，金额取反，cogs/value 原来就是 0；再记冲销 cost_fix：−550、−2×200=−400；I3 不违反（q>0、v≥0），v 不变，平均进价 u=roundDiv(1400,9)=156（156 而不是 200，见疑问 Q6）"
+     "calc": "冲销卖出：qty +2，金额取反，cogs/value 原来就是 0；冲销 cost_fix：−550、−2×200=−400（b 取自第 3 步 cost_fix 的 unit_cost_fen）；cost_adjust +2×200=400；v=1400+400=1800，u=roundDiv(1800,9)=200"
     }
-   ]
+   ],
+   "must_pass": true
   },
   {
    "id": "cost-20",
@@ -1876,7 +1900,8 @@
         "cost_missing": false,
         "covers_steps": [
          2
-        ]
+        ],
+        "unit_cost_fen": 200
        }
       ],
       "state": {
@@ -1888,6 +1913,254 @@
       }
      },
      "calc": "只补第 2 步：amount 550，cogs 2×200=400；第 1 步已撤销、第 3 步的冲销行都不算"
+    }
+   ]
+  },
+  {
+   "id": "cost-21",
+   "rules": [
+    "5.2-撤销",
+    "5.2-进货-未知或非正",
+    "5.2-进货-已知且正",
+    "5.2-卖出-已知且正"
+   ],
+   "must_pass": true,
+   "title": "必过：撤销归位（库存为正、货值为负）—— 归位到 v = q × c",
+   "initial": {
+    "q": 0,
+    "v": 0,
+    "c": null,
+    "k": false,
+    "u": null
+   },
+   "steps": [
+    {
+     "action": {
+      "type": "stock_in",
+      "pack_qty": 1,
+      "pack_count": 10,
+      "unit_cost_fen": 100
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "stock_in",
+        "qty_delta": 10,
+        "amount_fen": 1000,
+        "list_amount_fen": 1000,
+        "cogs_fen": 0,
+        "value_delta_fen": 1000,
+        "cost_missing": false,
+        "unit_cost_fen": 100
+       }
+      ],
+      "state": {
+       "q": 10,
+       "v": 1000,
+       "c": 100,
+       "k": true,
+       "u": 100
+      }
+     },
+     "calc": "n=10，T=1000，b=100；k 假 → 否则分支：目标=roundDiv(1000×10,10)=1000，差额 0 不记 cost_adjust；没有待补记的卖出，不记 cost_fix"
+    },
+    {
+     "action": {
+      "type": "stock_in",
+      "pack_qty": 1,
+      "pack_count": 10,
+      "unit_cost_fen": 10
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "stock_in",
+        "qty_delta": 10,
+        "amount_fen": 100,
+        "list_amount_fen": 100,
+        "cogs_fen": 0,
+        "value_delta_fen": 100,
+        "cost_missing": false,
+        "unit_cost_fen": 10
+       }
+      ],
+      "state": {
+       "q": 20,
+       "v": 1100,
+       "c": 10,
+       "k": true,
+       "u": 55
+      }
+     },
+     "calc": "k 真 q>0：q=20，v=1100，c=10；u=roundDiv(1100,20)=55"
+    },
+    {
+     "action": {
+      "type": "sale",
+      "pack_qty": 1,
+      "pack_count": 5,
+      "amount_fen": 750,
+      "list_amount_fen": 750
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "sale",
+        "qty_delta": -5,
+        "amount_fen": 750,
+        "list_amount_fen": 750,
+        "cogs_fen": 275,
+        "value_delta_fen": -275,
+        "cost_missing": false
+       }
+      ],
+      "state": {
+       "q": 15,
+       "v": 825,
+       "c": 10,
+       "k": true,
+       "u": 55
+      }
+     },
+     "calc": "take=5<20：cogs=roundDiv(1100×5,20)=275；q=15，v=825"
+    },
+    {
+     "action": {
+      "type": "void",
+      "target_step": 0
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "stock_in",
+        "qty_delta": -10,
+        "amount_fen": -1000,
+        "list_amount_fen": -1000,
+        "cogs_fen": 0,
+        "value_delta_fen": -1000,
+        "cost_missing": false,
+        "reverses_step": 0
+       },
+       {
+        "type": "cost_adjust",
+        "qty_delta": 0,
+        "amount_fen": 0,
+        "list_amount_fen": 0,
+        "cogs_fen": 0,
+        "value_delta_fen": 225,
+        "cost_missing": false
+       }
+      ],
+      "state": {
+       "q": 5,
+       "v": 50,
+       "c": 10,
+       "k": true,
+       "u": 10
+      }
+     },
+     "calc": "冲销第一次进货：q=5，v=825−1000=−175；k 真、q>0 而 v<0 → 归位到 q×c=5×10=50，cost_adjust +225"
+    }
+   ]
+  },
+  {
+   "id": "cost-22",
+   "rules": [
+    "5.2-未知-非卖出",
+    "5.2-过期退货",
+    "5.2-期初-填了",
+    "5.2-成本补记"
+   ],
+   "title": "进价未知时过期扔掉、退给供货商：金额 0、标 cost_missing、之后补进价也不补记它们",
+   "initial": {
+    "q": 10,
+    "v": 0,
+    "c": null,
+    "k": false,
+    "u": null
+   },
+   "steps": [
+    {
+     "action": {
+      "type": "expire_loss",
+      "qty": 2
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "expire_loss",
+        "qty_delta": -2,
+        "amount_fen": 0,
+        "list_amount_fen": 0,
+        "cogs_fen": 0,
+        "value_delta_fen": 0,
+        "cost_missing": true
+       }
+      ],
+      "state": {
+       "q": 8,
+       "v": 0,
+       "c": null,
+       "k": false,
+       "u": null
+      }
+     },
+     "calc": "k 假：金额 0，cost_missing"
+    },
+    {
+     "action": {
+      "type": "supplier_return",
+      "qty": 3
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "supplier_return",
+        "qty_delta": -3,
+        "amount_fen": 0,
+        "list_amount_fen": 0,
+        "cogs_fen": 0,
+        "value_delta_fen": 0,
+        "cost_missing": true
+       }
+      ],
+      "state": {
+       "q": 5,
+       "v": 0,
+       "c": null,
+       "k": false,
+       "u": null
+      }
+     },
+     "calc": "k 假：金额 0，cost_missing"
+    },
+    {
+     "action": {
+      "type": "opening",
+      "counted_qty": 5,
+      "unit_cost_fen": 200
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "opening",
+        "qty_delta": 0,
+        "amount_fen": 0,
+        "list_amount_fen": 0,
+        "cogs_fen": 0,
+        "value_delta_fen": 1000,
+        "cost_missing": false
+       }
+      ],
+      "state": {
+       "q": 5,
+       "v": 1000,
+       "c": 200,
+       "k": true,
+       "u": 200
+      }
+     },
+     "calc": "填了进价：v=5×200=1000；补记只针对卖出，这里没有待补记的卖出行 → 不记 cost_fix"
     }
    ]
   }
