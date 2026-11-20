@@ -151,7 +151,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 |---|---|---|---|---|---|
 | `sale` | −数量 | 摊完优惠的实收 | 原价 | 这行货的进价（服务器算） | −cogs |
 | `stock_in` | +数量 | 进货总价 = 件数 × 单价 | 同 amount | 0 | +总价；`unit_cost_fen` 存录入的每件（条/箱）单价 |
-| `opening`（期初库存） | 设为实数后的差 | 0 | 0 | 0 | 库存值的变化 |
+| `opening`（期初库存） | 设为实数后的差 | 0 | 0 | 0 | 库存值的变化；填了进价时 `unit_cost_fen` 存 `b`（留档，冲销行照抄），没填存空（§14 S05-7） |
 | `count`（盘点） | 实数 − 账面 | 0 | 0 | 盘亏为正、盘盈为负 | −cogs |
 | `expire_loss`（过期扔掉） | −数量 | 0 | 0 | 损耗金额 | −cogs |
 | `supplier_return`（退供货商） | −数量 | 0 | 0 | 0（不计盈亏） | −按平均进价算的货值 |
@@ -168,7 +168,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 - I5 同一个 op 重放任意次，库里结果不变
 - I6 对账：对任意时间段，`期初货值 + Σ value_delta（按类型分组）= 期末货值`，逐分相等
 - I7 同一店内 `rev` 不重复；用任意页大小分页拉取的结果集合 = 一次拉完的结果集合
-- I8 重发同一个 op，返回与第一次相同的结果（含拒绝原因和 remap）
+- I8 重发同一个 op，返回与第一次相同的结果（含拒绝原因和 remap）；「相同」指库里存的那份结果不变，回给手机时仍按当前请求的角色裁剪（收银员重发拿不到 `current` 里的库存，`sync/projection.ts` 的 `resultOut`）
 
 ### 3.4 手机本地库（GRDB）
 
@@ -253,6 +253,9 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | 盘点、期初、补全、处理快过期时，手机看到的版本已经过时 | `rejected: stale`，`current` 带回最新的账面数或批次状态，手机让人重新确认（§5.4、§5.6） |
 | 同一 id 不同内容 | `rejected: id_conflict` |
 | 金额、数量超出 §5.0 的上限或格式不对 | `rejected: invalid` |
+| 进货 0 件（`pack_count = 0`，这批单位成本无定义） | `rejected: invalid` 并留档；卖出行 0 件不拒，照普通行记（§14 S05-3） |
+| 只看 op 自己就能判定的问题，包括算出来的新库存、货值存不进列（`stock_qty` 是 `integer`，满额进货约 215 次就到） | 写库之前判，`rejected: invalid`。留不留档只看 `ops` 这一行存不存得下：`expiry_date` 年份 0000 → 留档；`occurred_at` 年份 0000 → 不留档（并入 §4.2 的存不进库检查，所有 op 类型都判）。只按存不存得下判，不按合不合理判：1970 年的 `occurred_at` 照收（§14 S05-4） |
+| 记账类 op 过了上面的预检查，写库时仍报 22xxx | 只能是服务器自己错了：整个请求 500、记 error 日志（op id、类型、SQLSTATE），不单个拒收，手机会重发；记账类 op 的兜底永远不产生 `rejected`（§14 S04-14、S05-4） |
 | `occurred_at` 比服务器时间晚 5 分钟以上（手机时钟错） | 改成 `received_at`，`flags.clock_adjusted=true` |
 | 库存变负 | 允许，永不拦卖出 |
 
@@ -299,6 +302,8 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
   - 一笔卖出的实收 `paid_total_fen` ≤ 19,999,999,800 分（= 200 行 × 单行上限；多收也不能超过它）；
   - 件数 `pack_count` ≤ 99,999；`pack_qty` ≤ 9,999；**基本单位数量**（件数 × 换算、盘点数、期初数、处理快过期时的实际数、扔掉和退货的数量）≤ 9,999,999；`base_qty`（账面数，可以为负）绝对值 ≤ 9,999,999；
   - 一笔卖出 ≤ 200 行；除 `base_qty` 外数量和金额不为负。
+  - 进货件数 `pack_count` ≥ 1（0 件时 `b = roundDiv(T, 0)` 无定义）：`ops.schema.json` 不改，服务器在应用时判，拒 `invalid` 并留档；`limits.json` 有对应的一组，手机同样拦。卖出行 0 件不拒（§14 S05-3）。
+  - 算出来的结果也要存得进列：新的 `stock_qty`（`integer`）和 `stock_value_fen`、各行金额（`bigint`）用 `BigInt` 算完再比；金额、货值、成本还要能按契约 `SignedFen` 下发（JSON 安全整数 ±(2^53−1)），与 `bigint` 取两者更严。超出拒 `invalid` 并留档，在写库之前判；过了这一层写库时再出 22xxx 的记账 op 整个请求 500（§14 S05-4）。
   - 在这些上限内，JSON 数字不超过 2^53，分摊的中间乘积 `2 × L_i × P + L` 不超过 2^63。「件数 × 换算」「件数 × 单价」这类乘积上限 JSON schema 表达不了，由服务器在应用 op 时校验。
 - S01 的向量要覆盖：负数的 `roundDiv`、恰好一半、上限值、全零购物篮、接近溢出的中间乘积。
 
@@ -321,6 +326,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 - **进货** `n` 个基本单位、总价 `T`（整件码先换算：5 箱 × 24 = 120 罐），这批单位成本 `b = roundDiv(T, n)`：
   - `k` 为真且 `q > 0`：`q += n; v += T; c = b`。
   - 否则（`q <= 0`，或进价一直没填）：`q += n`；目标货值 = `q > 0 ? roundDiv(T × q, n) : q × b`；进货行照记 `value_delta = T`，再记一条 `cost_adjust` = 目标货值 − (`v + T`)；`v` = 目标货值，`c = b`，`k = 真`。**差额为 0 时不记这一条**（通则：金额为 0 的 `cost_adjust` 一律不记；没有可补记行的 `cost_fix` 也不记）。
+  - `n = 0`（进货 0 件）：拒 `invalid` 并留档，什么都不记（§14 S05-3）。
 - **卖出** `n` 个：
   - `k` 为假：`cogs = 0`，`cost_missing = true`，`value_delta = 0`，只减数量。这行不进「赚了」，报表写「有 N 样进价没填」。**库存是正的也一样。**
   - `k` 为真且 `q > 0`：`take = min(n, q)`；`cogs = (take = q ? v : roundDiv(v × take, q)) + (n − take) × u`；若 `n >= q` 则 `c = u`。然后 `q −= n; v −= cogs`。
@@ -392,6 +398,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 1. **盘点、待确认补全、对已有商品的期初，只能联网提交，不进离线队列。** 手机先把自己的 outbox 传完，再发这一条。没网时这些页面提示「要联网才能盘点」。
 2. op 带 `base_ver`（当时的 `products.stock_ver`；每次库存变动 +1）和 `base_qty`（数的时候账上显示几个）。**服务器只比对 `base_ver`**，`base_qty` 只用来留档和排查，不参与判断：`count` 两个都必带；`product_review_complete` 必带 `base_ver`，`base_qty` 可选；`opening` 两个都可选，但受第 3 条约束。服务器发现 `stock_ver` 已经变了 → 拒 `stale`，带回最新账面数。手机显示「刚才别的手机又记了账，账上现在是 8 个。你数的 10 个还对吗？」，确认或改数后带新版本重发。
 3. **新商品登记第二步的期初**可以离线（商品是新的，没有可冲突的账面数），随 `product_upsert` 一起排队，不带 `base_ver`。服务器的判断办法（schema 判断不了商品新旧）：**不带 `base_ver` 的 `opening` 只在这个商品的 `stock_ver = 0`（还没有过任何库存变动）时接受**，否则拒 `stale` 并带回最新账面数，提示重新数；带了 `base_ver` 的按第 2 条比对。条码其实已被别的手机登记（发生别名合并）时，赢家商品通常已有库存变动，自然落入被拒这一支。
+   因此**每次库存变动**（卖出、进货、期初、撤销等任何改 `stock_qty` 的流水）`stock_ver + 1`，期初和盘点写 `last_count_at`。`opening` 的第 2、3 条由 S05b 实现；第 4 条、`count / product_review_complete` 的校验和批次在 S06（§14 S05-2）。
 4. **迟到的流水**：任何影响库存的 op 入账时，如果它的 `occurred_at` 早于这个商品最近一次盘点 / 期初的时间（`products.last_count_at`），说明数的时候这些货已经不在货架上了。处理：流水照常入账（收入、成本照记），同时自动追加一条 `count` 类型的补偿流水（数量和货值正好抵消这笔流水对库存的影响，`flags.late_before_count`），库存保持为盘点得到的数。效果：原先被算成盘亏的那几个，改由这笔卖出解释。
 5. 不做「盘点期间暂停其他手机记账」，店里不能因为有人在盘点就卖不了东西。
 
@@ -554,6 +561,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 
 **S06 记账引擎二：盘点、保质期批次、损耗、退货、待确认补全、成本补记**
 - 产出：`ledger/count.ts lots.ts costfix.ts`，op：`count / expiry_dispose / lot_snooze / product_review_complete`，§5.6 的版本校验和迟到流水补偿。
+- 与 S05 的分工（§14）：成本补记已由 S05b 在 `stock_in / opening / void` 里当场写库，`costfix.ts` 只剩 `product_review_complete` 的接入，不许另写一套补记逻辑（S05-1）；`opening` 的版本校验、`stock_ver + 1`、`last_count_at` 已在 S05b，本段做 §5.6 第 4 条迟到补偿、`count / product_review_complete` 的版本校验，并把进货、期初、卖出、撤销的批次动作（`stock_lots / lot_moves`）一并补上（S05b 只在流水上存 `expiry_date`，S05-2）；给 `cost.json` 加一组 u ≠ c 的盘盈（例如库存 6、货值 24280、c = 4000，数到 8 → 盘盈 2 × 4047），服务器和手机都要过（S05-8）。
 - 验收：
   - `expiry.json` 向量通过；账面 2 实数 1 → 盘亏 1 个，按平均进价。
   - 并发盘点：A 看到 10（版本 n）→ B 卖 2 → A 提交盘点 10 被拒 `stale` 并带回 8 → A 带新版本确认后成功，库存 10、盘盈 2。
@@ -1075,7 +1083,7 @@ S04 的 PR（#10）提了 14 条（S04-1…9 来自计划裁定，S04-10…13 �
 | S04-13 | 请求外壳和 payload 的校验 | 外壳严格校验，不成形整个请求 400。payload 不合 `ops.schema.json` → 这个 op `rejected: invalid` 并留档。权限判在 schema 之前。过了外壳但算不了哈希或存不进库的 op（`\u0000`、不成对的代理项、解析不出的 `occurred_at`；Codex 第二轮补：payload 嵌套超过 16 层或超过 1 万个节点，这项检查不递归）→ `rejected: invalid`，不留档。op 的内容不许导致 500 | §4.2、§4.4、S04 |
 | S04-14 | savepoint 兜底把所有 22xxx 都当成「op 内容有问题」 | S04 只有商品类 op，可以接受。S05 / S06 加入卖出、进货以后，服务器自己算错（除零、数值溢出）也是 22xxx，记账 op 被当成终局的 `invalid`、手机不再重发，等于丢账。S05 接入记账 op 时要重新定：记账类 op 遇到预检查没拦住的 22xxx 应当让整个请求 500（手机会重发），不能单个拒收；兜底触发时一律按 error 级别记日志（op id、类型、SQLSTATE） | §4.2、S05、S06 |
 
-待办（S04 只记录，不实现）：收银员拉取的 `removed` 墓碑要按角色过滤。S04 只写 `barcode` 墓碑，没有泄漏；但 `removed.kind` 还允许 `entry / batch / lot`，S05 / S06 里第一个写这些墓碑的段落要在 `sync/projection.ts` 里按角色过滤（收银员只收本机卖出流水和批次头的墓碑，不收 `lot`），并加进收银员裁剪测试。
+待办（S04 只记录，不实现）：收银员拉取的 `removed` 墓碑要按角色过滤。S04 只写 `barcode` 墓碑，没有泄漏；但 `removed.kind` 还允许 `entry / batch / lot`，S05 / S06 里第一个写这些墓碑的段落要在 `sync/projection.ts` 里按角色过滤（收银员只收本机卖出流水和批次头的墓碑，不收 `lot`），并加进收银员裁剪测试。（已由 S05b 提前实现：`cashierRemovedVisible`，原行找不到的 `entry / batch` 墓碑不发给收银员；测试在 `sync.projection.test.ts`。）
 
 S13 的 PR（#9）提了 4 条，裁定如下：
 
@@ -1086,7 +1094,7 @@ S13 的 PR（#9）提了 4 条，裁定如下：
 | S13-3 | 条码查找「< 5 ms」怎么测 | 1,000 商品 / 2,000 条码，预热后 5 轮 × 1,000 次随机查找：每轮中位数 < 5 ms，最好一轮的平均和 p99 < 5 ms；单次最慢值只打印不断言 | S13 |
 | S13-4 | 崩溃注入不是真杀进程 | 认可在注入点拷走库文件（含 -wal / -shm）当作断电时的磁盘，加一条注入点抛错的回滚测试。真正强杀 App 的验收在 S22a | S13 |
 
-S05 的 PR（#11）提了 8 条，Fable 审核裁定如下（S05 拆成 S05a / S05b 两个 PR，见 S05-6）：
+S05 的 PR（#11）提了 8 条，Fable 审核裁定如下（S05 拆成 S05a / S05b 两个 PR，见 S05-6）：S05b 的 PR（#13）又提了 8 条（S05-9 至 S05-16），Fable 审核的裁定接在同一张表里，按评论原文。
 
 | # | 疑问 | 裁定 | 改在哪里 |
 |---|---|---|---|
@@ -1098,3 +1106,11 @@ S05 的 PR（#11）提了 8 条，Fable 审核裁定如下（S05 拆成 S05a / S
 | S05-6 | S05 拆成 S05a（纯算法）和 S05b（写库与同步接入） | 可以。两个 PR 各自过审，S05 段在 S05b 合并后才算完成，依赖 S05 的段等 S05b。S05b 验收 = 执行者列的四条，再加：① `cost.json` 里只含进货 / 卖出 / 期初 / 撤销的各组经 `/v1/sync` 写库后，`entries` 和 `products` 逐分一致；② 抹零：53.50 收 53.00 经同步入库后各行 24.76 / 23.78 / 4.46，`L = 0` 而 `P ≠ 0` 被拒，I4 成立；③ 进价未知的正库存卖出、明确零成本的卖出，各经同步接口断言一次；④ 撤销：整批和单行两种 target，撤销两次第二次无操作、重放返回第一次结果，冲销行 `occurred_at` 是撤销时间，`paid_total_fen` 不改；⑤ 补记写库：`cost_fix_entry_id`、补记后撤销三条流水、同一条 `cost_fix` 被冲两次以上；⑥ `assertLedger` 加强：每条 `cost_fix` 冲销行对应恰好一笔被它补记且已撤销的卖出，实收和进价是那一行的取反，并跟一条 +数量×b 的 `cost_adjust`（b = 0 除外）；`cost_fix` 含冲销的净额 = 仍有效的被补记卖出的合计；⑦ S05-2、S05-3、S05-4 各有测试，含年份 0000 的两种和 `stock_qty` 溢出；⑧ 被踢设备：卖出直接入账带 `late_from_revoked`，进货 / 期初 / 撤销进 `held`；⑨ 收银员拉到真实流水后，递归断言没有成本键，收不到进货、期初、`cost_adjust`、`cost_fix` 行；⑩ S04-1 的过渡分支只对这四种 op 去掉，其余留到 S06 | §8 S05 |
 | S05-7 | 填了进价的 `opening` 行，`unit_cost_fen` 存不存 | 存 b（留档用，和 `cost_fix` 一样；冲销行照抄）。没填进价的存空 | §3.3 |
 | S05-8 | `cost.json` 没有 u ≠ c 的盘盈 | 把盘盈金额 `d × u` 写成 `d × c` 现在全部向量都能过。S06 给 `cost.json` 加一组（例如库存 6、货值 24280、c = 4000，盘点数到 8 → 盘盈 2 × 4047），服务器和手机都要过 | `cost.json`、§8 S06 |
+| S05-9 | 卖出引用未知商品时自动建的待确认商品：整件行卖价、条码 | 同意。`pack_qty = 1` 的行卖价取行单价；整件行记 0，不用「整件价 ÷ 换算」去猜（猜的价会被当真价卖出去，0 一眼看得出没填）。不挂条码（行里的条码可能属于别的商品，也可能是整件码，换算和整件价都不能从一行卖出里推）。附加：这个商品 id 之后再来 `product_upsert` 会被拒 `invalid`（S04 既有行为），补全只走 `product_edit` + `barcode_link` + `product_review_complete`；补全页（22b）遇到 `needs_review` 且 `price_fen = 0` 要先让人填卖价 | §4.4；S06 接补全、iOS 做 22b 的段照此处理 |
+| S05-10 | 记账 op 先写 `ops` 行再补结果 | 同意。`entries.op_id` 有外键，必须先有 `ops` 行；两步在同一个事务、同一个 savepoint 里，中途失败一起回滚，外面看不到中间状态。`held`、权限和 schema 拒收的路径不变，仍是一次写入 | 不用改 |
+| S05-11 | 冲销行的 `pack_count` | 同意随数量取反；`pack_qty` 是换算、`unit_cost_fen` 是单价，都照抄不取反。`openapi.yaml` 的 `Entry.pack_count` 已经是不限正负的整数，手机解码和显示要接受负数（列表不显示冲销行，只在求和时用到） | §3.3 撤销的记法补一句 |
+| S05-12 | 卖出冲销行带不带原 `batch_id` | 同意带（I4 和按批汇总都要用）。附加规则：凡是按 `batch_id` 取「批内的行」的查询一律加 `reverses_entry_id IS NULL`；跟着冲销产生的 `cost_fix` 冲销行和 `cost_adjust` 不带 `batch_id` | §3.3；S07 报表、S06 照此 |
+| S05-13 | `voided_at` 记什么时间 | 同意记撤销 op 的 `occurred_at`（时钟校正之后的），与冲销行的 `occurred_at` 是同一个值，「撤销算在撤销那天」只有一个口径。服务器收到的时间在冲销行的 `received_at` 上 | §3.3 |
+| S05-14 | 库里找不到原行的 `entry / batch` 墓碑发不发给收银员 | 同意不发，宁可不删也不泄漏。S05b 没有任何地方写这两种墓碑，目前不产生实际效果。附加：以后第一个真正删流水行的段，不能指望拉取时再回查原行（那时原行已经没了，收银员手机上的行就永远删不掉）；要么在 `removed` 上存归属（设备、是否卖出），要么不物理删行。那一段的 PR 必须带收银员收到本机卖出墓碑的测试 | §14 S04 待办处补一句 |
+| S05-15 | 墓碑套不套收银员 2 天窗口 | 同意不套。墓碑是删除指令，手机上可能还留着窗口以外的旧行，套了窗口这些行就删不掉；多发一条手机上已经没有的行的墓碑没有害处 | §4.2 按角色裁剪补一句 |
+| S05-16 | iOS `StockInPayload` 拦 0 件进货 | 同意，就是 S05-3 裁定的「`limits.json` 加一组让手机同样拦」。`LimitsTests` 已按 lim-10 断言。卖出行 0 件手机不拦 | 不用改 |

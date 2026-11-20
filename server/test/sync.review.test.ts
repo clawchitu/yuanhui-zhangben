@@ -470,7 +470,7 @@ describe("请求体上限（§4.2，1 MiB）", () => {
     const res = await app.inject({ method: "POST", url: "/v1/sync", headers: { ...bearer(boss.token), "content-type": "application/json" }, payload: body });
     await app.close();
     expect(res.statusCode).toBe(200);
-    // sale_batch 是 S05 的事，本段拒 invalid；这里只证明它能送达服务器
+    // 9999 × 99999 超出基本单位数量上限，应用时拒 invalid（留档）；这里只证明它能送达服务器
     expect(res.json().results).toEqual([{ id: big.id, status: "rejected", code: "invalid" }]);
   });
 

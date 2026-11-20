@@ -1,7 +1,7 @@
 // 不变式（§3.3 I1–I3 以及 §5.2 成本补记的几条推论），对一个商品的流水序列断言。
 // MemLedger 是 cost.ts 的内存参考实现：把一个商品的流水按顺序记在数组里，撤销、补记都按 §3.3 / §5.2 的记法。
 // cost.json 向量和 fast-check 性质测试都跑它；S05b 的数据库实现用同一套检查函数对库里的流水断言。
-import { CostError, count, INT32, INT64, opening, removeStock, sale, stockIn, voidEntry, type CostState, type Draft, type MissingSale, type Step } from "./cost.ts";
+import { CostError, count, FEN, INT32, opening, removeStock, sale, stockIn, voidEntry, type CostState, type Draft, type MissingSale, type Step } from "./cost.ts";
 
 export interface Row extends Draft {
   idx: number;
@@ -190,13 +190,13 @@ function assertCostFixReversals(rows: Row[]) {
   }
 }
 
-/** 状态和每条流水都存得进库（stock_qty、qty_delta 是 integer，其余金额是 bigint） */
+/** 状态和每条流水都存得进库（stock_qty、qty_delta 是 integer，其余金额是 bigint，且都在契约安全整数范围内） */
 export function assertStorable(state: CostState, rows: Row[]) {
   const ok = (x: bigint, r: { min: bigint; max: bigint }) => x >= r.min && x <= r.max;
-  check(ok(state.q, INT32) && ok(state.v, INT64) && (state.c === null || ok(state.c, INT64)), `状态超出列范围：q=${state.q} v=${state.v} c=${state.c}`);
+  check(ok(state.q, INT32) && ok(state.v, FEN) && (state.c === null || ok(state.c, FEN)), `状态超出列范围：q=${state.q} v=${state.v} c=${state.c}`);
   for (const r of rows) {
     check(ok(r.qty_delta, INT32), `第 ${r.idx} 行 qty_delta 超出 integer`);
-    for (const k of ["amount_fen", "list_amount_fen", "cogs_fen", "value_delta_fen"] as const) check(ok(r[k], INT64), `第 ${r.idx} 行 ${k} = ${r[k]} 超出 bigint`);
-    check(r.unit_cost_fen === null || ok(r.unit_cost_fen, INT64), `第 ${r.idx} 行 unit_cost_fen 超出 bigint`);
+    for (const k of ["amount_fen", "list_amount_fen", "cogs_fen", "value_delta_fen"] as const) check(ok(r[k], FEN), `第 ${r.idx} 行 ${k} = ${r[k]} 超出 FEN（bigint ∩ 安全整数）`);
+    check(r.unit_cost_fen === null || ok(r.unit_cost_fen, FEN), `第 ${r.idx} 行 unit_cost_fen 超出 FEN（bigint ∩ 安全整数）`);
   }
 }
