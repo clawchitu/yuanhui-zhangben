@@ -85,7 +85,7 @@ export async function entryFree(tx: StoreTx, id: string) {
 }
 
 /** 年份 0000：Postgres 的 date 存不下；op 本身存得下，按 payload 格式不对留档（§14 S05-4） */
-function checkExpiry(d: string | undefined) {
+export function checkExpiry(d: string | undefined) {
   if (d !== undefined && d.startsWith("0000")) bad("expiry_date 年份 0000");
 }
 

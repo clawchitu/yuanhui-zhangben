@@ -137,6 +137,23 @@ describe("待确认补全 product_review_complete", () => {
     await app.close();
   });
 
+  it("补全带了 expiry_date（ops.schema.json 允许）：opening 流水和新批次都记这个到期日；没带的批次到期日为空", async () => {
+    const { shop, app, send } = await setup();
+    const lotsOf = (pid: string) => tdb.kysely.selectFrom("stock_lots").selectAll().where("store_id", "=", shop.storeId).where("product_id", "=", pid).execute();
+    const a = randomUUID();
+    await send(sale(a, 1));
+    const ra = review(a, 6, 100, await ver(shop.storeId, a), { track_expiry: true, expiry_date: "2026-12-31" });
+    expect(await send(ra)).toEqual([{ id: ra.id, status: "applied" }]);
+    const [la] = await lotsOf(a);
+    expect([la!.source_entry_id, la!.expiry_date, la!.qty_in]).toEqual([ra.payload.entry_id, "2026-12-31", 6]);
+    expect((await entriesOf(shop.storeId, a)).find((e) => e.id === ra.payload.entry_id)!.expiry_date).toBe("2026-12-31");
+    const b = randomUUID();
+    await send(sale(b, 1));
+    await send(review(b, 3, 100, await ver(shop.storeId, b), { track_expiry: true }));
+    expect((await lotsOf(b)).map((l) => l.expiry_date)).toEqual([null]);
+    await app.close();
+  });
+
   it("base_ver 过时 → stale 带回账面数，needs_review 不清", async () => {
     const { shop, app, send } = await setup();
     const pid = randomUUID();

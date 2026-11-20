@@ -7,7 +7,7 @@ import type { StoreTx } from "../sync/lock.ts";
 import type { Outcome } from "../sync/catalog.ts";
 import { opening } from "./cost.ts";
 import { createLot } from "./lots.ts";
-import { bad, entryFree, guarded, loadProduct, missingSales, staleOf, stateOf, writeStep, type LedgerContext } from "./apply.ts";
+import { bad, checkExpiry, entryFree, guarded, loadProduct, missingSales, staleOf, stateOf, writeStep, type LedgerContext } from "./apply.ts";
 
 interface ReviewCompletePayload {
   entry_id: string;
@@ -19,16 +19,18 @@ interface ReviewCompletePayload {
   track_expiry?: boolean;
   expiry_warn_days?: number;
   shelf_life_months?: number;
+  expiry_date?: string;
 }
 
 export async function applyReviewComplete(tx: StoreTx, ctx: LedgerContext, p: ReviewCompletePayload): Promise<Outcome> {
   const remap = new Remap();
   return guarded(tx, remap, async () => {
+    checkExpiry(p.expiry_date);
     const prod = (await loadProduct(tx, await resolveProductId(tx, p.product_id, remap))) ?? bad("商品不存在");
     if (BigInt(prod.stock_ver) !== BigInt(p.base_ver)) return staleOf(prod, remap);
     await entryFree(tx, p.entry_id);
     const step = opening(stateOf(prod), BigInt(p.counted_qty), BigInt(p.unit_cost_fen), await missingSales(tx, prod.id));
-    await writeStep(tx, ctx, prod, { id: p.entry_id, unitName: prod.base_unit }, step, { counted: true });
+    await writeStep(tx, ctx, prod, { id: p.entry_id, unitName: prod.base_unit, expiryDate: p.expiry_date ?? null }, step, { counted: true });
     const settings: Record<string, unknown> = {};
     for (const k of ["track_expiry", "expiry_warn_days", "shelf_life_months"] as const) if (p[k] !== undefined) settings[k] = p[k];
     await tx.trx
@@ -37,7 +39,7 @@ export async function applyReviewComplete(tx: StoreTx, ctx: LedgerContext, p: Re
       .where("store_id", "=", tx.storeId)
       .where("id", "=", prod.id)
       .execute();
-    // 补全是一次期初：管保质期的商品生成一个批次（补全不带到期日，expiry_date = null；保质期设置以这次带的为准）
-    await createLot(tx, { ...prod, track_expiry: p.track_expiry ?? prod.track_expiry }, p.entry_id, p.counted_qty, null);
+    // 补全是一次期初：管保质期的商品生成一个批次，到期日取 payload 的 expiry_date（没带为空）；保质期设置以这次带的为准
+    await createLot(tx, { ...prod, track_expiry: p.track_expiry ?? prod.track_expiry }, p.entry_id, p.counted_qty, p.expiry_date ?? null);
   });
 }
