@@ -303,7 +303,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
   - 件数 `pack_count` ≤ 99,999；`pack_qty` ≤ 9,999；**基本单位数量**（件数 × 换算、盘点数、期初数、处理快过期时的实际数、扔掉和退货的数量）≤ 9,999,999；`base_qty`（账面数，可以为负）绝对值 ≤ 9,999,999；
   - 一笔卖出 ≤ 200 行；除 `base_qty` 外数量和金额不为负。
   - 进货件数 `pack_count` ≥ 1（0 件时 `b = roundDiv(T, 0)` 无定义）：`ops.schema.json` 不改，服务器在应用时判，拒 `invalid` 并留档；`limits.json` 有对应的一组，手机同样拦。卖出行 0 件不拒（§14 S05-3）。
-  - 算出来的结果也要存得进列：新的 `stock_qty`（`integer`）和 `stock_value_fen`、各行金额（`bigint`）用 `BigInt` 算完再比，超出拒 `invalid` 并留档，在写库之前判；过了这一层写库时再出 22xxx 的记账 op 整个请求 500（§14 S05-4）。
+  - 算出来的结果也要存得进列：新的 `stock_qty`（`integer`）和 `stock_value_fen`、各行金额（`bigint`）用 `BigInt` 算完再比；金额、货值、成本还要能按契约 `SignedFen` 下发（JSON 安全整数 ±(2^53−1)），与 `bigint` 取两者更严。超出拒 `invalid` 并留档，在写库之前判；过了这一层写库时再出 22xxx 的记账 op 整个请求 500（§14 S05-4）。
   - 在这些上限内，JSON 数字不超过 2^53，分摊的中间乘积 `2 × L_i × P + L` 不超过 2^63。「件数 × 换算」「件数 × 单价」这类乘积上限 JSON schema 表达不了，由服务器在应用 op 时校验。
 - S01 的向量要覆盖：负数的 `roundDiv`、恰好一半、上限值、全零购物篮、接近溢出的中间乘积。
 

@@ -1,12 +1,12 @@
 // S05b ①：cost.json 里只含进货 / 卖出 / 期初 / 撤销的各组，逐步经 /v1/sync 写库，entries 和 products 与向量逐分一致（§14 S05-6 ①）。
-// 另：S05-4 经同步接口的两条——Int64 货值溢出拒 invalid 并留档、不产生 500；occurred_at 年份 0000 拒 invalid、不留档。
+// 另：S05-4 经同步接口——Int64 / 契约 SignedFen 货值越界拒 invalid 并留档、不产生 500；occurred_at 年份 0000 拒 invalid、不留档。
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.ts";
-import { INT64 } from "../src/ledger/cost.ts";
+import { FEN, INT64 } from "../src/ledger/cost.ts";
 import { createTestDb, testConfig, type TestDb } from "./helpers/db.ts";
 import { makeApp, TestClock } from "./helpers/auth.ts";
 import { CONTRACTS_DIR } from "./helpers/contract.ts";
@@ -67,6 +67,16 @@ describe("cost.json 经 /v1/sync 写库（①）", () => {
           const ver = Number((await product(shop.storeId, pid)).stock_ver);
           o = op("opening", { entry_id: eid, product_id: pid, counted_qty: a.counted_qty, base_ver: ver, ...(a.unit_cost_fen === null ? {} : { unit_cost_fen: a.unit_cost_fen }) }, { at: AT });
         } else o = op("void", { target: { entry_id: stepEntry[a.target_step]! } }, { at: AT });
+        if (s.expect.error !== undefined) {
+          // 被拒的一步：拒 invalid 并留档，库里不变
+          const before = await product(shop.storeId, pid);
+          expect(await send(o), `${c.id} 第 ${i} 步`).toEqual({ id: o.id, status: "rejected", code: s.expect.error });
+          expect(await tdb.kysely.selectFrom("entries").select("id").where("store_id", "=", shop.storeId).where("op_id", "=", o.id).execute()).toEqual([]);
+          expect(await product(shop.storeId, pid), `${c.id} 第 ${i} 步之后商品不变`).toEqual(before);
+          stepEntry.push(eid);
+          stepRows.push([]);
+          continue;
+        }
         expect(await send(o), `${c.id} 第 ${i} 步`).toEqual({ id: o.id, status: "applied" });
         stepEntry.push(eid);
         const got = await tdb.kysely.selectFrom("entries").selectAll().where("store_id", "=", shop.storeId).where("op_id", "=", o.id).orderBy("seq").execute();
@@ -100,6 +110,17 @@ describe("cost.json 经 /v1/sync 写库（①）", () => {
 });
 
 describe("S05-4 经同步接口", () => {
+  it("货值越过契约 SignedFen 上限（还在 Int64 内）：进货拒 invalid 并留档，不产生 500，库里不变", async () => {
+    const { shop, app, pid } = await shopWithProduct();
+    await setState(shop.storeId, pid, { q: 1, v: FEN.max - 50n, c: 1, k: true });
+    const o = op("stock_in", { entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", pack_qty: 1, pack_count: 1, unit_cost_fen: 100 }, { at: AT });
+    const r = await sync(app, shop.family.token, { epoch: shop.epoch, ops: [o] });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.results).toEqual([{ id: o.id, status: "rejected", code: "invalid" }]);
+    expect(BigInt((await product(shop.storeId, pid)).stock_value_fen)).toBe(FEN.max - 50n);
+    await app.close();
+  });
+
   it("货值溢出 Int64：进货拒 invalid 并留档，不产生 500，库里不变", async () => {
     const { shop, app, pid } = await shopWithProduct();
     await setState(shop.storeId, pid, { q: 1, v: INT64.max - 50n, c: 1, k: true });
@@ -110,6 +131,32 @@ describe("S05-4 经同步接口", () => {
     expect(await tdb.kysely.selectFrom("ops").select(["status", "reject_code"]).where("store_id", "=", shop.storeId).where("id", "=", o.id).executeTakeFirst()).toEqual({ status: "rejected", reject_code: "invalid" });
     const p = await product(shop.storeId, pid);
     expect([p.stock_qty, BigInt(p.stock_value_fen), Number(p.stock_ver)]).toEqual([1, INT64.max - 50n, 0]);
+    await app.close();
+  });
+
+  it("货值超出契约 SignedFen（±2^53−1，Codex P1 复现）：卖出拒 invalid 并留档，开着拉取不 500，重放同结果", async () => {
+    const { shop, app, pid } = await shopWithProduct();
+    const opening = op("opening", { entry_id: randomUUID(), product_id: pid, counted_qty: 0, base_ver: 0, unit_cost_fen: 99_999_999 }, { at: AT });
+    expect((await syncOk(app, shop.family.token, { epoch: shop.epoch, ops: [opening] })).results).toEqual([{ id: opening.id, status: "applied" }]);
+    const before = await product(shop.storeId, pid);
+    const sale = op("sale_batch", {
+      batch_id: randomUUID(),
+      paid_total_fen: 10_000,
+      lines: Array.from({ length: 10 }, () => ({ entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", name: "x", unit_name: "个", pack_qty: 9_999, pack_count: 1_000, unit_price_fen: 1 })),
+    }, { at: AT });
+    for (let i = 0; i < 2; i++) {
+      // 第二次是同 id、同内容的重放；两次都开着拉取（不传 pull:false）
+      const r = await sync(app, shop.family.token, { epoch: shop.epoch, ops: [sale] });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.results).toEqual([{ id: sale.id, status: "rejected", code: "invalid", ...(i === 1 ? { replayed: true } : {}) }]);
+    }
+    expect(await tdb.kysely.selectFrom("ops").select(["status", "reject_code"]).where("store_id", "=", shop.storeId).where("id", "=", sale.id).executeTakeFirst()).toEqual({ status: "rejected", reject_code: "invalid" });
+    expect(await tdb.kysely.selectFrom("entries").select("id").where("store_id", "=", shop.storeId).where("op_id", "=", sale.id).execute()).toEqual([]);
+    expect(await product(shop.storeId, pid)).toEqual(before);
+    // 之后拉取照常
+    const pulled = await sync(app, shop.family.token, { epoch: shop.epoch, ops: [] });
+    expect(pulled.status, JSON.stringify(pulled.body)).toBe(200);
+    await assertDbLedger(tdb.kysely, shop.storeId, pid);
     await app.close();
   });
 

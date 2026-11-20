@@ -247,111 +247,128 @@
                   "minLength": 1
                 },
                 "expect": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "entries",
-                    "state"
-                  ],
-                  "properties": {
-                    "entries": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": [
-                          "type",
-                          "qty_delta",
-                          "amount_fen",
-                          "list_amount_fen",
-                          "cogs_fen",
-                          "value_delta_fen",
-                          "cost_missing"
-                        ],
-                        "properties": {
-                          "type": {
-                            "enum": [
-                              "sale",
-                              "stock_in",
-                              "opening",
-                              "count",
-                              "cost_adjust",
-                              "cost_fix",
-                              "expire_loss",
-                              "supplier_return"
-                            ]
-                          },
-                          "qty_delta": {
-                            "type": "integer"
-                          },
-                          "amount_fen": {
-                            "type": "integer"
-                          },
-                          "list_amount_fen": {
-                            "type": "integer"
-                          },
-                          "cogs_fen": {
-                            "type": "integer"
-                          },
-                          "value_delta_fen": {
-                            "type": "integer"
-                          },
-                          "cost_missing": {
-                            "type": "boolean"
-                          },
-                          "unit_cost_fen": {
-                            "type": "integer"
-                          },
-                          "reverses_step": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "covers_steps": {
-                            "type": "array",
-                            "items": {
-                              "type": "integer",
-                              "minimum": 0
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "entries",
+                        "state"
+                      ],
+                      "properties": {
+                        "entries": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "type",
+                              "qty_delta",
+                              "amount_fen",
+                              "list_amount_fen",
+                              "cogs_fen",
+                              "value_delta_fen",
+                              "cost_missing"
+                            ],
+                            "properties": {
+                              "type": {
+                                "enum": [
+                                  "sale",
+                                  "stock_in",
+                                  "opening",
+                                  "count",
+                                  "cost_adjust",
+                                  "cost_fix",
+                                  "expire_loss",
+                                  "supplier_return"
+                                ]
+                              },
+                              "qty_delta": {
+                                "type": "integer"
+                              },
+                              "amount_fen": {
+                                "type": "integer"
+                              },
+                              "list_amount_fen": {
+                                "type": "integer"
+                              },
+                              "cogs_fen": {
+                                "type": "integer"
+                              },
+                              "value_delta_fen": {
+                                "type": "integer"
+                              },
+                              "cost_missing": {
+                                "type": "boolean"
+                              },
+                              "unit_cost_fen": {
+                                "type": "integer"
+                              },
+                              "reverses_step": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "covers_steps": {
+                                "type": "array",
+                                "items": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "minItems": 1
+                              }
+                            }
+                          }
+                        },
+                        "state": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "q",
+                            "v",
+                            "c",
+                            "k",
+                            "u"
+                          ],
+                          "properties": {
+                            "q": {
+                              "type": "integer"
                             },
-                            "minItems": 1
+                            "v": {
+                              "type": "integer"
+                            },
+                            "c": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "k": {
+                              "type": "boolean"
+                            },
+                            "u": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            }
                           }
                         }
                       }
                     },
-                    "state": {
+                    {
                       "type": "object",
                       "additionalProperties": false,
                       "required": [
-                        "q",
-                        "v",
-                        "c",
-                        "k",
-                        "u"
+                        "error"
                       ],
                       "properties": {
-                        "q": {
-                          "type": "integer"
-                        },
-                        "v": {
-                          "type": "integer"
-                        },
-                        "c": {
-                          "type": [
-                            "integer",
-                            "null"
-                          ]
-                        },
-                        "k": {
-                          "type": "boolean"
-                        },
-                        "u": {
-                          "type": [
-                            "integer",
-                            "null"
-                          ]
+                        "error": {
+                          "const": "invalid"
                         }
-                      }
+                      },
+                      "description": "这一步被拒（§14 S05-4），状态和已有流水都不变，不产生流水"
                     }
-                  }
+                  ]
                 }
               }
             }

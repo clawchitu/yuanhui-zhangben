@@ -52,27 +52,34 @@ export class CostError extends Error {
 }
 
 /**
- * 落库列的取值范围（0001_init.sql）：数量（products.stock_qty、entries.qty_delta）是 integer，
- * 金额、货值、成本（stock_value_fen、last_cost_fen、amount_fen、list_amount_fen、cogs_fen、value_delta_fen、unit_cost_fen）是 bigint。
- * BigInt 只保证中间计算精确，结果还得存得进这些列（§14 S05-4 第二层：算出来超出列范围拒 invalid 并留档，在写库之前判）。
+ * 落库、下发的取值范围。数量（products.stock_qty、entries.qty_delta）是 integer；
+ * 金额、货值、成本（stock_value_fen、last_cost_fen、amount_fen、list_amount_fen、cogs_fen、value_delta_fen、unit_cost_fen）
+ * 既要存得进 bigint 列（0001_init.sql，±2^63），又要能经契约下发（openapi.yaml 的 SignedFen / Fen：JSON 安全整数 ±(2^53−1)），取两者更严，即 FEN。
+ * 数量的 INT32 本身比安全整数严，不用再合并。
+ * BigInt 只保证中间计算精确，结果还得落得进这些范围（§14 S05-4 第二层：超界拒 invalid 并留档，在写库之前判）。
  */
 export const INT32 = { min: -(2n ** 31n), max: 2n ** 31n - 1n } as const;
 export const INT64 = { min: -(2n ** 63n), max: 2n ** 63n - 1n } as const;
+/** 契约 SignedFen：JSON 安全整数 ±9007199254740991 */
+export const SAFE = { min: -(2n ** 53n - 1n), max: 2n ** 53n - 1n } as const;
+const stricter = (a: { min: bigint; max: bigint }, b: { min: bigint; max: bigint }) => ({ min: a.min > b.min ? a.min : b.min, max: a.max < b.max ? a.max : b.max }) as const;
+/** 金额类列的有效范围 = INT64 ∩ SAFE */
+export const FEN = stricter(INT64, SAFE);
 
 function inRange(x: bigint, r: { min: bigint; max: bigint }, what: string) {
-  if (x < r.min || x > r.max) throw new CostError(`${what} = ${x} 超出列范围 [${r.min}, ${r.max}]`);
+  if (x < r.min || x > r.max) throw new CostError(`${what} = ${x} 超出列范围（bigint / integer 与契约 SignedFen 取更严）[${r.min}, ${r.max}]`);
 }
 
 /** 返回前统一检查新状态和每条流水草稿都存得进库；越界整步拒绝（纯函数，抛出时调用方什么都没改） */
 function storable<S extends Step<unknown>>(step: S): S {
   const { state: s, entries } = step;
   inRange(s.q, INT32, "stock_qty");
-  inRange(s.v, INT64, "stock_value_fen");
-  if (s.c !== null) inRange(s.c, INT64, "last_cost_fen");
+  inRange(s.v, FEN, "stock_value_fen");
+  if (s.c !== null) inRange(s.c, FEN, "last_cost_fen");
   for (const e of entries) {
     inRange(e.qty_delta, INT32, `${e.type}.qty_delta`);
-    for (const k of ["amount_fen", "list_amount_fen", "cogs_fen", "value_delta_fen"] as const) inRange(e[k], INT64, `${e.type}.${k}`);
-    if (e.unit_cost_fen !== null) inRange(e.unit_cost_fen, INT64, `${e.type}.unit_cost_fen`);
+    for (const k of ["amount_fen", "list_amount_fen", "cogs_fen", "value_delta_fen"] as const) inRange(e[k], FEN, `${e.type}.${k}`);
+    if (e.unit_cost_fen !== null) inRange(e.unit_cost_fen, FEN, `${e.type}.unit_cost_fen`);
   }
   return step;
 }
