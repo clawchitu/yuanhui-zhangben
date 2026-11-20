@@ -36,9 +36,9 @@
 | iOS 本地库 | SQLite + **GRDB**（唯一第三方依赖，SwiftPM） | |
 | iOS 扫码 | AVFoundation `AVCaptureMetadataOutput`（EAN-13/EAN-8/UPC-E/ITF-14/Code128；登录页另加 QR）；蓝牙扫码枪走 HID 键盘事件 `pressesBegan` | 不用 VisionKit |
 | iOS 图表 | Swift Charts | |
-| iOS 测试 | `swift test`（ShopCore 包，不依赖 UIKit）；XCUITest + `FakeScanner`（启动参数喂条码）；截图用 `-uiFixture <名字>` 直接打开指定界面的指定状态 | |
+| iOS 测试 | `swift test`（ShopCore 包，不依赖 UIKit）；XCUITest + `FakeScanner`（启动参数喂条码）；截图用 `-uiFixture <名字>` 直接打开指定界面的指定状态。凡是能绕过登录、换身份或装演示数据的启动参数都只在 Debug 编译进去；只换界面状态、不涉及会话的（组件陈列页、`-uiLargeText`）不限（§14 S15-7） | |
 | 服务器 | Node 24 LTS，TypeScript，**Fastify 5**，Postgres 16 | SQL 用 Kysely；迁移是 `server/migrations/*.sql` 纯 SQL 文件，按文件名顺序执行 |
-| 服务器库 | argon2（密码）、sharp（缩图）、ali-oss、TypeBox（请求校验）、pino（日志） | |
+| 服务器库 | argon2（密码）、sharp（缩图）、ali-oss、TypeBox（请求外壳校验）、ajv + ajv-formats（op 的 payload 直接按 `contracts/ops.schema.json` 校验，不在 TypeBox 里再抄一遍，§14 S04-9）、pino（日志） | |
 | 服务器测试 | Vitest，连真实 Postgres（CI 用 service 容器；本机用 Homebrew `postgresql@16`，本机没装 Docker）；fast-check 做性质测试 | |
 | 部署 | Docker Compose：`api` + `postgres` + `caddy`。镜像由 CI 构建并推到**阿里云 ACR 个人版（上海）**；基础镜像（postgres、caddy、node）也先镜像到 ACR，因为大陆拉不动 Docker Hub | |
 | CI | GitHub Actions。服务器测试用 GitHub 托管的 Linux runner；iOS 构建和测试用**这台 Mac 上的自托管 runner**（Xcode 27.1 已装） | |
@@ -122,14 +122,14 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `stores` | `id, name, is_demo bool, low_stock_default int=3, rev bigint=0, epoch uuid, created_at` | `rev` 是本店的变更序号计数器，店铺锁内**每改一行取一个新号**（§4.2）；`epoch` 在数据库从备份恢复后换新（§4.6）；演示店每日重置不换 `epoch`（§4.5） |
 | `accounts` | `id, store_id, username, password_hash, kind 'family'\|'review', failed_logins int, locked_until, delete_requested_at, created_at` | `unique(lower(username))`；一个店一个账号；没有注册接口，账号只能用 `scripts/create-account.ts` 建 |
 | `devices` | `id, account_id, store_id, role 'family'\|'cashier', label, token_hash, app_build, created_at, last_seen_at, revoked_at, revoke_reason` | `unique(token_hash)`；**`id` 由手机在每次登录或兑码时新生成，从不重复使用**（同一台手机被踢后重新开通、先进演示店再登录正式账号，都是新的设备行）；`revoke_reason ∈ kicked, revoke_others, logout, account_delete, demo_reset`，与 `revoked_at` 同有同无，`demo_reset` 就是响应里的 `discard_outbox`；令牌 256 位随机数，库里只存 sha256；被踢后**行保留**（要靠它认出被踢设备补传的流水）；同店未撤销设备的 `label` 不重名（重名时自动加序号） |
-| `pairing_tokens` | `id, token_hash, account_id, store_id, role, label, created_by_device, expires_at, used_at, used_by_device` | 2 分钟过期，一次性；只有 `role='family'` 的设备能创建 |
+| `pairing_tokens` | `id, token_hash, account_id, store_id, role, label, created_by_device, expires_at, used_at, used_by_device` | 2 分钟过期，一次性；只有 `role='family'` 的设备能创建；出码的设备被撤销后（不论哪种原因），它出的未用的码作废，兑换返回 `410 pairing_expired`；账号申请注销时未用的码一并作废（§14 S03-1、S03-5） |
 
 ### 3.2 商品
 
 | 表 | 字段 | 约束 / 说明 |
 |---|---|---|
-| `products` | `id, store_id, name, base_unit, price_fen, stock_qty int, stock_value_fen bigint, last_cost_fen null, cost_known bool, stock_ver bigint, last_count_at null, low_at int null, stock_known bool, track_expiry bool, expiry_warn_days int=7, shelf_life_months int null, needs_review bool, image_key null, image_source null, image_ver int=0, archived_at null, created_by_device, rev, updated_at` | 平均进价不存，等于 `stock_value_fen / stock_qty`；`cost_known` = 进价是否已知，用来区分「真的零成本」和「没填」（§5.2）；`stock_ver` 每次库存变动 +1，`last_count_at` 是最近一次盘点或期初的时间（§5.6）；`needs_review` = 收银员临时登记、等家用号补全；`price_fen >= 0` |
-| `product_barcodes` | `store_id, barcode, product_id, pack_qty int, unit_name, pack_price_fen, rev, deleted_at` | 主键 `(store_id, barcode)`；`pack_qty >= 1`；**单件码（`pack_qty=1`）的 `pack_price_fen` 必须为空，卖价一律读 `products.price_fen`**（CHECK 约束），只有整件码存自己的价；一个商品可以有多个单件码 |
+| `products` | `id, store_id, name, base_unit, price_fen, stock_qty int, stock_value_fen bigint, last_cost_fen null, cost_known bool, stock_ver bigint, last_count_at null, low_at int null, stock_known bool, track_expiry bool, expiry_warn_days int=7, shelf_life_months int null, needs_review bool, image_key null, image_source null, image_ver int=0, archived_at null, created_by_device, rev, updated_at` | 平均进价不存，等于 `stock_value_fen / stock_qty`；`cost_known` = 进价是否已知，用来区分「真的零成本」和「没填」（§5.2）；`stock_ver` 每次库存变动 +1，`last_count_at` 是最近一次盘点或期初的时间（§5.6）；`needs_review` = 等家用号补全（`quick` 登记不论角色一律为真，卖出引用未知商品时自动建的也是，§14 S04-5、S05-9）；`image_ver` 是单独一列，`image_key` 每变一次 +1，0 = 没图（§14 S02-1）；`price_fen >= 0` |
+| `product_barcodes` | `store_id, barcode, product_id, pack_qty int, unit_name, pack_price_fen, rev, deleted_at` | 主键 `(store_id, barcode)`；`pack_qty >= 1`；**单件码（`pack_qty=1`）的 `pack_price_fen` 必须为空，卖价一律读 `products.price_fen`**（CHECK 约束），只有整件码存自己的价，整件码的价也可以为空，表示按「单件卖价 × 换算数量」算（§14 S02-5、S12-1）；一个商品可以有多个单件码；单件码的 `unit_name` 就是商品的基本单位，只有一处口径：挂单件码时服务器写 `products.base_unit`、不看 payload 的 `unit_name`，改基本单位时该商品所有单件码的 `unit_name` 跟着改、各取一个新号，整件码不动（§14 S04-5） |
 | `product_aliases` | `store_id, alias_id, product_id` | 两台手机离线时各自登记了同一个条码：先到的赢，后到的商品 id 记成别名，之后引用别名的 op 一律改写到赢家 |
 | `barcode_catalog` | `barcode, found bool, name, spec, brand, image_url, source, raw jsonb, fetched_at` | 全局缓存，不分店；查不到也缓存（7 天后可重查） |
 
@@ -137,7 +137,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 | 表 | 字段 | 约束 / 说明 |
 |---|---|---|
-| `ops` | `id uuid, store_id, device_id, type, payload jsonb, payload_hash, occurred_at, received_at, status 'applied'\|'rejected'\|'held', reject_code, result jsonb, resolved_at null, resolved_by_device null, flags jsonb` | 主键 `id`，幂等靠它；`result` 存当初返回给手机的结果（含 remap、拒绝原因），重发时原样返回；被拒的、暂存待确认的（§4.5）也留档；暂存的 op 被家用手机处理后，`status` 改成 `applied`（记上）或 `rejected`（`reject_code = discarded`，不要），并写 `resolved_at / resolved_by_device` |
+| `ops` | `id uuid, store_id, device_id, type, payload jsonb, payload_hash, occurred_at, received_at, status 'applied'\|'rejected'\|'held', reject_code, result jsonb, resolved_at null, resolved_by_device null, flags jsonb` | 主键 `(store_id, id)`（§3 通用约定，§14 S02-8），幂等靠它；`payload_hash` 的算法见 §4.2，时钟被校正的 op 把手机填的原值存在 `flags.client_occurred_at`（§14 S04-11）；`result` 存当初返回给手机的结果（含 remap、拒绝原因），重发时原样返回；被拒的、暂存待确认的（§4.5）也留档；暂存的 op 被家用手机处理后，`status` 改成 `applied`（记上）或 `rejected`（`reject_code = discarded`，不要），并写 `resolved_at / resolved_by_device` |
 | `sale_batches` | `id, store_id, device_id, list_total_fen, paid_total_fen, occurred_at, received_at, rev` | 原价和实收；`paid_total_fen` 在撤销单行后不改，报表按行求和 |
 | `entries` | `id, store_id, seq bigint, op_id, batch_id null, type, reverses_entry_id null, product_id, barcode, name_snapshot, unit_name, pack_qty, pack_count, qty_delta int, list_amount_fen, amount_fen, unit_cost_fen null, cogs_fen, value_delta_fen, cost_missing bool, expiry_date null, device_id, occurred_at, received_at, voided_at null, voided_by_device null, cost_fix_entry_id null, flags jsonb, rev` | `seq` 是本店内的应用顺序；`type ∈ sale, stock_in, opening, count, cost_adjust, cost_fix, expire_loss, supplier_return`；`unique(store_id, seq)`；除 `cost_fix` 外一行最多被冲销一次（`cost_fix` 可以被多次部分冲销：它补记的每一笔卖出被撤销时各冲一条） |
 | `stock_lots` | `id, store_id, product_id, source_entry_id, expiry_date null, qty_in, qty_left, snoozed_until null, closed_at null, closed_reason null, handle_ver int, rev` | 只用于到期提醒，**不参与成本**；生命周期和 `handle_ver` 见 §5.4 |
@@ -158,7 +158,12 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `cost_adjust`（调整） | 0 | 0 | 0 | 0 | 调整额（可正可负），界面显示为「调整」 |
 | `cost_fix`（成本补记） | 0 | 被补记的那些卖出行的实收合计 | 0 | 补记的进价合计 | 0（§5.2） |
 
-**撤销的记法（规则）**：原流水打 `voided_at`（界面上划线显示）；同时新增一行**冲销流水**，`type` 与原行相同、`reverses_entry_id` 指向原行、所有数量和金额取反、`occurred_at` = 撤销发生的时间。报表对所有行（原行 + 冲销行）按各自的 `occurred_at` 求和，所以「撤销算在撤销那天」；当天撤当天的（绝大多数情况）正好抵消。列表界面不显示冲销行。`unit_cost_fen` 是单价不是金额，冲销行**照抄原行、不取反**（进货的冲销行、`cost_fix` 的冲销行都一样）。好处：已经过去的月份的月初货值不会被事后改动，对账等式永远是同一张流水表的求和。
+**撤销的记法（规则）**：原流水打 `voided_at`（界面上划线显示）；同时新增一行**冲销流水**，`type` 与原行相同、`reverses_entry_id` 指向原行、所有数量和金额取反、`occurred_at` = 撤销发生的时间。报表对所有行（原行 + 冲销行）按各自的 `occurred_at` 求和，所以「撤销算在撤销那天」；当天撤当天的（绝大多数情况）正好抵消。列表界面不显示冲销行。`unit_cost_fen` 是单价不是金额，冲销行**照抄原行、不取反**（进货的冲销行、`cost_fix` 的冲销行都一样）。`pack_count` 随数量取反，`pack_qty` 是换算、照抄不取反；手机解码和求和要接受负的 `pack_count`（列表不显示冲销行，只在求和时用到，§14 S05-11）。好处：已经过去的月份的月初货值不会被事后改动，对账等式永远是同一张流水表的求和。
+
+撤销的三条补充（§14 S05-12、S05-13）：
+- `voided_at` 记撤销 op 的 `occurred_at`（时钟校正之后的），与冲销行的 `occurred_at` 是同一个值，「撤销算在撤销那天」只有一个口径；服务器收到的时间在冲销行的 `received_at` 上。
+- 卖出的冲销行带原行的 `batch_id`（I4 和按批汇总都要用）；跟着冲销产生的 `cost_fix` 冲销行和 `cost_adjust` 不带 `batch_id`。
+- 因此**凡是按 `batch_id` 取「批内的行」的查询，一律加 `reverses_entry_id IS NULL`**。现有的只有整批撤销一处；S06、S07 新写的查询照此。
 
 不变式（S04–S06 的性质测试逐条断言）：
 - I1 每个商品：`Σ entries.qty_delta = products.stock_qty`
@@ -177,12 +182,14 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `product` | id、名称、基本单位、卖价、`needs_review`、`track_expiry`、`image_ver`、`archived` |
 | `product_private` | 库存数、货值、最近进价、`low_at`、保质期设置。**收银员手机上这张表永远是空的**（服务器根本不下发） |
 | `barcode` | 条码 → 商品、换算、单位名、整件价 |
-| `entry` / `sale_batch` | 家用号：最近 35 天全店流水；收银员：仅本机最近 2 天的卖出 |
+| `entry` / `sale_batch` | 家用号：最近 35 天全店流水；收银员：仅本机最近 2 天的卖出。天数按 `occurred_at` 的上海日历日算、含今天，服务器只下发窗口内的（§4.2）；撤销流水在窗口内、它指向的原流水不在本地时要能容忍；更早的账联网查（§7 `GET /v1/entries`）（§14 S04-6） |
 | `lot` | 仅家用号：未关闭的批次（首页黄条和快过期清单离线可用） |
 | `outbox` | 待传的 op，每条绑定产生它时的店、设备和令牌（不可改绑），op id 店内唯一；确认后保留 14 天（§4.6）；旧会话留下的未确认 op 构成「恢复队列」（§4.5）。当前会话是收银员时，旧会话的 op 一确认就删，换成收银员时旧会话已确认的立刻删，都不留 14 天（§14 S13-1） |
-| `meta` | 游标、`server_epoch`、角色、店名、设备名 |
+| `meta` | 游标、`server_epoch`、角色、店名、设备名、待压缩标记 `compact.pending`（见表下） |
 
 退出、被踢、换角色、换账号时清空**投影**（商品、流水、批次、游标）再同步，但**绝不清未确认的 outbox**，它们连同旧令牌进恢复队列（§4.5）。大字模式、扫码枪开关等偏好存 `UserDefaults`，不进库。设备令牌（当前的和恢复队列用的旧令牌）存钥匙串（`kSecAttrAccessibleAfterFirstUnlock`）。
+
+**待压缩标记**（S13 的 PR #9 审核定下的做法）：换成收银员时清掉的投影、删掉的旧会话 op，旧进价还留在库文件和 `-wal` 里，要压缩（VACUUM + WAL 截断）之后才真正消失，所以「清掉」和「压缩完」之间不能断开就没人管。清投影、删旧 op 的同一个事务里往 `meta` 写 `compact.pending`；压缩确认截断做成后才清标记（查标记、压缩、清标记在同一段串行写访问里，避免把别的线程新记的标记误清）；被读事务挡住或中途崩溃时标记保留，打开库时、每次 `recordResults` 时、每次同步（`compactIfNeeded()`）时补做，没做成不当成功（抛 `compactionBusy`）。
 
 ---
 
@@ -213,14 +220,18 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 - **变更序号**：店铺锁内每改动一行，就从 `stores.rev` 取一个新号写到这一行的 `rev`。同一店内 `rev` 不重复，一个 op 改了 5 行就占 5 个号，所以 `rev > cursor` 分页永远不会切在同一个号中间。所有会改到同步数据的写入（包括图片任务写 `image_key`、定时任务、设备改名之外的任何后台写）都必须先拿店铺锁、走同一个取号函数。被删的行（解除整件码等）写一条 `removed` 墓碑，也有 `rev`。
 - **两条独立的流，各有游标**：`catalog`（商品、条码、墓碑）和 `ledger`（流水、批次头、保质期批次）。每页 500 行，`has_more` 为真就继续拉。
+- **游标怎么走**（§14 S04-12）：页没装满时，游标直接跳到同一快照里的 `stores.rev`，只进不退（成立的前提是所有写同步数据的地方都在店铺锁内取号、提交后才放锁）。请求带 `pull: false`（恢复队列只推不拉，§4.5）或设备已被踢时，游标原样返回、`total_products = 0`，手机这时不看它。游标比 `stores.rev` 大时原样返回、不报错。
+- **流水只下发最近的**（§14 S04-6）：家用 35 天、收银员 2 天，按 `occurred_at` 落在上海时区的哪一天算，含今天；窗口外的流水和批次头不下发，游标照常越过；保质期批次不受窗口限制。这就是 §3.4 本地库的范围，服务器不下发手机转头就要删的行。手机要容忍「撤销流水在窗口内、它指向的原流水不在本地」；窗口以外的账只能联网查（§7 `GET /v1/entries`）。
+- **墓碑**（§14 S04-7、S05-15）：条码解除后又挂上，旧墓碑不再下发：拉取那一刻按条码当前状态过滤，墓碑本身不删；再次解除写一条新号的墓碑。手机因此不必依赖同一页里 `removed` 和 `barcodes` 的处理先后。墓碑**不套**上一条的时间窗：它是删除指令，手机上可能还留着窗口以外的旧行，套了就删不掉；多发一条手机上已经没有的行的墓碑没有害处。
 - **首次同步（review 四-4）**：先把 `catalog` 拉到底就进首页、可以开始卖；`ledger` 和图片在后台继续，图片不占同步队列、不阻塞扫码。拉取期间别的手机继续记账没有关系：新改的行序号更大，排在后面，不会漏。
 - **`remap` 的形状**：一个对象，键是这个 op 里引用到的、已经成为别名的商品 id，值是赢家商品的 id；可以有多对（一笔卖出的好几行可能各引用一个别名）。任何引用了别名的 op 都可能带它，不只是 `product_upsert`。手机收到后把本地所有对旧 id 的引用改写成新 id。
-- **结果可重放**：服务器把每个 op 的结果（应用 / 拒绝及原因 / 暂存 / remap）存在 `ops.result`。重发同一个 id，返回当初的结果并带 `replayed: true`，不返回笼统的「重复」。同一个 id 但 payload 哈希不同 → 拒 `id_conflict`，不应用。
+- **结果可重放**：服务器把每个 op 的结果（应用 / 拒绝及原因 / 暂存 / remap）存在 `ops.result`。重发同一个 id，返回当初的结果并带 `replayed: true`，不返回笼统的「重复」。同一个 id 但 payload 哈希不同 → 拒 `id_conflict`，不应用。内容哈希 = sha256(键排序的 `{type, occurred_at 换算成 UTC 毫秒, payload}`)，**不含设备**；时钟被校正的 op 按手机填的原值算（原值存 `ops.flags.client_occurred_at`）。重放不看是谁发的：同店别的设备发同 id 同内容，也拿到当初的结果（§4.6 重新开通的设备补交要靠它），回给手机时仍按当前请求的角色裁剪（I8）（§14 S04-11）。
 - **epoch 握手**：请求带手机记着的 `epoch`，必填、不允许为空；手机的第一个 `epoch` 来自登录或兑码的响应（§7）。与服务器不一致时，服务器**不应用**这次请求里的任何 op，只返回 `epoch_mismatch` 和新 epoch，手机按 §4.6 处理后再发。
 - **店铺锁只有一个入口**：所有拿店铺锁的写入（S04 同步、S05/S06 记账、S08 图片任务、S09 重置）都只走 `withStoreLock`，不许自己另拿锁。进程内按店排队，每家店在途上限默认 32（`STORE_QUEUE_LIMIT`），超过返回 `503 {code: unavailable, retry_after_s}`，不进队列、不取连接（§14 S04-8）。
 - **请求体上限**：1 MiB。超过返回 `413 {code: invalid}`，一个 op 都不处理。手机按字节拆批（≤200 个 op 且 ≤1 MiB）；最大的合法 op（200 行的卖出、字符串写满、非 ASCII 全转义）约 0.75 MiB，单独一个总放得下。op 的内容（存不进库的字符、解析不出的时间、payload 嵌套超过 16 层或超过 1 万个节点）只让这个 op `rejected: invalid`、不留档，不会让整个请求失败（§14 S04-13）。
+- **校验的先后**（§14 S04-13）：请求外壳（顶层字段、`cursors`、每个 op 的 `id / type / occurred_at`）严格校验，不成形整个请求 `400 invalid`。然后逐个 op：先判权限（收银员带多余字段得到的是 `forbidden`，不是 `invalid`），再按 `ops.schema.json` 校验 payload，不合 → 这个 op `rejected: invalid` 并留档。任何 op 的内容都不许让整个请求 500；兜底触发时怎么办见 §4.4 最后几行。
 - **注销期间**：`/v1/sync` 里的 op 一个都不应用、不留档，`results` 为空，拉取照常，响应顶层带 `delete_pending_until`；手机把 op 留在 outbox 并停止推送，撤回后自动补传（§14 S04-2）。
-- **按角色裁剪**（在 `sync/projection.ts` 一处实现）：收银员拿不到 `product_private` 里的任何字段、任何进货/盘点/损耗流水、别的手机的流水、保质期批次、`cogs_fen`/`value_delta_fen`/`unit_cost_fen`。响应 JSON 里**不出现这些键**，不是置空。
+- **按角色裁剪**（在 `sync/projection.ts` 一处实现）：收银员拿不到 `product_private` 里的任何字段、任何进货/盘点/损耗流水、别的手机的流水、保质期批次、`cogs_fen`/`value_delta_fen`/`unit_cost_fen`。响应 JSON 里**不出现这些键**，不是置空。`results` 也过同一处（首次处理和缓存重放是同一条路，收银员重发家用的 op 拿不到 `current`，I8）。`removed` 墓碑同样按角色过滤：`barcode` 墓碑照发；`entry / batch` 墓碑只把本机卖出的发给收银员，库里找不到原行的不发（宁可不删也不泄漏）；`lot` 墓碑不发给收银员（§14 S04 待办、S05-14）。
 - 触发时机：每次写入后、网络恢复、回到前台、打开期间每 15 秒。右上角常驻状态「已同步 / N 笔待传」。outbox 里有超过 24 小时的 → 首页提醒条（25a）；与快过期黄条同时存在时两条都显示，没同步的在上。
 
 ### 4.3 op 类型
@@ -239,16 +250,27 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `expiry_dispose` | `lot_id, handle_ver, actual_qty, action: sold_out\|discard\|return, entry_id` | 家用 |
 | `lot_snooze` | `lot_id, handle_ver, actual_qty, days` | 家用 |
 
+对上表的补充（都是 §14 的裁定）：
+- `product_upsert` 的商品 id 在库里已经存在（不是别名）：不改商品的任何字段。条码已经挂在这个商品上 → `applied`，无操作；其他情况（条码空闲、解除过、挂在别的商品上）→ `rejected: invalid` 并留档，不挂码。挂码只走 `barcode_link`。不论角色、不论 `quick`（S04-10）。
+- `quick` 登记不论角色，一律 `needs_review = true`（S04-5）。
+- `product_edit` 的「逐字段后写者赢」，先后按**到达服务器、被应用**的顺序，不按 `occurred_at`（手机时钟不可信）；只改 payload 里带了的字段，没带的不动（S04-4）。改基本单位时，该商品所有单件码的 `unit_name` 跟着改，整件码不动（S04-5，§3.2）。
+- `barcode_link`：`pack_qty = 1` 时服务器写商品的基本单位，不看 payload 的 `unit_name`（不拒）；`pack_qty > 1` 时 `pack_price_fen` 可以不带，为空表示按「单件卖价 × 换算数量」算（S04-5、S02-5、S12-1）。条码已经挂在别的商品上 → 拒，不挪（§4.4）。
+
 （设备改名、踢人、改密码等不是 op，是在线接口，见 §7。）
 
 ### 4.4 拒绝与冲突
 
 | 情况 | 处理 |
 |---|---|
-| 角色无权 | `rejected: forbidden`。手机把这条 op 标成「没记上」并在首页提示，不再重试；它对本地库存的临时增减随之消失 |
+| 角色无权 | `rejected: forbidden`。手机把这条 op 标成「没记上」并在首页提示，不再重试；它对本地库存的临时增减随之消失。权限判在 schema 校验之前（§4.2） |
 | 同一条码已经登记过（两台手机各登记了一次，或有人故意重复登记） | 先到的赢。后到的 `product_upsert` **不修改赢家的任何字段**（不论角色），只返回 `remap` 并写 `product_aliases`，手机改写本地引用。家用号想改名称或卖价，另发 `product_edit` |
 | 收银员卖了一个还没同步到服务器的商品 | 同一请求内 op 按顺序应用，`product_upsert` 在前即可；手机 outbox 保证先后顺序 |
-| 卖出引用了不存在的商品（极端） | 服务器按 payload 里的名称和卖价自动建一个 `needs_review` 商品，流水照收，绝不丢账 |
+| 卖出引用了不存在的商品（极端） | 服务器按 payload 里的名称和卖价自动建一个 `needs_review` 商品，流水照收，绝不丢账。自动建的商品：`pack_qty = 1` 的行，卖价取行单价；整件行卖价记 0，不用「整件价 ÷ 换算」去猜（猜的价会被当真价卖出去，0 一眼看得出没填）。不挂条码（行里的条码可能属于别的商品，也可能是整件码，换算和整件价都不能从一行卖出里推）。这个商品 id 之后再来 `product_upsert` 会被拒 `invalid`（下一行），补全只走 `product_edit` + `barcode_link` + `product_review_complete`；补全页（22b）遇到 `needs_review` 且 `price_fen = 0` 要先让人填卖价（§14 S05-9） |
+| `product_upsert` 的商品 id 已存在（不是别名） | 不改商品任何字段。条码已挂在这个商品上 → `applied` 无操作；其他情况 → `rejected: invalid` 并留档，不挂码（§4.3，§14 S04-10） |
+| 商品类 op（`product_edit / barcode_link / barcode_unlink`）引用不存在的商品；`barcode_link` 的条码已挂在别的商品上 | `rejected: invalid` 并留档。不自动建商品、不挪条码（要挪先解除再挂，必须是人明确做的两步）。同一响应的拉取会把这个条码现在挂在哪带回手机，界面据此提示，不另设拒绝码（§14 S04-3） |
+| 解除一个没挂着的条码 | 无操作，算 `applied`（§14 S04-3） |
+| payload 不合 `ops.schema.json` | 这个 op `rejected: invalid` 并留档；同批其余照常处理（§14 S04-13） |
+| 账号在注销申请期间 | 不是拒绝：整批 op 一个都不应用、不留档，`results` 为空，拉取照常，响应顶层带 `delete_pending_until`。不能返回 `rejected`，手机会当成终局、不再重发，撤回注销后就丢账了。手机没拿到结果的 op 本来就留在 outbox，看到 `delete_pending_until` 就停止推送，撤回后自动补传。被踢设备在注销期间的补传同样处理（§4.2，§14 S04-2） |
 | 撤销两次 | 第二次无操作（重放则返回第一次的结果） |
 | 盘点、期初、补全、处理快过期时，手机看到的版本已经过时 | `rejected: stale`，`current` 带回最新的账面数或批次状态，手机让人重新确认（§5.4、§5.6） |
 | 同一 id 不同内容 | `rejected: id_conflict` |
@@ -285,7 +307,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 - 手机上已确认的 op 保留 14 天。
 - 恢复后运维给店铺换新 `epoch`。手机下一次同步得到 `epoch_mismatch`：丢弃投影和游标 → 重新全量拉取 → 把保留的 op 全部重新标为待传 → 正常同步。服务器上还在的 op 按 id 幂等跳过，丢了的重新入账。
-- 讲清楚的限制：① 重传的先后顺序可能与原来不同，平均进价和个别流水的成本可能与恢复前差几分钱；② 备份之后才开通的设备，令牌在恢复后的库里不存在，无法认证。这类设备要重新开通，然后由运维临时打开「恢复模式」，设备（家用或收银员）通过 `POST /v1/recovery/import` 用新令牌补交保留的 op（按原 id 幂等，打 `flags.recovered`）。恢复模式平时关闭，步骤写进 runbook。
+- 讲清楚的限制：① 重传的先后顺序可能与原来不同，平均进价和个别流水的成本可能与恢复前差几分钱；② 备份之后才开通的设备，令牌在恢复后的库里不存在，无法认证。这类设备要重新开通，然后由运维临时打开「恢复模式」，设备（家用或收银员）通过 `POST /v1/recovery/import` 用新令牌补交保留的 op（按原 id 幂等，打 `flags.recovered`；内容哈希不含设备，所以换了新设备补交同 id 同内容的 op 不会撞 `id_conflict`，§4.2，§14 S04-11）。恢复模式平时关闭，步骤写进 runbook。
 
 ---
 
@@ -410,6 +432,8 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 三条实现原则：① 权限在服务器上判，界面隐藏只是体验；② 进价、货值、库存不下发到收银员手机；③ 收银员撤销「自己当天」的判断不信手机填的时间：必须是同一设备记的卖出，且这笔卖出的日期（上海时区）等于**服务器收到撤销请求那天**。离线撤销当天传上来照常生效；隔天才传上来的被拒，提示让家里人撤（这一条取代 review-1119 §5.1 第 3 点「按手机上记录的时间算」）。
 
+库存和进价「看不看得到」不在下表单列一行：它由 `sync:pull` 那一格的 `scope`（全店 / 裁剪版）推出，ShopCore 给一个单独的判断（`DataVisibility`），界面和本地库都用它，不借用「能不能进货」这类能力来猜（§14 S12-3）。
+
 ### 6.1 接口
 
 | 接口 / op | 家用 | 收银员 | 审核（演示店内） | 被踢设备 |
@@ -435,6 +459,8 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `GET /healthz`、`POST /v1/auth/demo`（开关打开时） | 不需登录 | 不需登录 | 不需登录 | — |
 
 `/v1/recovery/import` 里的每个 op 仍按提交设备的角色过上面的 op 权限。权限表里不允许留「待定」的格子。
+
+状态码（§14 S03-2）：身份无权 → `403 {code: forbidden}`；没带令牌或令牌不认识 → `401 {code: unauthorized}`；被踢设备调任何 HTTP 接口 → 统一 `401 {code: revoked}`。唯一的例外是 `/v1/sync`：照 §4.5 正常响应并带 `device.revoked=true`，`discard_outbox` 也只由它下发。表里「—」的格子按拒处理，所以被踢设备调 `logout` 也是 `401 revoked`，手机把它当作退出成功。
 
 跨店隔离：任何接口都只能碰令牌所属的店。S09 有专门测试：用审核号令牌把元辉店的每一种 id 都试一遍，全部 404 / 拒绝。
 
@@ -464,12 +490,12 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 |---|---|---|
 | `GET /healthz` | 存活检查（查一次数据库） | 无鉴权，监控用。路径不带 `/v1`（不随接口版本变）；S00 骨架里的 `/v1/health` 在 S02 改成它 |
 | `GET /v1/config` | `min_build, demo_login_enabled, privacy_url, support_url` | 无鉴权 |
-| `POST /v1/auth/login` | `{username, password, device_id, label?}` → `{token, role, store, label, epoch, delete_pending_until?}` | 连错 5 次锁 15 分钟（25c），另有按 IP 限速；错误信息不区分「账号不存在」和「密码错」 |
-| `POST /v1/auth/pair/redeem` | `{code, device_id}` → 同上 | 码用过或过期 → 明确错误码（25d） |
-| `POST /v1/auth/demo` | 一键进演示小店（「看看演示」，受 `demo_login_enabled` 开关控制，**默认关**，被打回再开） | 发的是演示店的家用设备令牌 |
+| `POST /v1/auth/login` | `{username, password, device_id, label?}` → `{token, role, store, label, epoch, delete_pending_until?}` | 连错 5 次锁 15 分钟（25c）：第 5 次输错本身就返回 `423 locked`（带 `locked_until`）；锁定期内再输错不计数、不延长；上锁时计数清零，成功登录清零；并发也要守住（验对密码后在事务里重查锁，已锁返回 423 且不清锁）。按 IP 限速：每 IP 15 分钟 30 次，超了 `429 rate_limited` 带 `retry_after_s`（§14 S03-3）。错误信息不区分「账号不存在」和「密码错」 |
+| `POST /v1/auth/pair/redeem` | `{code, device_id}` → 同上 | 码用过、过期、出码的手机已被撤销 → `410 pairing_expired`（25d）；账号在注销申请期间 → `403 delete_pending`（先判 410 再判 403；申请注销时未用的码已作废，403 只是兜底）。按 IP 限速同登录，单独计数（§14 S03-1、S03-3、S03-5） |
+| `POST /v1/auth/demo` | 一键进演示小店（「看看演示」，受 `demo_login_enabled` 开关控制，**默认关**，被打回再开） | 发的是演示店的家用设备令牌，响应同登录（带 `epoch`）。进最早建的演示店的审核号；没有演示店 → `404 demo_disabled`。每次新建一行设备，由 S09 每日重置清理。按 IP 限速同登录，单独计数（§14 S03-3、S03-9） |
 | `POST /v1/auth/logout` | 作废本机令牌 | 手机先尽量把 outbox 传完 |
 | `GET /v1/me` | 角色、店名、设备名、注销状态 | |
-| `POST /v1/sync` | 推 op + 拉变更（§4） | 平时唯一的写账入口 |
+| `POST /v1/sync` | 推 op + 拉变更（§4） | 平时唯一的写账入口。请求体超过 1 MiB → `413 invalid`；本店排队超过上限 → `503 unavailable` 带 `retry_after_s`；`epoch` 不一致 → `409 epoch_mismatch`；账号注销申请期间 op 不应用、`results` 为空、响应带 `delete_pending_until`（§4.2） |
 | `GET /v1/barcode-lookup/:barcode` | 查名称（先查 `barcode_catalog`，没有再调快鸟，2 秒超时） | 每设备每分钟 20 次；每店每天 300 次上限，防止刷掉付费额度 |
 | `GET /v1/images/:product_id?v=` | 200px 小图 | 强缓存；本地磁盘缓存，缺了回源 OSS |
 | `GET /v1/reports/today?date=` | 09：卖了、赚了、优惠、卖得最好、快没货、快过期 | 在线才能看 |
@@ -485,9 +511,9 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `POST /v1/held-ops/:id/resolve` | `{action: accept\|discard}` | 盘点、期初类版本已变的只能丢弃 |
 | `POST /v1/recovery/import` | 服务器恢复模式下，重新开通的家用或收银员设备补交保留的 op（§4.6） | 平时关闭；每个 op 仍按该设备的角色判权限 |
 | `PATCH /v1/devices/me` | 改这台手机的名字 | |
-| `POST /v1/account/password` | `{old, new}` | 不强制其他手机退出 |
-| `POST /v1/account/delete-request` | `{password}` → 记 `delete_requested_at`，全部设备退出 | 注销期间禁止写账和开通设备；非演示店先生成导出包交给黄总；7 天后删除在线数据和 OSS 图片，备份在此后 35 天内滚动清除（§9.4） |
-| `POST /v1/account/delete-cancel` | 7 天内用账号密码登录后撤回 | |
+| `POST /v1/account/password` | `{old, new}` | 不强制其他手机退出。原密码输错不计入登录锁定（否则一台家用手机能把登录锁死），但按账号限速：15 分钟内错 5 次后 `429 rate_limited` 带 `retry_after_s`，与 `delete-request` 共用一个计数；限速期内正确密码也是 429（§14 S03-8） |
+| `POST /v1/account/delete-request` | `{password}` → 记 `delete_requested_at`，全部设备退出 | 原密码输错的限速同上一行，共用计数（§14 S03-8）。注销期间禁止写账和开通设备；非演示店先生成导出包交给黄总；7 天后删除在线数据和 OSS 图片，备份在此后 35 天内滚动清除（§9.4） |
+| `POST /v1/account/delete-cancel` | 7 天内用账号密码登录后撤回 | 恰好第 7 天整仍可撤回；过了 7 天、还没真正删除的这段空档里不能撤回，返回 `409 not_delete_pending`。手机看到 `delete_pending_until` 已过就显示「正在删除」，不给撤回按钮（§14 S03-4） |
 
 静态页（Caddy 直接出，备案后才上线）：`yuanhuishop.cn/`（本店简介）、`/privacy`、`/support`、`/review-barcodes`（审核用条码图页）。
 
@@ -540,6 +566,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 **S03 登录、设备、开通、权限中间件**
 - 产出：`auth/*`、§7 中 auth / pairing-tokens / devices / account 全部接口（注销只做申请、撤回和「注销期间禁止写账与开通」，真正删除和导出在 S09）、`guard` 读 `permissions.json`。
 - 验收（Vitest）：密码错 5 次锁 15 分钟，锁定期内正确密码也拒；开通码 2 分钟后失效、第二次使用失败、码里的角色决定设备角色；**`guard` 的契约级测试**：对 `permissions.json` 里的每一格（身份 × 接口或 op 类型）断言判定结果，不依赖业务路由是否已经实现；本段已实现的接口再各有一条真实请求的 403 测试（后面每一段新增接口时，各自补上真实请求的越权测试）；踢掉的设备下一次请求得到 `revoked`；A 店令牌访问 B 店任何资源 404；令牌在库里只有哈希；注销申请中的账号开通设备被拒。
+- 验收补充（§14 S03-3、S03-8，已在 PR #8 实现）：并发登录守得住锁定（N 个错密码 + 1 个对密码同时发，结束后账号是锁定的，锁没有被清掉）；改密码、申请注销的原密码输错按账号限速（15 分钟 5 次后 429，两个接口共用计数），不计入登录锁定；被踢设备调 HTTP 接口得到 `401 revoked`；出码设备被撤销后它出的码兑换得 `410`。
 
 **S04 同步核心：幂等、变更序号、商品类 op、按角色裁剪**
 - 产出：`sync/push.ts pull.ts projection.ts aliases.ts`、统一的取号函数，op：`product_upsert / product_edit / barcode_link / barcode_unlink`。
@@ -551,6 +578,8 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
   - 裁剪：收银员的拉取响应里用递归遍历断言不存在 `cost / value / stock / low_at` 等键；收银员发带进价的 `product_upsert` 被拒，发 `quick` 的成功且 `needs_review=true`。
   - 单件卖价只有一处：改商品卖价后，该商品所有单件码、名称搜索得到的都是新价，整件码的价不变。
   - epoch 不一致的请求：一个 op 都不应用。
+  - 验收补充（§14，已在 PR #10 实现）：服务器的分摊实现跑 `allocation.json`、`rounddiv.json` 同一份向量（S12-4）；注销期间推 op → `stores.rev` 和 `ops` 表不变、`results` 为空、带 `delete_pending_until`、同一请求的拉取照常，撤回后原样重发全部 `applied`（S04-2）；一家店并发超过排队上限时多出来的拿到 503，别的店不受影响，重发后幂等入账（S04-8）；`product_upsert` 用已有商品 id 挂不上码（S04-10）；存不进库或算不了哈希的 op、嵌套过深的 payload 只让自己被拒，同批其余照常，没有 500（S04-13）；请求体超过 1 MiB → 413。
+  - 过渡分支（S04-1）：本段没实现的 op 类型返回 `rejected: invalid`、不留档。S05b 已对卖出、进货、期初、撤销去掉；其余在 S06 合并时删掉。
 
 **S05 记账引擎一：卖出、抹零、进货、期初、撤销**
 - 产出：`ledger/apply.ts cost.ts allocation.ts void.ts invariants.ts rounddiv.ts`。
@@ -571,10 +600,18 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
   - 待确认补全：记的是 `opening` 不是 `stock_in`、清 `needs_review`、生成一条 `cost_fix`，原卖出行的 `cogs_fen` 不变。
   - 两组逐分用例：「先卖出 → 撤销 → 补进价」（已撤销的不参与补记）；「先卖出 → 补进价 → 跨月撤销」（撤销月出现冲销的 `cost_fix`，上月数字不变，对账等式两个月都成立）。
   - 性质测试加入新 op 后 I1–I8 仍成立。
+  - §14 带过来的（开工前逐条看）：
+    - S04-1：本段合并时删掉「没实现的 op 类型 → `rejected: invalid` 不留档」的过渡分支，并加测试「`ops.schema.json` 里每个 type 都有处理函数」。
+    - S04-14 / S05-4：本段的四种 op 都是记账类，预检查没拦住的 22xxx 整个请求 500、记 error 日志，不单个拒收；算出来的新库存、货值、各行金额照 §5.0 在写库前检查（走 `cost.ts` 现有的列范围检查，不另写）。
+    - S05-9：自动建的待确认商品（卖价可能是 0、没有条码）补全时，`product_review_complete` 照常接受；卖价和条码由手机另发 `product_edit`、`barcode_link`，本段不在补全里代填。加一条测试：对自动建的商品走完 `product_edit` + `barcode_link` + `product_review_complete`。
+    - S05-12：本段新写的、按 `batch_id` 取批内行的查询一律加 `reverses_entry_id IS NULL`（§3.3）。
+    - S05-14：本段如果成为第一个真正删流水行的段，不能指望拉取时回查原行（原行已经没了，收银员手机上的行就永远删不掉）：要么在 `removed` 上存归属（设备、是否卖出），要么不物理删行；PR 必须带「收银员收到本机卖出墓碑」的测试。
+    - 迟到补偿产生的 `count` 行会挂在发那笔流水的设备名下（可能是收银员）。收银员撤它必须被拒 `forbidden`：`void.ts` 里「只能撤本机的原始卖出行」是唯一的拦截，本段加测试（PR #13 Fable 第一轮）。
 
 **S07 报表与查询接口**
 - 产出：`reports/today.ts month.ts entries.ts`。
 - 验收：用一份固定夹具复现设计稿 10 的数字：卖了 23,474、赚了 5,487、月初货值 + 本月进货 41,595、卖掉的货的进价 17,987、盘点少了 128、过期扔掉 58、退供货商 160、现在货值 23,262，等式逐分成立；随机序列上「对账等式成立」作为性质测试；跨月撤销不改变上月的月初货值；未补记的 `cost_missing` 行不进「赚了」并计数，`cost_fix` 进「赚了」但不进「卖了」；收银员访问全部 403（真实请求）；一个月 1 万条流水时月报 < 300 ms。
+- §14 带过来的：按 `batch_id` 取批内行、按批汇总时一律加 `reverses_entry_id IS NULL`，卖出的冲销行带原 `batch_id`，不加会把冲销行算进批里（S05-12）；`voided_at` 是撤销 op 的 `occurred_at`，和冲销行的 `occurred_at` 是同一个值，报表和 07a / 07c 的「撤销算在哪天」只用这一个口径（S05-13）；冲销行的 `pack_count` 是负数（S05-11）。验收加一条：含「撤一行」「整批撤」「补记后撤销」的批次，按批汇总 = `paid_total_fen`，跨天撤销的冲销行落在撤销那天。
 
 **S08 条码查询与商品图**
 - 产出：`lookup/kuainiao.ts catalog.ts images.ts oss.ts`、`jobs/image-fetch.ts`、`scripts/barcode-trial.ts`、`docs/image-rights.md`。
@@ -588,11 +625,17 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 - 重置：每天北京时间 16:00（美国西岸半夜）；如果演示店最近 60 分钟有请求就顺延 1 小时再试。重置恢复审核号密码、撤回注销申请、把演示店全部设备标为已撤销并带 `discard_outbox`（§4.5），不换 `epoch`。
 - 注销：申请时为非演示店生成一份导出包（商品、流水、月报的 CSV 压缩包）放到 OSS 的 `exports/`，告警通知 Chitu 转交黄总；满 7 天后删除店铺全部在线数据、OSS 图片和导出包，并往 OSS 的 `deletions/` 写一条删除记录（不在数据库里，不随备份回滚）。`restore.sh` 恢复后必须重放删除记录（S10b）。
 - 验收：重置后数据与种子逐表一致；有活动时不重置；**一台在重置前登录、带着未传 op 的手机跨过重置**：得到 `revoked + discard_outbox`，重新登录后看到的是干净的种子数据，旧 op 没有进库；重置前改了审核号密码或申请了注销，重置后用原密码能登录；审核号令牌遍历元辉店的商品、流水、设备、报表 id 全部拿不到（隔离测试）；注销申请中写账和开通被拒；满 7 天后在线数据清空、删除记录存在、7 天内撤回则无事发生；导出包内的合计与月报一致。
+- §14 带过来的：
+  - S03-4：删除任务（`account-purge`）至少每天跑一次，把「满 7 天到真正删除」的空档压在 24 小时内；这段空档里撤回返回 `409 not_delete_pending`（S03 已实现）。
+  - S03-9：每次演示登录新建的设备行由每日重置清理（重置后不留已撤销的旧演示设备越积越多）；审核号在注销申请中时 `/v1/auth/demo` 怎么响应在本段定下并测试（现状：照样建设备、响应不带 `delete_pending_until`）。
+  - `createDevice` 加固（§14 跨段待办第 1 条）在本段动演示登录时一并做。
 
 **S10a 部署：ECS、镜像链路、Compose、TLS**
 - 要读：§9.1、§9.2。
 - 产出：`deploy/bootstrap-ecs.sh mirror-base-images.sh compose.yml Caddyfile.ip deploy.sh`、`.github/workflows/image.yml`（构建并推 ACR）、`docs/runbook.md` 初版。
 - 验收：`deploy.sh` 一条命令完成发布，健康检查失败自动回到上一个镜像（用一个故意坏掉的镜像演示一次）；Caddy 版本锁定，IP 站点**显式配置**公网 ACME 签发方和短期证书 profile，证书状态持久化在数据卷；`curl` 从境外和本机验证证书链为公开受信任；观察到至少一次自动续期成功后才算通过（不通则按 §9.2 切方案 B，并在 PR 写明）。App 端的验证在 S11b，不以 Safari 无警告代替。
+- 客户端 IP（§14 S03-6，§9.1）：`TRUST_PROXY` 打开且只信一跳（把 S03 的「信整条 `X-Forwarded-For`」改掉，可以是 `trustProxy: 1` 或只信 Caddy 的地址）；`api` 端口只绑本机或 Compose 内部网络，不对公网开。验收加两条：① 从公网直接连 `api` 的端口连不上；② 从公网带伪造的 `X-Forwarded-For` 请求登录，按 IP 限速仍按真实 IP 生效（用伪造的头换不出新的限速额度），服务器端有对应的自动化测试，ECS 上再实测一次。
+- 待查，不算验收（PR #10 Fable 第三轮）：上限以内但不合 schema 的 payload 会留档，持有效令牌的设备一个请求最多能往 `ops` 里写近 1 MiB 垃圾。本段配 Caddy 时看要不要在反代层按 IP / 按连接限制 `/v1/sync` 的请求速率，结论（做了什么，或为什么不做）写进 PR；应用层按设备限速若要做，另提裁定。
 
 **S10b 备份与恢复**
 - 要读：§9.4。
@@ -623,7 +666,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 
 **S13 本地库与 outbox**
 - 产出：`ShopCore/LocalDB/*`（§3.4 的表、迁移、各仓库）、前缀匹配和名称搜索、临时库存（服务器基线与本机未确认增减分开存）、恢复队列的存储、演示用种子数据。
-- 验收：1,000 个商品时条码查找 < 5 ms（口径见 §14 S13-3）；`prefix.json` 向量通过；**记账的原子性**：在「写流水」和「写 outbox」之间注入崩溃（在注入点拷走库文件含 -wal / -shm 当作断电时的磁盘，另加抛错回滚，§14 S13-4），重启后两者要么都在要么都不在；outbox 在 App 重启后仍在且顺序不变；以收银员形态建库后 `product_private` 为空，并且对库文件做字符串扫描找不到进价数值（测试写入一个特征值来验证）；**清投影不清未确认的 outbox**：有 3 条未确认 op 时切换角色，投影被清空，3 条 op 进入恢复队列且仍绑定原来的店和设备；换成收银员后旧会话已确认的 op 立刻删、未确认的确认后立刻删，压缩中途崩溃或被读事务挡住时重开 / 重试后库文件里仍找不到进价（§14 S13-1）；一个商品有两个单件码时，扫任一个或按名称找，得到同一个卖价。
+- 验收：1,000 个商品时条码查找 < 5 ms（口径见 §14 S13-3，另有合并 5,000 个样本 p99 < 20 ms 的护栏，`lookup` 和 `prefixMatch` 的查询计划断言走条码主键的 `SEARCH`、不出现 `SCAN`）；`prefix.json` 向量通过；**记账的原子性**：在「写流水」和「写 outbox」之间注入崩溃（在注入点拷走库文件含 -wal / -shm 当作断电时的磁盘，另加抛错回滚，§14 S13-4），重启后两者要么都在要么都不在；outbox 在 App 重启后仍在且顺序不变；以收银员形态建库后 `product_private` 为空，并且对库文件做字符串扫描找不到进价数值（测试写入一个特征值来验证）；**清投影不清未确认的 outbox**：有 3 条未确认 op 时切换角色，投影被清空，3 条 op 进入恢复队列且仍绑定原来的店和设备；换成收银员后旧会话已确认的 op 立刻删、未确认的确认后立刻删，压缩中途崩溃或被读事务挡住时重开 / 重试后库文件里仍找不到进价（§14 S13-1）；一个商品有两个单件码时，扫任一个或按名称找，得到同一个卖价。
 
 **S14 扫码层**
 - 设计稿：27a、27b。
@@ -634,11 +677,13 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 - 设计稿：01、02、24a、25a、16、16b、21a、21b。
 - 产出：`Features/Home Onboarding Settings`、导航骨架（按角色决定有哪些入口）。
 - 验收：XCUITest：收银员形态下遍历所有可点元素，**到不了**进货、看账、商品、盘点、快过期、开通；家用形态下都能到；16 默认选中大字，选择保存在本机，重启后保持；标准模式下系统字号调到最大时也封顶在 `accessibility2`（S11 留下的改动，连同单元测试）；小号步进器（46pt 圆钮）的点按区域不小于 56pt；16b 不出现起名；21b 恰好五项；「没同步」和「快过期」两条提醒同时出现时没同步的在上；系统最大辅助字号下首页两个大按钮不被截断；截图与 01、02、16、21a 对照附 PR。
+- §14 S15 的裁定（已在 PR #12 实现）：正常启动时没有真数据的项一律不显示，不出假数（S15-1）；16 预选的是当前本机设置，「首次进入做完」按设备 id 记，重新登录会再出 16（S15-3）；未登录自动建演示会话只在 Debug，Beta / Release 出「还没登录」占位页，CI 有 Release 构建检查（S15-4、S15-7）；大字下多换一行不截断即可（S15-5）；库存和进价可见性由 `sync:pull` 的 scope 推出（S12-3）。
 
 **S16 卖出**
 - 设计稿：03、03b、03c、03d、24b、27a。
 - 产出：`Features/Sell`。相机条常开、连续扫码、屏幕常亮（`isIdleTimerDisabled`）、手电筒、价签（64pt 小图或首字 + 单价）、购物篮两行式、步进器减到 0 删除、「收好钱了，记账」后显示「记好了 ¥53.00」再清空并停在卖出页。
 - 验收：XCUITest：喂三个码后记账 → 本地一笔批次三行，合计正确，outbox 多一条 `sale_batch`；同码扫两次数量为 2；从首页卖一样东西共两次点击；连点两次记账只产生一笔；空篮时记账按钮置灰；商品名很长时换行不截断、金额不出右边距；系统最大辅助字号下总价和记账按钮完整可见。
+- §14 带过来的：抹零后改购物篮，即清掉已填的实收（S12 的 PR #7 裁定，记在 S12 表后；S12 只记录、没实现）；设置页和首页的扫码枪连接状态接 S14 的真实状态（S15-1）。各加一条测试。
 
 **S17 抹零与手输条码**
 - 设计稿：18、28、15、15b。
@@ -660,6 +705,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 - 设计稿：07a、07b、07c、08。
 - 产出：`Features/Records Undo`、首页「刚记的」条接真数据。
 - 验收：撤销后临时库存恢复、原流水划线仍可见；撤两次第二次无操作；有优惠的批次在 08 显示「这笔抹了 ¥0.50，撤一样按比例退」和每行摊后金额；「只撤这样」和「整笔都撤销」各一条测试；收银员形态只列本机当天的卖出、没有日期切换、昨天的流水没有撤销按钮；家用形态「更早」列出每天一行（离线时只到本地 35 天）；流水上显示的是手机名，不是人名。
+- §14 带过来的：首页「刚记的」条的数来自真数据（S15-1）；家用首页「刚记的」整条可点进 07a（和收银员 02 的「点开看」同一个做法，家用不加「点开看」字样），还没有任何流水、条不显示时从「看账」页进；验收加「家用首页没有提醒条时也能进记的账」，并把 S15 家用遍历的必达集合加回 `page.records`（S15-6）。
 
 ### 阶段 D：联网
 
@@ -667,11 +713,24 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 - 设计稿：13、25c、14、27b。
 - 产出：`ShopCore/SyncClient/APIClient`（基址来自 xcconfig；Beta 配置的证书处理沿用 S11b 定下的做法）、`Features/Login`、钥匙串里的当前令牌和恢复用旧令牌、`/v1/config` 最低版本检查、「看看演示」入口（`demo_login_enabled` 为假时不显示，默认假）。
 - 验收：XCUITest 连本机起的服务器：账号密码登录成功进 16；密码错 5 次显示锁定到几点；登录页没有「注册」字样、没有店名（副标题「小店扫码记账」）、有隐私政策链接、密码可显示；扫码登录解析 `YHZB1:` 码，过期码给出 25d 的提示；杀掉 App 重开仍是登录状态；`min_build` 高于本包时显示「请更新」；开关打开时「看看演示」能进演示小店，关闭时界面上找不到它。（本段**不做**同步，登录后进的是空首页。）
+- §14 带过来的：
+  - S15-4：用登录页替换「还没登录」占位页；`tokenRef` 为 `demo-local` 的遗留会话不当作已登录，启动时清掉（开发机上装过早期 Debug 包的，正式库 `zhangben.sqlite` 里还留着这种会话）。加测试：库里预置一条 `demo-local` 会话，启动后进登录页、会话已删。
+  - S15-2：接 `PATCH /v1/devices/me`；登录前（S15–S20 期间）本机改过的名字，第一次登录后补报；名字长度的计数口径与契约 `DeviceLabel` 核对一致（本地现在按 unicode scalar 计）。收银员本机拒改不变。
+  - Release 检查补 Beta（PR #12 Fable 第二轮）：现有的 Release 构建检查（`release-check.sh` + `ReleaseBuildUITests`）只构建 `Release` 配置。本段给 Beta 配置加基址和证书处理，要对 **Beta 配置单独跑一遍同样的检查**（带夹具参数启动只出登录页、二进制里没有演示会话的符号），防止有人用 `#if BETA` 开夹具而检查抓不到。
 
 **S22a 同步引擎一：正常同步、首次同步、本地原子提交**
 - 设计稿：29、25a。
 - 产出：`SyncClient/SyncEngine`（outbox 推送、两条流的分页拉取、`remap` 改写、每个 op 的结果处理、同步状态指示）。
 - 验收（XCUITest + 本机服务器）：首次同步显示「194 / 312 样」式进度，**商品拉完即可进首页开卖**，流水在后台继续；断网卖三笔 → 联网 → 服务器上每条流水恰好一条；第二台模拟器 20 秒内看到这笔；**崩溃注入**：在「请求发出后、响应到达前」「响应到达后、本地提交前」「本地提交中途」三处强杀 App，重启后不漏拉、不重复扣临时库存、服务器上不重复记账；服务器已拒绝但响应丢失 → 重试拿到的仍是拒绝，本地把这条标为没记上，临时库存被纠正；`remap` 响应丢失后重试仍得到 `remap`；进货后服务器给出的平均进价与 `cost.json` 一致（5 条 × ¥400、原 6 包货值 ¥242.80 → ¥40.05），手机显示的是服务器的数。
+- §14 和审核带过来的验收：
+  - 按字节拆批（S04-13，PR #10）：取一批 op 时按 `op_json` 的字节累加，到 200 个或快到 1 MiB 就截断；outbox 里积了超过 1 MiB 的 op 时分几批传完，全程不出现 413。
+  - 注销期间（S04-2）：响应带 `delete_pending_until` 时停止推送，op 留在 outbox，提示「账号正在注销，N 笔还没记上，撤回后会自动补传」；撤回后自动补传、全部入账。文案注意：真实的申请注销会让全部设备退出，注销期间还在推的只有重新登录的设备。
+  - 拉取窗口（S04-6）：撤销流水指向的原流水不在本地时不报错、不崩。
+  - 首页和设置页的同步状态、「超过一天没传」提醒条的数来自真数据（S15-1）。
+- 本地库接口的三点约束（PR #9 Fable 第二、三轮）：
+  - `beginSession` / `recordResults` / `compactIfNeeded()` **不许在主线程上调**：压缩被读事务挡住时调用线程会多停约 0.6 秒（重试 5 次），读事务一直不结束就每次都停。
+  - §4.1 第 6 条要求处理一次同步响应在同一个事务里，而 `recordResults` 现在自己开事务、提交后再压缩。本段给它加一个**能并进外层事务的入口**（应用变更 + 改写 remap + 记结果 + 推进游标一起提交），压缩留在提交之后。崩溃注入的「本地提交中途」就是验这一条。
+  - `recordResults` 必须带发送那批 op 的会话的店（op id 只在店内唯一）。
 
 **S22b 同步引擎二：被踢、恢复队列、换身份、epoch**
 - 设计稿：25b、25f。
@@ -685,6 +744,10 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
   - 服务器换 `epoch`：手机握手、重建投影、重传保留的 op，服务器上不重复。
   - 演示店重置：手机丢弃 outbox，不重放。
   - 被拒的 op 在首页提示且不再重试。
+- 本地库接口的约束（PR #9 Fable 第二、三轮，§3.4）：
+  - 每次同步调一次 `compactIfNeeded()`（补做没做成的压缩）；没做成（`compactionBusy`）就下次同步再试。同 S22a，这几个接口不在主线程调。
+  - 恢复队列用旧令牌上传后，`recordResults` 带的是**发送那批 op 的旧会话的店**，不是当前会话的店。
+  - 收银员会话下，旧会话的 op 一拿到结果就删（被拒和 `held` 的也一样），之后从 outbox **读不回结果**。要提示这类结果时，用手上这次的服务器响应，不能事后去查 outbox。
 
 **S22c 商品图的后台下载与缓存**
 - 产出：图片下载器、磁盘缓存、`Thumb` 组件接真数据。
@@ -694,6 +757,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 - 设计稿：17a、17b、25d、26。
 - 产出：`Features/Pairing`、已登录的手机列表、被退出手机补传的「待确认的账」列表（用 26 号通用确认面板）、通用确认面板接入（让它退出、退出登录）。
 - 验收：A 出家人码，B 扫后 20 秒内看到 A 的流水；同一个码第二台扫失败；倒计时到 0 显示「这个码过期了 / 换一个新码」；收银员码未填称呼时「出码」置灰、称呼重名有提示；B 扫收银员码后是 02 首页；「让它退出」先弹确认；待确认的账逐笔「记上 / 不要」，记上后出现在记的账里；退出登录先弹确认并走 S22b 的排空流程。
+- §14 带过来的：设置页「已登录的手机」右侧的数来自真数据（S15-1）。
 
 **S23b 账号与密码、注销**
 - 设计稿：23、21a（下级页）。
@@ -709,6 +773,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 - 设计稿：11、22、22b、24c。
 - 产出：`Features/Products`、通用确认面板接入（不卖了、删整箱码）。
 - 验收：筛选「全部 / 快没货 / 快过期 / 待确认」数量正确；改卖价后，**扫任一单件码、按名称找、另一台离线后再联网的手机**都用新价，整箱码的价不变，旧流水保持原名称原价；平均进价只读；22b：待确认商品可填进价和「货架上现在有几个」，必须联网，遇到 `stale` 时提示账面数变了并重新确认；确认后「待确认」数减一，服务器上记的是 `opening`；「不卖了」单独一行在页面最下面，点了先确认，停用后扫码提示已停用但仍可卖。
+- §14 带过来的（S05-9）：卖出引用未知商品时服务器自动建的待确认商品，整件行建出来的卖价是 0、没有条码。22b 遇到 `needs_review` 且 `price_fen = 0` 要先让人填卖价（发 `product_edit`），条码要挂的发 `barcode_link`，再发 `product_review_complete`；不能对这个商品 id 再发 `product_upsert`（会被拒 `invalid`）。验收加一条对应的测试。
 
 **S26 盘点**
 - 设计稿：12a、12b。
@@ -718,6 +783,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 - 设计稿：19、20、20b、01（黄条）。
 - 产出：`Features/Expiry`、首页黄条和 09 的「快过期了」接真数据。
 - 验收：清单分「已过期 / 快过期 / 过几天再提醒的」；处理面板先问实际数量；已过期的默认突出「下架扔掉」，没过期的默认突出「还在卖，过几天再提醒」；数量减到 0 时突出「卖完了」并把扔掉、退货置灰；有「先不处理」按钮；扔掉后首页黄条数量减一、月报过期损耗增加、「赚了」不变；另一台手机已经处理过同一批 → 提示「这批已经处理过了」并刷新；收银员手机上没有黄条。
+- §14 带过来的：首页黄条和 09「快过期了」的数来自真数据，夹具以外不出稿子上的假数（S15-1）。
 
 **S28 端到端回归与权限扫尾**
 - 产出：`UITests/E2E/*`、`docs/test-matrix.md`。
@@ -751,6 +817,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 ### 9.1 服务器布局
 
 - ECS 上只开 22（仅密钥登录，安全组限制来源）、80、443。Postgres 不对外。开 2 GB swap。
+- **客户端 IP 与限速**（§14 S03-6）：`api` 的端口只允许 Caddy 访问（只绑本机或 Compose 内部网络，不映射到公网，安全组也不放行）。接 Caddy 时打开 `TRUST_PROXY`，并且**只信一跳**（只信 Caddy 这一层给的地址，不信请求自带的整条 `X-Forwarded-For`）；默认关。S03 合并时的实现是打开后信整条头，S10a 要改成只信一跳，改完之前 `api` 端口不许对公网开。
 - Compose 三个服务：`caddy`（TLS、静态页、反代；**版本锁定**，证书状态放在持久化数据卷）、`api`（Node，内存上限 512 MB）、`postgres`（`shared_buffers=256MB`，数据卷 `/data/pg`）。图片缓存 `/data/img`。
 - 配置和密钥在 ECS 的 `/opt/yuanhui/.env`（权限 600）：数据库密码、OSS 密钥（给 RAM 子账号最小权限：只读写两个 bucket）、快鸟 AppCode、审核号密码、备份加密口令。**任何密钥不进仓库、不进 CI 日志。**
 - **备份加密口令和 OSS 恢复用的凭据另存两处**：这台 Mac 的钥匙串，以及 Haoqiang 的密码管理器。整台 ECS 丢了也要能解开备份。S10b 验收时确认。
@@ -1083,7 +1150,7 @@ S04 的 PR（#10）提了 14 条（S04-1…9 来自计划裁定，S04-10…13 �
 | S04-13 | 请求外壳和 payload 的校验 | 外壳严格校验，不成形整个请求 400。payload 不合 `ops.schema.json` → 这个 op `rejected: invalid` 并留档。权限判在 schema 之前。过了外壳但算不了哈希或存不进库的 op（`\u0000`、不成对的代理项、解析不出的 `occurred_at`；Codex 第二轮补：payload 嵌套超过 16 层或超过 1 万个节点，这项检查不递归）→ `rejected: invalid`，不留档。op 的内容不许导致 500 | §4.2、§4.4、S04 |
 | S04-14 | savepoint 兜底把所有 22xxx 都当成「op 内容有问题」 | S04 只有商品类 op，可以接受。S05 / S06 加入卖出、进货以后，服务器自己算错（除零、数值溢出）也是 22xxx，记账 op 被当成终局的 `invalid`、手机不再重发，等于丢账。S05 接入记账 op 时要重新定：记账类 op 遇到预检查没拦住的 22xxx 应当让整个请求 500（手机会重发），不能单个拒收；兜底触发时一律按 error 级别记日志（op id、类型、SQLSTATE） | §4.2、S05、S06 |
 
-待办（S04 只记录，不实现）：收银员拉取的 `removed` 墓碑要按角色过滤。S04 只写 `barcode` 墓碑，没有泄漏；但 `removed.kind` 还允许 `entry / batch / lot`，S05 / S06 里第一个写这些墓碑的段落要在 `sync/projection.ts` 里按角色过滤（收银员只收本机卖出流水和批次头的墓碑，不收 `lot`），并加进收银员裁剪测试。（已由 S05b 提前实现：`cashierRemovedVisible`，原行找不到的 `entry / batch` 墓碑不发给收银员；测试在 `sync.projection.test.ts`。）
+待办（S04 只记录，不实现）：收银员拉取的 `removed` 墓碑要按角色过滤。S04 只写 `barcode` 墓碑，没有泄漏；但 `removed.kind` 还允许 `entry / batch / lot`，S05 / S06 里第一个写这些墓碑的段落要在 `sync/projection.ts` 里按角色过滤（收银员只收本机卖出流水和批次头的墓碑，不收 `lot`），并加进收银员裁剪测试。（已由 S05b 提前实现：`cashierRemovedVisible`，原行找不到的 `entry / batch` 墓碑不发给收银员；测试在 `sync.projection.test.ts`。）S05-14 补充：S05b 没有任何地方写 `entry / batch` 墓碑，这个过滤目前不产生实际效果。以后第一个真正删流水行的段，不能指望拉取时再回查原行（那时原行已经没了，收银员手机上的行就永远删不掉）：要么在 `removed` 上存归属（设备、是否卖出），要么不物理删行；那一段的 PR 必须带收银员收到本机卖出墓碑的测试。墓碑不套收银员 2 天的时间窗（S05-15，§4.2）。
 
 S13 的 PR（#9）提了 4 条，裁定如下：
 
@@ -1091,7 +1158,7 @@ S13 的 PR（#9）提了 4 条，裁定如下：
 |---|---|---|---|
 | S13-1 | 同一台手机从家用换成收银员，没传完的进货 op 里的进价留在 outbox | 未确认的照 §4.5 保留，不加密、不拦换角色（不丢账优先；钥匙在同一台手机上，加密没有意义）。「收银员手机找不到进价」指投影和已确认的 op：当前会话是收银员时，旧会话的 op 一确认就删，换成收银员时旧会话已确认的 op 立刻删，都不留 14 天；当前会话自己的 op 照旧留 14 天。兑收银员码成功后、第一次拉取前先传一遍恢复队列，传不完不拦。恢复队列在界面上只显示笔数 | §3.4、§4.5、S13、S22b |
 | S13-2 | §5.5 正文的去重键还是「商品 + 换算数量」 | 改成「商品 + 换算数量 + 这一件的卖价 + 单位名」，与 S12-2 的购物篮合并键是同一个；前缀匹配、名称搜索、购物篮都用它。Q12 以此为准 | §5.5 |
-| S13-3 | 条码查找「< 5 ms」怎么测 | 1,000 商品 / 2,000 条码，预热后 5 轮 × 1,000 次随机查找：每轮中位数 < 5 ms，最好一轮的平均和 p99 < 5 ms；单次最慢值只打印不断言 | S13 |
+| S13-3 | 条码查找「< 5 ms」怎么测 | 1,000 商品 / 2,000 条码，预热后 5 轮 × 1,000 次随机查找：每轮中位数 < 5 ms，最好一轮的平均和 p99 < 5 ms；单次最慢值只打印不断言。PR #9 返修时另加两道护栏，保留：工作负载固定种子，合并 5,000 个样本的 p99 < 20 ms（挡大幅退化，是加严不是放宽；不用 5 ms 卡合并 p99，共享 CI 机器会偶发停顿）；`lookup` 和 `prefixMatch` 各有一条 `EXPLAIN QUERY PLAN` 断言（挡「丢了索引」） | S13 |
 | S13-4 | 崩溃注入不是真杀进程 | 认可在注入点拷走库文件（含 -wal / -shm）当作断电时的磁盘，加一条注入点抛错的回滚测试。真正强杀 App 的验收在 S22a | S13 |
 
 S05 的 PR（#11）提了 8 条，Fable 审核裁定如下（S05 拆成 S05a / S05b 两个 PR，见 S05-6）：S05b 的 PR（#13）又提了 8 条（S05-9 至 S05-16），Fable 审核的裁定接在同一张表里，按评论原文。
@@ -1126,3 +1193,11 @@ S15 的 PR（#12）提了 7 条，裁定如下：
 | S15-5 | 大字比稿子略大，几处多换一行（16b 手机卡、21b 页脚、21a 大字模式说明） | 接受，是 S11-2 的延续：不截断、不重叠即可，不为此改字号。02 的「我刚记的」条例外：建议横排时让小字换行、「记错了」留在右边，把高度还给卖出卡（建议项，不拦） | S15 |
 | S15-6 | 家用首页没有「没传上去」提醒时进不了「记的账」 | S15 接受。入口在 S20 做：家用首页「刚记的」整条可点进 07a（和收银员 02 的「点开看」同一个做法，家用不加「点开看」字样）；还没有任何流水、条不显示时，从「看账」页进。S20 验收加「家用首页没有提醒条时也能进记的账」，S15 的家用遍历届时把 `page.records` 加回必达集合 | S20 |
 | S15-7 | 非 Debug 构建里的测试夹具 | 凡是能绕过登录、换身份或装演示数据的启动参数都只在 Debug 编译进去；只换界面状态、不涉及会话的（组件陈列页、`-uiLargeText`）不限 | S15 及以后各段 |
+
+### 跨段待办与待排查（来自审核评论，不是裁定；做完在这里划掉）
+
+| # | 事项 | 来源 | 放在哪一段 |
+|---|---|---|---|
+| T1 | `createDevice` 要求「调用方必须先锁账号行」，目前只靠注释约束。加固：让它自己能查出没拿锁（例如只接受已持有账号行锁的事务，进函数先断言），并加一条「没拿锁调用会失败」的测试。在那之前，任何新增建设备的路径（现有登录、兑码、演示登录三条）都要照「账号 → 开通码 → 设备称呼」的顺序加锁 | PR #8 Fable 第三轮 | S09（动演示登录时一并做）；之前有别的段新增建设备路径，就由那一段做 |
+| T2 | `server-ci` 偶发失败待排查：PR #12 的 `c2b7f91` 第一次跑（run 44787936776 attempt 1），`test/concurrency.test.ts`「并发登录（§14 S03-3）› 20 个错密码 + 1 个对密码同时发」里 20 个错密码的状态码是 `401,500,500,500,401,401,401,423×13`，出现 3 个 500；当时 server 代码与 main 完全一致，重跑通过。测试断言「没有 500」是对的，不许为了变绿放宽它或加重试。要查清 500 的来源（CI 日志里没有留下 500 的响应体和错误栈，先让这条测试失败时把它们打出来），修掉或写明原因 | PR #12 修改说明（d6fd420、c2b7f91） | 下一个改 `server/src/routes/auth.ts` 或这条测试的段（预计 S09）；再次出现就立刻单开 PR，不等 |
+| T3 | 上限以内但不合 schema 的 payload 会留档，持有效令牌的设备一个请求最多写近 1 MiB | PR #10 Fable 第三轮 | S10a（见该段） |
