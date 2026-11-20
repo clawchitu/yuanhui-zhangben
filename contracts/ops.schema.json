@@ -1,0 +1,721 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yuanhuishop.cn/contracts/ops.schema.json",
+  "title": "同步 op（§4.3）",
+  "description": "POST /v1/sync 请求里 ops[] 的每一项。金额整数分、数量整数基本单位；上限见 §5.0。权限另见 permissions.json。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "type",
+    "occurred_at",
+    "payload"
+  ],
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/uuid",
+      "description": "手机生成；幂等键"
+    },
+    "type": {
+      "$ref": "#/$defs/op_type"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "type": {
+          "const": "sale_batch"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_sale_batch"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "void"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_void"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "product_upsert"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_product_upsert"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "product_edit"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_product_edit"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "barcode_link"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_barcode_link"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "barcode_unlink"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_barcode_unlink"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "stock_in"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_stock_in"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "opening"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_opening"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "product_review_complete"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_product_review_complete"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "count"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_count"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "expiry_dispose"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_expiry_dispose"
+        }
+      }
+    },
+    {
+      "properties": {
+        "type": {
+          "const": "lot_snooze"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload_lot_snooze"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "fen": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 99999999,
+      "description": "单价或单行金额，整数分，§5.0 上限 99,999,999"
+    },
+    "paid_total_fen": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "一笔卖出的实收，整数分。§5.0 没给上限，见 PR 疑问"
+    },
+    "pack_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 99999,
+      "description": "件数（几条、几箱、几个），§5.0 上限 99,999"
+    },
+    "pack_qty": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9999,
+      "description": "1 件 = 几个基本单位，§3.2 >= 1，§5.0 <= 9,999"
+    },
+    "qty": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 99999,
+      "description": "按基本单位数到的数量。上限按 §5.0「件数」理解，见 PR 疑问"
+    },
+    "ver": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "date": {
+      "type": "string",
+      "format": "date",
+      "description": "上海时区的日历日 YYYY-MM-DD"
+    },
+    "barcode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "unit": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20
+    },
+    "low_at": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 99999
+    },
+    "payload_sale_batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "batch_id",
+        "paid_total_fen",
+        "lines"
+      ],
+      "properties": {
+        "batch_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "paid_total_fen": {
+          "$ref": "#/$defs/paid_total_fen"
+        },
+        "lines": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "entry_id",
+              "product_id",
+              "barcode",
+              "name",
+              "unit_name",
+              "pack_qty",
+              "pack_count",
+              "unit_price_fen"
+            ],
+            "properties": {
+              "entry_id": {
+                "$ref": "#/$defs/uuid"
+              },
+              "product_id": {
+                "$ref": "#/$defs/uuid"
+              },
+              "barcode": {
+                "$ref": "#/$defs/barcode"
+              },
+              "name": {
+                "$ref": "#/$defs/name"
+              },
+              "unit_name": {
+                "$ref": "#/$defs/unit"
+              },
+              "pack_qty": {
+                "$ref": "#/$defs/pack_qty"
+              },
+              "pack_count": {
+                "$ref": "#/$defs/pack_count"
+              },
+              "unit_price_fen": {
+                "$ref": "#/$defs/fen"
+              }
+            },
+            "description": "单价 × 件数 不得超过 99,999,999（服务器校验，schema 表达不了）。原价由服务器算。"
+          }
+        }
+      }
+    },
+    "payload_void": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target"
+      ],
+      "properties": {
+        "target": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "batch_id"
+              ],
+              "properties": {
+                "batch_id": {
+                  "$ref": "#/$defs/uuid"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "entry_id"
+              ],
+              "properties": {
+                "entry_id": {
+                  "$ref": "#/$defs/uuid"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "payload_product_upsert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product_id",
+        "barcode",
+        "name",
+        "price_fen",
+        "base_unit",
+        "quick"
+      ],
+      "properties": {
+        "product_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "barcode": {
+          "$ref": "#/$defs/barcode"
+        },
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "price_fen": {
+          "$ref": "#/$defs/fen"
+        },
+        "base_unit": {
+          "$ref": "#/$defs/unit"
+        },
+        "quick": {
+          "type": "boolean"
+        },
+        "track_expiry": {
+          "$ref": "#/$defs/track_expiry"
+        },
+        "expiry_warn_days": {
+          "$ref": "#/$defs/expiry_warn_days"
+        },
+        "shelf_life_months": {
+          "$ref": "#/$defs/shelf_life_months"
+        },
+        "low_at": {
+          "$ref": "#/$defs/low_at"
+        }
+      },
+      "if": {
+        "properties": {
+          "quick": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "track_expiry"
+              ]
+            },
+            {
+              "required": [
+                "expiry_warn_days"
+              ]
+            },
+            {
+              "required": [
+                "shelf_life_months"
+              ]
+            },
+            {
+              "required": [
+                "low_at"
+              ]
+            }
+          ]
+        }
+      },
+      "description": "quick=true 只有名称和卖价（收银员只能发这种，§4.3），不许带保质期设置和 low_at"
+    },
+    "payload_product_edit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product_id"
+      ],
+      "properties": {
+        "product_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "price_fen": {
+          "$ref": "#/$defs/fen"
+        },
+        "low_at": {
+          "$ref": "#/$defs/low_at"
+        },
+        "track_expiry": {
+          "$ref": "#/$defs/track_expiry"
+        },
+        "expiry_warn_days": {
+          "$ref": "#/$defs/expiry_warn_days"
+        },
+        "shelf_life_months": {
+          "$ref": "#/$defs/shelf_life_months"
+        },
+        "archived": {
+          "type": "boolean",
+          "description": "停用"
+        }
+      },
+      "minProperties": 2,
+      "description": "只带要改的字段，逐字段后写者赢"
+    },
+    "payload_barcode_link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "barcode",
+        "product_id",
+        "pack_qty",
+        "unit_name"
+      ],
+      "properties": {
+        "barcode": {
+          "$ref": "#/$defs/barcode"
+        },
+        "product_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "pack_qty": {
+          "$ref": "#/$defs/pack_qty"
+        },
+        "unit_name": {
+          "$ref": "#/$defs/unit"
+        },
+        "pack_price_fen": {
+          "$ref": "#/$defs/fen"
+        }
+      },
+      "if": {
+        "properties": {
+          "pack_qty": {
+            "const": 1
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "pack_price_fen"
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "pack_price_fen"
+        ]
+      },
+      "description": "单件码（pack_qty=1）不带价，卖价读 products.price_fen；整件码必须带自己的价（§3.2）"
+    },
+    "payload_barcode_unlink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "barcode",
+        "product_id"
+      ],
+      "properties": {
+        "barcode": {
+          "$ref": "#/$defs/barcode"
+        },
+        "product_id": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "payload_stock_in": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry_id",
+        "product_id",
+        "barcode",
+        "pack_qty",
+        "pack_count",
+        "unit_cost_fen"
+      ],
+      "properties": {
+        "entry_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "product_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "barcode": {
+          "$ref": "#/$defs/barcode"
+        },
+        "pack_qty": {
+          "$ref": "#/$defs/pack_qty"
+        },
+        "pack_count": {
+          "$ref": "#/$defs/pack_count"
+        },
+        "unit_cost_fen": {
+          "$ref": "#/$defs/fen"
+        },
+        "expiry_date": {
+          "$ref": "#/$defs/date"
+        }
+      },
+      "description": "unit_cost_fen 是每件（条/箱）单价；总价 = pack_count × unit_cost_fen，不得超过 99,999,999（服务器校验）"
+    },
+    "payload_opening": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry_id",
+        "product_id",
+        "counted_qty"
+      ],
+      "properties": {
+        "entry_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "product_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "counted_qty": {
+          "$ref": "#/$defs/qty"
+        },
+        "unit_cost_fen": {
+          "$ref": "#/$defs/fen"
+        },
+        "expiry_date": {
+          "$ref": "#/$defs/date"
+        },
+        "base_ver": {
+          "$ref": "#/$defs/ver"
+        }
+      },
+      "description": "不带 unit_cost_fen = 没填进价；带 0 = 明确零成本（§5.2）"
+    },
+    "payload_product_review_complete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "product_id",
+        "unit_cost_fen",
+        "counted_qty",
+        "base_ver"
+      ],
+      "properties": {
+        "product_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "unit_cost_fen": {
+          "$ref": "#/$defs/fen"
+        },
+        "counted_qty": {
+          "$ref": "#/$defs/qty"
+        },
+        "base_ver": {
+          "$ref": "#/$defs/ver"
+        },
+        "track_expiry": {
+          "$ref": "#/$defs/track_expiry"
+        },
+        "expiry_warn_days": {
+          "$ref": "#/$defs/expiry_warn_days"
+        },
+        "shelf_life_months": {
+          "$ref": "#/$defs/shelf_life_months"
+        },
+        "expiry_date": {
+          "$ref": "#/$defs/date"
+        }
+      },
+      "description": "§4.3 没列 entry_id，见 PR 疑问；记一条 opening 流水，清 needs_review"
+    },
+    "payload_count": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry_id",
+        "product_id",
+        "counted_qty",
+        "base_qty",
+        "base_ver"
+      ],
+      "properties": {
+        "entry_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "product_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "counted_qty": {
+          "$ref": "#/$defs/qty"
+        },
+        "base_qty": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991,
+          "description": "数的时候账上显示几个，可以是负数"
+        },
+        "base_ver": {
+          "$ref": "#/$defs/ver"
+        }
+      }
+    },
+    "payload_expiry_dispose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lot_id",
+        "handle_ver",
+        "actual_qty",
+        "action",
+        "entry_id"
+      ],
+      "properties": {
+        "lot_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "handle_ver": {
+          "$ref": "#/$defs/ver"
+        },
+        "actual_qty": {
+          "$ref": "#/$defs/qty"
+        },
+        "action": {
+          "enum": [
+            "sold_out",
+            "discard",
+            "return"
+          ]
+        },
+        "entry_id": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "payload_lot_snooze": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lot_id",
+        "handle_ver",
+        "actual_qty",
+        "days"
+      ],
+      "properties": {
+        "lot_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "handle_ver": {
+          "$ref": "#/$defs/ver"
+        },
+        "actual_qty": {
+          "$ref": "#/$defs/qty"
+        },
+        "days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365
+        }
+      }
+    },
+    "op_type": {
+      "enum": [
+        "sale_batch",
+        "void",
+        "product_upsert",
+        "product_edit",
+        "barcode_link",
+        "barcode_unlink",
+        "stock_in",
+        "opening",
+        "product_review_complete",
+        "count",
+        "expiry_dispose",
+        "lot_snooze"
+      ]
+    },
+    "track_expiry": {
+      "type": "boolean"
+    },
+    "expiry_warn_days": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3650
+    },
+    "shelf_life_months": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "maximum": 1200
+    }
+  }
+}

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prefix.schema.json",
+  "title": "手输条码前缀匹配向量（§5.5）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "catalog",
+    "cases"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "catalog": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "product_id",
+          "name",
+          "barcode"
+        ],
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "barcode": {
+            "type": "string",
+            "pattern": "^[0-9]{8,14}$"
+          }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "input",
+          "expected",
+          "note"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "input": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "expected": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "listed",
+              "candidates",
+              "shown_count",
+              "too_many",
+              "auto_select"
+            ],
+            "properties": {
+              "listed": {
+                "type": "boolean"
+              },
+              "candidates": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              },
+              "shown_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4
+              },
+              "too_many": {
+                "type": "boolean"
+              },
+              "auto_select": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

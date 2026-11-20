@@ -1,0 +1,531 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "expiry.schema.json",
+  "title": "保质期向量（§5.4）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "add_months",
+    "remind",
+    "deduct",
+    "handle_ver",
+    "dispose",
+    "undo"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "add_months": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "start",
+          "months",
+          "expected",
+          "note"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start": {
+            "type": "string",
+            "format": "date"
+          },
+          "months": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expected": {
+            "type": "string",
+            "format": "date"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "remind": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "today",
+          "lot",
+          "expected",
+          "note"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "today": {
+            "type": "string",
+            "format": "date"
+          },
+          "lot": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "expiry_date",
+              "expiry_warn_days",
+              "qty_left",
+              "closed",
+              "snoozed_until"
+            ],
+            "properties": {
+              "expiry_date": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date"
+              },
+              "expiry_warn_days": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "qty_left": {
+                "type": "integer"
+              },
+              "closed": {
+                "type": "boolean"
+              },
+              "snoozed_until": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date"
+              }
+            }
+          },
+          "expected": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "deduct": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "lots",
+          "qty",
+          "expected",
+          "note"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "lots": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "lot_id",
+                "expiry_date",
+                "qty_left",
+                "closed",
+                "snoozed_until"
+              ],
+              "properties": {
+                "lot_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "expiry_date": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date"
+                },
+                "qty_left": {
+                  "type": "integer"
+                },
+                "closed": {
+                  "type": "boolean"
+                },
+                "snoozed_until": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date"
+                }
+              }
+            }
+          },
+          "qty": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "expected": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "moves",
+              "unassigned"
+            ],
+            "properties": {
+              "moves": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "lot_id",
+                    "qty"
+                  ],
+                  "properties": {
+                    "lot_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "qty": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              },
+              "unassigned": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "handle_ver": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "lot",
+          "op_handle_ver",
+          "expected",
+          "note"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "lot": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "handle_ver",
+              "closed"
+            ],
+            "properties": {
+              "handle_ver": {
+                "type": "integer"
+              },
+              "closed": {
+                "type": "boolean"
+              }
+            }
+          },
+          "op_handle_ver": {
+            "type": "integer"
+          },
+          "expected": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "result",
+                  "new_handle_ver"
+                ],
+                "properties": {
+                  "result": {
+                    "const": "ok"
+                  },
+                  "new_handle_ver": {
+                    "type": "integer"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "result"
+                ],
+                "properties": {
+                  "result": {
+                    "const": "stale"
+                  }
+                }
+              }
+            ]
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "dispose": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "today",
+          "lot",
+          "op",
+          "expected",
+          "note"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "today": {
+            "type": "string",
+            "format": "date"
+          },
+          "lot": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "qty_left",
+              "handle_ver"
+            ],
+            "properties": {
+              "qty_left": {
+                "type": "integer"
+              },
+              "handle_ver": {
+                "type": "integer"
+              }
+            }
+          },
+          "op": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "actual_qty",
+              "handle_ver"
+            ],
+            "properties": {
+              "action": {
+                "enum": [
+                  "sold_out",
+                  "discard",
+                  "return",
+                  "snooze"
+                ]
+              },
+              "actual_qty": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "handle_ver": {
+                "type": "integer"
+              },
+              "days": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "expected": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "lot",
+              "entry"
+            ],
+            "properties": {
+              "lot": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "closed",
+                  "handle_ver"
+                ],
+                "properties": {
+                  "closed": {
+                    "type": "boolean"
+                  },
+                  "closed_reason": {
+                    "enum": [
+                      "disposed",
+                      "voided"
+                    ]
+                  },
+                  "qty_left": {
+                    "type": "integer"
+                  },
+                  "snoozed_until": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "handle_ver": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "entry": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "type",
+                      "qty_delta"
+                    ],
+                    "properties": {
+                      "type": {
+                        "enum": [
+                          "expire_loss",
+                          "supplier_return"
+                        ]
+                      },
+                      "qty_delta": {
+                        "type": "integer"
+                      }
+                    }
+                  }
+                ]
+              },
+              "flags_qty_left_before": {
+                "type": "integer"
+              }
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "undo": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "event",
+          "lot_before",
+          "expected",
+          "note"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "event": {
+            "enum": [
+              "void_discard",
+              "void_return",
+              "void_sale",
+              "void_source_stock_in"
+            ]
+          },
+          "lot_before": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "closed"
+            ],
+            "properties": {
+              "closed": {
+                "type": "boolean"
+              },
+              "closed_reason": {
+                "enum": [
+                  "disposed",
+                  "voided"
+                ]
+              },
+              "qty_left": {
+                "type": "integer"
+              },
+              "qty_left_before_dispose": {
+                "type": "integer"
+              }
+            }
+          },
+          "lot_move_qty": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expected": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "closed",
+              "qty_left"
+            ],
+            "properties": {
+              "closed": {
+                "type": "boolean"
+              },
+              "closed_reason": {
+                "enum": [
+                  "disposed",
+                  "voided"
+                ]
+              },
+              "qty_left": {
+                "type": "integer"
+              }
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

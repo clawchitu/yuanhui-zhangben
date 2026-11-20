@@ -1,0 +1,590 @@
+{
+ "$schema": "./schemas/expiry.schema.json",
+ "version": 1,
+ "add_months": [
+  {
+   "id": "add-01",
+   "start": "2026-11-12",
+   "months": 6,
+   "expected": "2027-05-12",
+   "note": "必过"
+  },
+  {
+   "id": "add-02",
+   "start": "2026-11-19",
+   "months": 12,
+   "expected": "2027-11-19",
+   "note": "必过"
+  },
+  {
+   "id": "add-03",
+   "start": "2027-01-31",
+   "months": 1,
+   "expected": "2027-02-28",
+   "note": "月末对齐，平年"
+  },
+  {
+   "id": "add-04",
+   "start": "2028-01-31",
+   "months": 1,
+   "expected": "2028-02-29",
+   "note": "月末对齐，闰年"
+  },
+  {
+   "id": "add-05",
+   "start": "2026-01-30",
+   "months": 1,
+   "expected": "2026-02-28",
+   "note": "30 号也对齐到 2 月最后一天"
+  },
+  {
+   "id": "add-06",
+   "start": "2026-03-31",
+   "months": 1,
+   "expected": "2026-04-30",
+   "note": "31 → 30"
+  },
+  {
+   "id": "add-07",
+   "start": "2026-08-31",
+   "months": 6,
+   "expected": "2027-02-28",
+   "note": "跨年 + 月末"
+  },
+  {
+   "id": "add-08",
+   "start": "2026-12-15",
+   "months": 1,
+   "expected": "2027-01-15",
+   "note": "跨年"
+  },
+  {
+   "id": "add-09",
+   "start": "2028-02-29",
+   "months": 12,
+   "expected": "2029-02-28",
+   "note": "闰日加一年"
+  },
+  {
+   "id": "add-10",
+   "start": "2027-11-30",
+   "months": 3,
+   "expected": "2028-02-29",
+   "note": "跨年到闰年 2 月"
+  },
+  {
+   "id": "add-11",
+   "start": "2026-05-31",
+   "months": 24,
+   "expected": "2028-05-31",
+   "note": "两年"
+  }
+ ],
+ "remind": [
+  {
+   "id": "rem-01",
+   "today": "2026-11-19",
+   "lot": {
+    "expiry_date": "2026-11-26",
+    "expiry_warn_days": 7,
+    "qty_left": 5,
+    "closed": false,
+    "snoozed_until": null
+   },
+   "expected": true,
+   "note": "今天 = 到期日 − 7，边界算提醒"
+  },
+  {
+   "id": "rem-02",
+   "today": "2026-11-18",
+   "lot": {
+    "expiry_date": "2026-11-26",
+    "expiry_warn_days": 7,
+    "qty_left": 5,
+    "closed": false,
+    "snoozed_until": null
+   },
+   "expected": false,
+   "note": "早一天不提醒"
+  },
+  {
+   "id": "rem-03",
+   "today": "2026-11-30",
+   "lot": {
+    "expiry_date": "2026-11-26",
+    "expiry_warn_days": 7,
+    "qty_left": 5,
+    "closed": false,
+    "snoozed_until": null
+   },
+   "expected": true,
+   "note": "已过期仍提醒"
+  },
+  {
+   "id": "rem-04",
+   "today": "2026-11-26",
+   "lot": {
+    "expiry_date": "2026-12-03",
+    "expiry_warn_days": 7,
+    "qty_left": 5,
+    "closed": false,
+    "snoozed_until": null
+   },
+   "expected": true,
+   "note": "跨月：2026-12-03 − 7 天 = 2026-11-26"
+  },
+  {
+   "id": "rem-05",
+   "today": "2026-11-26",
+   "lot": {
+    "expiry_date": "2026-11-26",
+    "expiry_warn_days": 0,
+    "qty_left": 5,
+    "closed": false,
+    "snoozed_until": null
+   },
+   "expected": true,
+   "note": "提前 0 天：到期当天提醒"
+  },
+  {
+   "id": "rem-06",
+   "today": "2026-11-25",
+   "lot": {
+    "expiry_date": "2026-11-26",
+    "expiry_warn_days": 0,
+    "qty_left": 5,
+    "closed": false,
+    "snoozed_until": null
+   },
+   "expected": false,
+   "note": "提前 0 天：前一天不提醒"
+  },
+  {
+   "id": "rem-07",
+   "today": "2026-11-30",
+   "lot": {
+    "expiry_date": null,
+    "expiry_warn_days": 7,
+    "qty_left": 5,
+    "closed": false,
+    "snoozed_until": null
+   },
+   "expected": false,
+   "note": "没填到期日不提醒"
+  },
+  {
+   "id": "rem-08",
+   "today": "2026-11-30",
+   "lot": {
+    "expiry_date": "2026-11-26",
+    "expiry_warn_days": 7,
+    "qty_left": 0,
+    "closed": false,
+    "snoozed_until": null
+   },
+   "expected": false,
+   "note": "qty_left = 0 不提醒（批次没关，只是不提醒）"
+  },
+  {
+   "id": "rem-09",
+   "today": "2026-11-30",
+   "lot": {
+    "expiry_date": "2026-11-26",
+    "expiry_warn_days": 7,
+    "qty_left": 5,
+    "closed": true,
+    "snoozed_until": null
+   },
+   "expected": false,
+   "note": "已关闭不提醒"
+  },
+  {
+   "id": "rem-10",
+   "today": "2026-11-20",
+   "lot": {
+    "expiry_date": "2026-11-26",
+    "expiry_warn_days": 7,
+    "qty_left": 5,
+    "closed": false,
+    "snoozed_until": "2026-11-25"
+   },
+   "expected": false,
+   "note": "还在「过几天再提醒」期内"
+  },
+  {
+   "id": "rem-11",
+   "today": "2026-11-30",
+   "lot": {
+    "expiry_date": "2026-11-26",
+    "expiry_warn_days": 7,
+    "qty_left": 5,
+    "closed": false,
+    "snoozed_until": "2026-11-22"
+   },
+   "expected": true,
+   "note": "过了提醒期"
+  }
+ ],
+ "deduct": [
+  {
+   "id": "ded-01",
+   "lots": [
+    {
+     "lot_id": "A",
+     "expiry_date": "2026-12-01",
+     "qty_left": 3,
+     "closed": false,
+     "snoozed_until": null
+    },
+    {
+     "lot_id": "B",
+     "expiry_date": null,
+     "qty_left": 5,
+     "closed": false,
+     "snoozed_until": null
+    },
+    {
+     "lot_id": "C",
+     "expiry_date": "2026-11-25",
+     "qty_left": 2,
+     "closed": false,
+     "snoozed_until": null
+    }
+   ],
+   "qty": 4,
+   "expected": {
+    "moves": [
+     {
+      "lot_id": "C",
+      "qty": 2
+     },
+     {
+      "lot_id": "A",
+      "qty": 2
+     }
+    ],
+    "unassigned": 0
+   },
+   "note": "按到期日从早到晚：C 扣完再扣 A"
+  },
+  {
+   "id": "ded-02",
+   "lots": [
+    {
+     "lot_id": "A",
+     "expiry_date": "2026-12-01",
+     "qty_left": 3,
+     "closed": false,
+     "snoozed_until": null
+    },
+    {
+     "lot_id": "B",
+     "expiry_date": null,
+     "qty_left": 5,
+     "closed": false,
+     "snoozed_until": null
+    },
+    {
+     "lot_id": "C",
+     "expiry_date": "2026-11-25",
+     "qty_left": 2,
+     "closed": false,
+     "snoozed_until": null
+    }
+   ],
+   "qty": 12,
+   "expected": {
+    "moves": [
+     {
+      "lot_id": "C",
+      "qty": 2
+     },
+     {
+      "lot_id": "A",
+      "qty": 3
+     },
+     {
+      "lot_id": "B",
+      "qty": 5
+     }
+    ],
+    "unassigned": 2
+   },
+   "note": "空日期排最后；批次不够扣的 2 个不归任何批次（不强求批次之和等于库存）"
+  },
+  {
+   "id": "ded-03",
+   "lots": [
+    {
+     "lot_id": "D",
+     "expiry_date": "2026-11-20",
+     "qty_left": 4,
+     "closed": true,
+     "snoozed_until": null
+    },
+    {
+     "lot_id": "E",
+     "expiry_date": "2026-11-28",
+     "qty_left": 0,
+     "closed": false,
+     "snoozed_until": null
+    },
+    {
+     "lot_id": "F",
+     "expiry_date": "2026-11-29",
+     "qty_left": 6,
+     "closed": false,
+     "snoozed_until": "2026-12-05"
+    }
+   ],
+   "qty": 3,
+   "expected": {
+    "moves": [
+     {
+      "lot_id": "F",
+      "qty": 3
+     }
+    ],
+    "unassigned": 0
+   },
+   "note": "已关闭的不扣，qty_left=0 的跳过，「过几天再提醒」中的照常扣"
+  }
+ ],
+ "handle_ver": [
+  {
+   "id": "hv-01",
+   "lot": {
+    "handle_ver": 2,
+    "closed": false
+   },
+   "op_handle_ver": 2,
+   "expected": {
+    "result": "ok",
+    "new_handle_ver": 3
+   },
+   "note": "版本一致：接受，handle_ver +1"
+  },
+  {
+   "id": "hv-02",
+   "lot": {
+    "handle_ver": 3,
+    "closed": false
+   },
+   "op_handle_ver": 2,
+   "expected": {
+    "result": "stale"
+   },
+   "note": "别的手机已经处理过一次（版本变了）"
+  },
+  {
+   "id": "hv-03",
+   "lot": {
+    "handle_ver": 2,
+    "closed": true
+   },
+   "op_handle_ver": 2,
+   "expected": {
+    "result": "stale"
+   },
+   "note": "批次已关闭"
+  }
+ ],
+ "dispose": [
+  {
+   "id": "dis-01",
+   "today": "2026-11-19",
+   "lot": {
+    "qty_left": 5,
+    "handle_ver": 1
+   },
+   "op": {
+    "action": "sold_out",
+    "actual_qty": 0,
+    "handle_ver": 1
+   },
+   "expected": {
+    "lot": {
+     "closed": true,
+     "closed_reason": "disposed",
+     "handle_ver": 2
+    },
+    "entry": null,
+    "flags_qty_left_before": 5
+   },
+   "note": "卖完了：关批次，不动库存"
+  },
+  {
+   "id": "dis-02",
+   "today": "2026-11-19",
+   "lot": {
+    "qty_left": 5,
+    "handle_ver": 1
+   },
+   "op": {
+    "action": "discard",
+    "actual_qty": 3,
+    "handle_ver": 1
+   },
+   "expected": {
+    "lot": {
+     "closed": true,
+     "closed_reason": "disposed",
+     "handle_ver": 2
+    },
+    "entry": {
+     "type": "expire_loss",
+     "qty_delta": -3
+    },
+    "flags_qty_left_before": 5
+   },
+   "note": "扔掉：数量以人数的 3 为准，不是批次上的 5；金额按 cost.json 的卖出取法"
+  },
+  {
+   "id": "dis-03",
+   "today": "2026-11-19",
+   "lot": {
+    "qty_left": 5,
+    "handle_ver": 1
+   },
+   "op": {
+    "action": "return",
+    "actual_qty": 4,
+    "handle_ver": 1
+   },
+   "expected": {
+    "lot": {
+     "closed": true,
+     "closed_reason": "disposed",
+     "handle_ver": 2
+    },
+    "entry": {
+     "type": "supplier_return",
+     "qty_delta": -4
+    },
+    "flags_qty_left_before": 5
+   },
+   "note": "退给供货商"
+  },
+  {
+   "id": "dis-04",
+   "today": "2026-11-19",
+   "lot": {
+    "qty_left": 5,
+    "handle_ver": 1
+   },
+   "op": {
+    "action": "snooze",
+    "actual_qty": 4,
+    "handle_ver": 1,
+    "days": 3
+   },
+   "expected": {
+    "lot": {
+     "closed": false,
+     "qty_left": 4,
+     "snoozed_until": "2026-11-22",
+     "handle_ver": 2
+    },
+    "entry": null
+   },
+   "note": "还在卖、过 3 天再提醒：批次数量改成实际数（lot_snooze）"
+  },
+  {
+   "id": "dis-05",
+   "today": "2026-11-30",
+   "lot": {
+    "qty_left": 2,
+    "handle_ver": 0
+   },
+   "op": {
+    "action": "snooze",
+    "actual_qty": 2,
+    "handle_ver": 0,
+    "days": 5
+   },
+   "expected": {
+    "lot": {
+     "closed": false,
+     "qty_left": 2,
+     "snoozed_until": "2026-12-05",
+     "handle_ver": 1
+    },
+    "entry": null
+   },
+   "note": "跨月"
+  }
+ ],
+ "undo": [
+  {
+   "id": "undo-01",
+   "event": "void_discard",
+   "lot_before": {
+    "closed": true,
+    "closed_reason": "disposed",
+    "qty_left_before_dispose": 5
+   },
+   "expected": {
+    "closed": false,
+    "qty_left": 5
+   },
+   "note": "撤销「扔掉」：重新打开，qty_left 恢复为处理前的值"
+  },
+  {
+   "id": "undo-02",
+   "event": "void_return",
+   "lot_before": {
+    "closed": true,
+    "closed_reason": "disposed",
+    "qty_left_before_dispose": 5
+   },
+   "expected": {
+    "closed": false,
+    "qty_left": 5
+   },
+   "note": "撤销「退货」同上"
+  },
+  {
+   "id": "undo-03",
+   "event": "void_sale",
+   "lot_before": {
+    "closed": false,
+    "qty_left": 1
+   },
+   "lot_move_qty": 2,
+   "expected": {
+    "closed": false,
+    "qty_left": 3
+   },
+   "note": "撤销卖出：按 lot_moves 加回"
+  },
+  {
+   "id": "undo-04",
+   "event": "void_sale",
+   "lot_before": {
+    "closed": true,
+    "closed_reason": "disposed",
+    "qty_left": 1
+   },
+   "lot_move_qty": 2,
+   "expected": {
+    "closed": true,
+    "qty_left": 1
+   },
+   "note": "撤销卖出时批次已关闭：不加回、不重开"
+  },
+  {
+   "id": "undo-05",
+   "event": "void_source_stock_in",
+   "lot_before": {
+    "closed": false,
+    "qty_left": 7
+   },
+   "expected": {
+    "closed": true,
+    "closed_reason": "voided",
+    "qty_left": 7
+   },
+   "note": "撤销来源进货：关闭，closed_reason=voided；已扣过的 lot_moves 不动（qty_left 不要求变）"
+  }
+ ]
+}

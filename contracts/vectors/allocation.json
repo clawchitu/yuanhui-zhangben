@@ -1,0 +1,2766 @@
+{
+ "$schema": "./schemas/allocation.schema.json",
+ "version": 1,
+ "cases": [
+  {
+   "id": "alloc-01",
+   "rules": [
+    "5.1-1",
+    "5.1-2"
+   ],
+   "title": "必过向量（设计稿 08）：25.00/24.00/4.50 合计 53.50，实收 53.00",
+   "lines": [
+    {
+     "unit_price_fen": 2500,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 2400,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 450,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 5300,
+   "expect": {
+    "list_fen": [
+     2500,
+     2400,
+     450
+    ],
+    "list_total_fen": 5350,
+    "amount_fen": [
+     2476,
+     2378,
+     446
+    ]
+   },
+   "calc": "a=roundDiv(2500×5300,5350)=roundDiv(13250000,5350)=2477（2476.64）；roundDiv(12720000,5350)=2378（2377.57）；roundDiv(2385000,5350)=446（445.79）；Σ=5301，d=−1 加到最大行 2500 → 2476"
+  },
+  {
+   "id": "alloc-02",
+   "rules": [
+    "5.1-1",
+    "5.1-2"
+   ],
+   "title": "实收 = 原价（没有优惠），单价 × 件数",
+   "lines": [
+    {
+     "unit_price_fen": 500,
+     "pack_count": 2
+    },
+    {
+     "unit_price_fen": 250,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 1250,
+   "expect": {
+    "list_fen": [
+     1000,
+     250
+    ],
+    "list_total_fen": 1250,
+    "amount_fen": [
+     1000,
+     250
+    ]
+   },
+   "calc": "L_i=500×2=1000、250×1=250；a_i=L_i×1250/1250 整除；d=0"
+  },
+  {
+   "id": "alloc-03",
+   "rules": [
+    "5.1-1",
+    "5.1-2",
+    "5.1-多收"
+   ],
+   "title": "多收（P>L），d=0",
+   "lines": [
+    {
+     "unit_price_fen": 1000,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 500,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 1600,
+   "expect": {
+    "list_fen": [
+     1000,
+     500
+    ],
+    "list_total_fen": 1500,
+    "amount_fen": [
+     1067,
+     533
+    ]
+   },
+   "calc": "roundDiv(1600000,1500)=1067（1066.67）；roundDiv(800000,1500)=533（533.33）；Σ=1600，d=0"
+  },
+  {
+   "id": "alloc-04",
+   "rules": [
+    "5.1-1",
+    "5.1-2",
+    "5.1-多收"
+   ],
+   "title": "多收（P>L），d=−1 加到最大行",
+   "lines": [
+    {
+     "unit_price_fen": 500,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 300,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 200,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 1003,
+   "expect": {
+    "list_fen": [
+     500,
+     300,
+     200
+    ],
+    "list_total_fen": 1000,
+    "amount_fen": [
+     501,
+     301,
+     201
+    ]
+   },
+   "calc": "roundDiv(501500,1000)=502（501.5，恰好一半远离零）；roundDiv(300900,1000)=301；roundDiv(200600,1000)=201；Σ=1004，d=−1 → 最大行 502→501"
+  },
+  {
+   "id": "alloc-05",
+   "rules": [
+    "5.1-1",
+    "5.1-2",
+    "5.1-单行"
+   ],
+   "title": "单行，打折",
+   "lines": [
+    {
+     "unit_price_fen": 1234,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 1200,
+   "expect": {
+    "list_fen": [
+     1234
+    ],
+    "list_total_fen": 1234,
+    "amount_fen": [
+     1200
+    ]
+   },
+   "calc": "roundDiv(1234×1200,1234)=1200，d=0"
+  },
+  {
+   "id": "alloc-06",
+   "rules": [
+    "5.1-1",
+    "5.1-2",
+    "5.1-单行",
+    "5.1-多收"
+   ],
+   "title": "单行，多收",
+   "lines": [
+    {
+     "unit_price_fen": 617,
+     "pack_count": 2
+    }
+   ],
+   "paid_total_fen": 1300,
+   "expect": {
+    "list_fen": [
+     1234
+    ],
+    "list_total_fen": 1234,
+    "amount_fen": [
+     1300
+    ]
+   },
+   "calc": "L=617×2=1234；roundDiv(1234×1300,1234)=1300"
+  },
+  {
+   "id": "alloc-07",
+   "rules": [
+    "5.1-1",
+    "5.1-2",
+    "5.1-并列"
+   ],
+   "title": "三行并列最大，d=−1 给最前一行",
+   "lines": [
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 200,
+   "expect": {
+    "list_fen": [
+     100,
+     100,
+     100
+    ],
+    "list_total_fen": 300,
+    "amount_fen": [
+     66,
+     67,
+     67
+    ]
+   },
+   "calc": "roundDiv(20000,300)=67（66.67）×3=201，d=−1 → 第 0 行 66"
+  },
+  {
+   "id": "alloc-08",
+   "rules": [
+    "5.1-1",
+    "5.1-2",
+    "5.1-并列"
+   ],
+   "title": "后两行并列最大（不在第 0 行），d=+1 给并列中最前的第 1 行",
+   "lines": [
+    {
+     "unit_price_fen": 50,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 171,
+   "expect": {
+    "list_fen": [
+     50,
+     100,
+     100
+    ],
+    "list_total_fen": 250,
+    "amount_fen": [
+     34,
+     69,
+     68
+    ]
+   },
+   "calc": "roundDiv(8550,250)=34（34.2）；roundDiv(17100,250)=68（68.4）×2；Σ=170，d=+1 → 第 1 行 69"
+  },
+  {
+   "id": "alloc-09",
+   "rules": [
+    "5.1-1",
+    "5.1-2",
+    "5.1-并列",
+    "5.1-1分"
+   ],
+   "title": "实收 1 分钱，三行各 1 分",
+   "lines": [
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 1,
+   "expect": {
+    "list_fen": [
+     1,
+     1,
+     1
+    ],
+    "list_total_fen": 3,
+    "amount_fen": [
+     1,
+     0,
+     0
+    ]
+   },
+   "calc": "roundDiv(1,3)=0 ×3，d=+1 → 第 0 行"
+  },
+  {
+   "id": "alloc-10",
+   "rules": [
+    "5.1-1",
+    "5.1-2",
+    "5.1-1分"
+   ],
+   "title": "1 分钱的一行跟大额行一起打折",
+   "lines": [
+    {
+     "unit_price_fen": 5000,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 4900,
+   "expect": {
+    "list_fen": [
+     5000,
+     1
+    ],
+    "list_total_fen": 5001,
+    "amount_fen": [
+     4899,
+     1
+    ]
+   },
+   "calc": "roundDiv(24500000,5001)=4899（4899.02）；roundDiv(4900,5001)=1（0.98）；Σ=4900，d=0"
+  },
+  {
+   "id": "alloc-11",
+   "rules": [
+    "5.1-1",
+    "5.1-2",
+    "5.0-半"
+   ],
+   "title": "恰好一半：两行各 1 分，实收 1 分",
+   "lines": [
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 1,
+   "expect": {
+    "list_fen": [
+     1,
+     1
+    ],
+    "list_total_fen": 2,
+    "amount_fen": [
+     0,
+     1
+    ]
+   },
+   "calc": "roundDiv(1,2)=1（0.5 远离零）×2=2，d=−1 → 第 0 行 0"
+  },
+  {
+   "id": "alloc-12",
+   "rules": [
+    "5.1-0",
+    "5.0-全零"
+   ],
+   "title": "全零购物篮：全是零价商品，实收 0",
+   "lines": [
+    {
+     "unit_price_fen": 0,
+     "pack_count": 3
+    },
+    {
+     "unit_price_fen": 0,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 0,
+   "expect": {
+    "list_fen": [
+     0,
+     0
+    ],
+    "list_total_fen": 0,
+    "amount_fen": [
+     0,
+     0
+    ]
+   },
+   "calc": "L=0 → 不进公式，各行 0"
+  },
+  {
+   "id": "alloc-13",
+   "rules": [
+    "5.1-0",
+    "5.0-全零"
+   ],
+   "title": "全零购物篮但实收不为 0 → 拒",
+   "lines": [
+    {
+     "unit_price_fen": 0,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 0,
+     "pack_count": 2
+    }
+   ],
+   "paid_total_fen": 100,
+   "expect": {
+    "error": "invalid"
+   },
+   "calc": "L=0 时 P 必须为 0"
+  },
+  {
+   "id": "alloc-14",
+   "rules": [
+    "5.1-1",
+    "5.1-2"
+   ],
+   "title": "零价行混在里面，零价行摊到 0",
+   "lines": [
+    {
+     "unit_price_fen": 0,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 500,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 400,
+   "expect": {
+    "list_fen": [
+     0,
+     500
+    ],
+    "list_total_fen": 500,
+    "amount_fen": [
+     0,
+     400
+    ]
+   },
+   "calc": "roundDiv(0,500)=0；roundDiv(200000,500)=400；d=0"
+  },
+  {
+   "id": "alloc-15",
+   "rules": [
+    "5.1-1",
+    "5.1-2"
+   ],
+   "title": "免单：L>0、P=0",
+   "lines": [
+    {
+     "unit_price_fen": 300,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 200,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 0,
+   "expect": {
+    "list_fen": [
+     300,
+     200
+    ],
+    "list_total_fen": 500,
+    "amount_fen": [
+     0,
+     0
+    ]
+   },
+   "calc": "各行 roundDiv(0,500)=0"
+  },
+  {
+   "id": "alloc-16",
+   "rules": [
+    "5.1-1",
+    "5.1-2",
+    "5.1-3"
+   ],
+   "title": "第 3 步：最大行加上 d 后小于 0，不足部分给下一大的行",
+   "lines": [
+    {
+     "unit_price_fen": 2,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 3,
+   "expect": {
+    "list_fen": [
+     2,
+     1,
+     1,
+     1,
+     1
+    ],
+    "list_total_fen": 6,
+    "amount_fen": [
+     0,
+     0,
+     1,
+     1,
+     1
+    ]
+   },
+   "calc": "roundDiv(6,6)=1；roundDiv(3,6)=1（0.5）×4；Σ=5，d=−2；第 0 行 1−2=−1 → 0，不足 1；下一大的行是并列的 1 分行，取最前的第 1 行 1−1=0"
+  },
+  {
+   "id": "alloc-17",
+   "rules": [
+    "5.1-1",
+    "5.1-2",
+    "5.1-3"
+   ],
+   "title": "第 3 步连续摊三行",
+   "lines": [
+    {
+     "unit_price_fen": 2,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 5,
+   "expect": {
+    "list_fen": [
+     2,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1
+    ],
+    "list_total_fen": 10,
+    "amount_fen": [
+     0,
+     0,
+     0,
+     0,
+     1,
+     1,
+     1,
+     1,
+     1
+    ]
+   },
+   "calc": "roundDiv(10,10)=1；roundDiv(5,10)=1（0.5）×8；Σ=9，d=−4；第 0 行 1−4 → 0 不足 3；第 1 行 1−3 → 0 不足 2；第 2 行 → 0 不足 1；第 3 行 1−1=0"
+  },
+  {
+   "id": "alloc-18",
+   "rules": [
+    "5.0-上限",
+    "5.1-1",
+    "5.1-2",
+    "5.0-溢出"
+   ],
+   "title": "上限：200 行 × 单行 99,999,999 分，实收少 1 分（中间乘积约 2×10^18，超过 2^53）",
+   "lines": [
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 19999999799,
+   "expect": {
+    "list_fen": [
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999
+    ],
+    "list_total_fen": 19999999800,
+    "amount_fen": [
+     99999998,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999,
+     99999999
+    ]
+   },
+   "calc": "每行 99999999×19999999799/19999999800 = 99999999 − 0.004999… → 99999999；Σ=19999999800，d=−1 → 第 0 行"
+  },
+  {
+   "id": "alloc-19",
+   "rules": [
+    "5.0-上限",
+    "5.1-1",
+    "5.1-2"
+   ],
+   "title": "上限：单价上限 × 1 件 和 件数上限 99,999 × 10 元",
+   "lines": [
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 1000,
+     "pack_count": 99999
+    }
+   ],
+   "paid_total_fen": 150000000,
+   "expect": {
+    "list_fen": [
+     99999999,
+     99999000
+    ],
+    "list_total_fen": 199998999,
+    "amount_fen": [
+     75000375,
+     74999625
+    ]
+   },
+   "calc": "a0=roundDiv(99999999×150000000,199998999)=roundDiv(14999999850000000,199998999)=75000374.6…→75000375；a1=roundDiv(99999000×150000000,199998999)=roundDiv(14999850000000000,199998999)=74999625.4…→74999625；Σ=150000000，d=0"
+  },
+  {
+   "id": "alloc-20",
+   "rules": [
+    "5.0-上限"
+   ],
+   "title": "超限：单行金额 = 99,999,999 × 2 > 99,999,999 → 拒",
+   "lines": [
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 2
+    }
+   ],
+   "paid_total_fen": 100,
+   "expect": {
+    "error": "invalid"
+   },
+   "calc": "单行金额 199999998 超上限"
+  },
+  {
+   "id": "alloc-21",
+   "rules": [
+    "5.0-上限"
+   ],
+   "title": "超限：件数 100,000 > 99,999 → 拒",
+   "lines": [
+    {
+     "unit_price_fen": 1,
+     "pack_count": 100000
+    }
+   ],
+   "paid_total_fen": 100000,
+   "expect": {
+    "error": "invalid"
+   },
+   "calc": "件数超上限"
+  },
+  {
+   "id": "alloc-22",
+   "rules": [
+    "5.0-上限"
+   ],
+   "title": "超限：201 行 > 200 行 → 拒",
+   "lines": [
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    },
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 20100,
+   "expect": {
+    "error": "invalid"
+   },
+   "calc": "行数超上限"
+  },
+  {
+   "id": "alloc-23",
+   "rules": [
+    "5.0-上限"
+   ],
+   "title": "实收为负 → 拒",
+   "lines": [
+    {
+     "unit_price_fen": 100,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": -1,
+   "expect": {
+    "error": "invalid"
+   },
+   "calc": "金额不为负"
+  },
+  {
+   "id": "alloc-24",
+   "rules": [
+    "5.0-上限",
+    "5.1-单行"
+   ],
+   "title": "上限值本身合法：单价 99,999,999 × 1 件，原价实收",
+   "lines": [
+    {
+     "unit_price_fen": 99999999,
+     "pack_count": 1
+    }
+   ],
+   "paid_total_fen": 99999999,
+   "expect": {
+    "list_fen": [
+     99999999
+    ],
+    "list_total_fen": 99999999,
+    "amount_fen": [
+     99999999
+    ]
+   },
+   "calc": "边界值等于上限不算超"
+  }
+ ]
+}

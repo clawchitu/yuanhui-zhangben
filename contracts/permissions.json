@@ -1,0 +1,894 @@
+{
+  "$schema": "./permissions.schema.json",
+  "version": 1,
+  "roles": {
+    "family": "家用：家用号登录或扫家人码的设备",
+    "cashier": "收银员：扫收银员码的设备",
+    "review": "审核：审核号登录的设备，权限同家用，但只在演示小店内",
+    "revoked": "被踢设备：令牌已撤销（devices.revoked_at 非空）"
+  },
+  "decisions": {
+    "public": "不需登录",
+    "allow": "能（有 conditions 时全部满足才能，否则 rejected: forbidden）",
+    "deny": "拒（HTTP 403 / op rejected: forbidden）",
+    "held": "不直接入账，记为 held 等家用确认（有 conditions 时不满足就拒）",
+    "not_applicable": "这个身份不会调用（计划写「—」）",
+    "undecided": "计划没写，等决定；guard 一律按 deny 处理，proposed 只是建议"
+  },
+  "conditions": {
+    "own_device_sale": "被撤销的卖出是本设备记的",
+    "sale_day_eq_server_receive_day": "被撤销的卖出的 occurred_at（上海时区）日期 = 服务器收到这次撤销的日期",
+    "quick_only": "product_upsert 必须 quick=true，只带名称和卖价，带了别的字段就拒",
+    "used_by_sale_from_same_device": "这次 quick 登记被同一设备上传的某笔 sale_batch 用到",
+    "occurred_at_lte_revoked_at": "op.occurred_at <= devices.revoked_at",
+    "within_revoke_window": "服务器收到时距 revoked_at 不超过 30 天（§4.5 补传窗口）",
+    "not_self": "目标设备不是调用者自己",
+    "demo_login_enabled": "GET /v1/config 的 demo_login_enabled 为真（默认关）",
+    "recovery_mode_on": "运维打开了恢复模式（§4.6）"
+  },
+  "global": [
+    "跨店隔离：任何接口只能碰令牌所属的店；别的店的 id 一律 404（§6.1）",
+    "review 身份只存在于演示店；演示店里也能开通演示用的收银员设备，那些设备按 cashier 列（§6）",
+    "账号注销期间（accounts.delete_requested_at 非空）禁止写账和开通设备（§7）",
+    "所有身份的 op 还要过 §5.0 的上限校验，超出 rejected: invalid（§4.4）"
+  ],
+  "rules": [
+    {
+      "id": "GET /healthz",
+      "kind": "http",
+      "method": "GET",
+      "path": "/healthz",
+      "family": {
+        "decision": "public"
+      },
+      "cashier": {
+        "decision": "public"
+      },
+      "review": {
+        "decision": "public"
+      },
+      "revoked": {
+        "decision": "public"
+      },
+      "source": "§7",
+      "note": "存活检查，无鉴权"
+    },
+    {
+      "id": "GET /v1/config",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/config",
+      "family": {
+        "decision": "public"
+      },
+      "cashier": {
+        "decision": "public"
+      },
+      "review": {
+        "decision": "public"
+      },
+      "revoked": {
+        "decision": "public"
+      },
+      "source": "§6.1、§7"
+    },
+    {
+      "id": "POST /v1/auth/login",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/auth/login",
+      "family": {
+        "decision": "public"
+      },
+      "cashier": {
+        "decision": "public"
+      },
+      "review": {
+        "decision": "public"
+      },
+      "revoked": {
+        "decision": "not_applicable"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "POST /v1/auth/pair/redeem",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/auth/pair/redeem",
+      "family": {
+        "decision": "public"
+      },
+      "cashier": {
+        "decision": "public"
+      },
+      "review": {
+        "decision": "public"
+      },
+      "revoked": {
+        "decision": "not_applicable"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "POST /v1/auth/demo",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/auth/demo",
+      "family": {
+        "decision": "public",
+        "conditions": [
+          "demo_login_enabled"
+        ]
+      },
+      "cashier": {
+        "decision": "public",
+        "conditions": [
+          "demo_login_enabled"
+        ]
+      },
+      "review": {
+        "decision": "public",
+        "conditions": [
+          "demo_login_enabled"
+        ]
+      },
+      "revoked": {
+        "decision": "not_applicable"
+      },
+      "source": "§7",
+      "note": "§6.1 没列；§7 写明是「一键进演示」，开关默认关，发演示店家用令牌"
+    },
+    {
+      "id": "POST /v1/auth/logout",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/auth/logout",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "allow"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "not_applicable"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "GET /v1/me",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/me",
+      "family": {
+        "decision": "undecided",
+        "proposed": "allow"
+      },
+      "cashier": {
+        "decision": "undecided",
+        "proposed": "allow"
+      },
+      "review": {
+        "decision": "undecided",
+        "proposed": "allow"
+      },
+      "revoked": {
+        "decision": "undecided",
+        "proposed": "deny"
+      },
+      "source": "§7",
+      "note": "§6.1 没列，见 PR 疑问 Q9；guard 对 undecided 一律按 deny 处理"
+    },
+    {
+      "id": "POST /v1/sync",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/sync",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "allow"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "allow",
+        "note": "只推不拉：推上来的 op 按各 op 行的 revoked 列处理；响应 device.revoked=true，不含任何数据"
+      },
+      "source": "§4.2、§6.1",
+      "note": "推送部分逐个 op 看 op:* 行；拉取部分看 sync:pull 行"
+    },
+    {
+      "id": "sync:pull",
+      "kind": "sync_pull",
+      "family": {
+        "decision": "allow",
+        "scope": "full_store"
+      },
+      "cashier": {
+        "decision": "allow",
+        "scope": "cashier_projection",
+        "note": "§4.2 按角色裁剪，被裁的键不出现"
+      },
+      "review": {
+        "decision": "allow",
+        "scope": "full_store",
+        "note": "只在演示店"
+      },
+      "revoked": {
+        "decision": "deny",
+        "note": "不是 401：sync 照常响应，但 changes 为空，device.revoked=true"
+      },
+      "source": "§6.1、§4.2"
+    },
+    {
+      "id": "GET /v1/barcode-lookup/{barcode}",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/barcode-lookup/{barcode}",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "allow",
+        "scope": "name_spec_has_image",
+        "note": "只返回名称、规格、有没有图"
+      },
+      "review": {
+        "decision": "allow",
+        "scope": "demo_fake_data",
+        "note": "演示店返回内置假数据，不调付费接口"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "GET /v1/images/{product_id}",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/images/{product_id}",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "allow"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "GET /v1/reports/today",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/reports/today",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1 reports/*"
+    },
+    {
+      "id": "GET /v1/reports/month",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/reports/month",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1 reports/*"
+    },
+    {
+      "id": "GET /v1/entries",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/entries",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1 entries*"
+    },
+    {
+      "id": "GET /v1/entries/days",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/entries/days",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1 entries*"
+    },
+    {
+      "id": "POST /v1/pairing-tokens",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/pairing-tokens",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "GET /v1/pairing-tokens/{id}",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/pairing-tokens/{id}",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "GET /v1/devices",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/devices",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "POST /v1/devices/{id}/revoke",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/devices/{id}/revoke",
+      "family": {
+        "decision": "allow",
+        "conditions": [
+          "not_self"
+        ]
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow",
+        "conditions": [
+          "not_self"
+        ]
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1、§7",
+      "note": "不能踢自己"
+    },
+    {
+      "id": "POST /v1/devices/revoke-others",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/devices/revoke-others",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "PATCH /v1/devices/me",
+      "kind": "http",
+      "method": "PATCH",
+      "path": "/v1/devices/me",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny",
+        "note": "称呼由家里人定"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "GET /v1/held-ops",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/held-ops",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "POST /v1/held-ops/{id}/resolve",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/held-ops/{id}/resolve",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "POST /v1/recovery/import",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/recovery/import",
+      "family": {
+        "decision": "undecided",
+        "conditions": [
+          "recovery_mode_on"
+        ],
+        "proposed": "allow"
+      },
+      "cashier": {
+        "decision": "undecided",
+        "conditions": [
+          "recovery_mode_on"
+        ],
+        "proposed": "allow"
+      },
+      "review": {
+        "decision": "undecided",
+        "conditions": [
+          "recovery_mode_on"
+        ],
+        "proposed": "deny"
+      },
+      "revoked": {
+        "decision": "undecided",
+        "proposed": "deny"
+      },
+      "source": "§4.6、§7",
+      "note": "§6.1 没列，见 PR 疑问 Q9"
+    },
+    {
+      "id": "POST /v1/account/password",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/account/password",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow",
+        "note": "每天重置时恢复"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "POST /v1/account/delete-request",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/account/delete-request",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow",
+        "note": "每天重置时恢复"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "POST /v1/account/delete-cancel",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/account/delete-cancel",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow",
+        "note": "每天重置时恢复"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1",
+      "note": "§7：7 天内用账号密码登录后撤回"
+    },
+    {
+      "id": "op:sale_batch",
+      "kind": "op",
+      "op": "sale_batch",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "allow"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "allow",
+        "conditions": [
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "直接入账，打 flags.late_from_revoked；不满足条件就 rejected"
+      },
+      "source": "§6.1、§4.5"
+    },
+    {
+      "id": "op:void",
+      "kind": "op",
+      "op": "void",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "allow",
+        "conditions": [
+          "own_device_sale",
+          "sale_day_eq_server_receive_day"
+        ],
+        "note": "按批撤销时批内每一行都要满足"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "held",
+        "conditions": [
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "不满足条件就 rejected；满足条件记 held，等家用确认（§4.5）"
+      },
+      "source": "§6.1、§4.3",
+      "note": "收银员的日期判断用上海时区，按服务器收到撤销的时间，不信手机"
+    },
+    {
+      "id": "op:product_upsert",
+      "kind": "op",
+      "op": "product_upsert",
+      "family": {
+        "decision": "allow",
+        "note": "条码已存在时不改原商品，只返回 remap"
+      },
+      "cashier": {
+        "decision": "allow",
+        "conditions": [
+          "quick_only"
+        ],
+        "note": "条码已存在时不改原商品；非 quick 拒 forbidden"
+      },
+      "review": {
+        "decision": "allow",
+        "note": "同家用"
+      },
+      "revoked": {
+        "decision": "allow",
+        "conditions": [
+          "quick_only",
+          "used_by_sale_from_same_device",
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "非 quick 的或没被卖出用到的怎么处理，见 PR 疑问 Q8"
+      },
+      "source": "§6.1、§4.5"
+    },
+    {
+      "id": "op:product_edit",
+      "kind": "op",
+      "op": "product_edit",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "held",
+        "conditions": [
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "不满足条件就 rejected；满足条件记 held，等家用确认（§4.5）"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "op:barcode_link",
+      "kind": "op",
+      "op": "barcode_link",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "held",
+        "conditions": [
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "不满足条件就 rejected；满足条件记 held，等家用确认（§4.5）"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "op:barcode_unlink",
+      "kind": "op",
+      "op": "barcode_unlink",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "held",
+        "conditions": [
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "不满足条件就 rejected；满足条件记 held，等家用确认（§4.5）"
+      },
+      "source": "§4.3",
+      "note": "§6.1 没单列 unlink；§4.3 和 link 一起写「家用」，这里与 link 相同"
+    },
+    {
+      "id": "op:stock_in",
+      "kind": "op",
+      "op": "stock_in",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "held",
+        "conditions": [
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "不满足条件就 rejected；满足条件记 held，等家用确认（§4.5）"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "op:opening",
+      "kind": "op",
+      "op": "opening",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "held",
+        "conditions": [
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "不满足条件就 rejected；满足条件记 held，等家用确认（§4.5）"
+      },
+      "source": "§6.1",
+      "note": "对已有商品的期初只能联网提交（§5.6），那是手机行为，服务器不区分"
+    },
+    {
+      "id": "op:product_review_complete",
+      "kind": "op",
+      "op": "product_review_complete",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "held",
+        "conditions": [
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "不满足条件就 rejected；满足条件记 held，等家用确认（§4.5）"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "op:count",
+      "kind": "op",
+      "op": "count",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "held",
+        "conditions": [
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "不满足条件就 rejected；满足条件记 held，等家用确认（§4.5）"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "op:expiry_dispose",
+      "kind": "op",
+      "op": "expiry_dispose",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "held",
+        "conditions": [
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "不满足条件就 rejected；满足条件记 held，等家用确认（§4.5）"
+      },
+      "source": "§6.1"
+    },
+    {
+      "id": "op:lot_snooze",
+      "kind": "op",
+      "op": "lot_snooze",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny"
+      },
+      "review": {
+        "decision": "allow"
+      },
+      "revoked": {
+        "decision": "held",
+        "conditions": [
+          "occurred_at_lte_revoked_at",
+          "within_revoke_window"
+        ],
+        "note": "不满足条件就 rejected；满足条件记 held，等家用确认（§4.5）"
+      },
+      "source": "§6.1"
+    }
+  ]
+}

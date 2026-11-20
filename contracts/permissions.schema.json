@@ -1,0 +1,274 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "permissions.schema.json",
+  "title": "权限矩阵（§6.1）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "roles",
+    "decisions",
+    "conditions",
+    "global",
+    "rules"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "roles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "cashier",
+        "review",
+        "revoked"
+      ],
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "cashier": {
+          "type": "string"
+        },
+        "review": {
+          "type": "string"
+        },
+        "revoked": {
+          "type": "string"
+        }
+      }
+    },
+    "decisions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "conditions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "global": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "kind",
+              "method",
+              "path",
+              "source",
+              "family",
+              "cashier",
+              "review",
+              "revoked"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "http"
+              },
+              "method": {
+                "enum": [
+                  "GET",
+                  "POST",
+                  "PATCH",
+                  "PUT",
+                  "DELETE"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^/"
+              },
+              "source": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              },
+              "family": {
+                "$ref": "#/$defs/cell"
+              },
+              "cashier": {
+                "$ref": "#/$defs/cell"
+              },
+              "review": {
+                "$ref": "#/$defs/cell"
+              },
+              "revoked": {
+                "$ref": "#/$defs/cell"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "kind",
+              "op",
+              "source",
+              "family",
+              "cashier",
+              "review",
+              "revoked"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "op"
+              },
+              "op": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              },
+              "family": {
+                "$ref": "#/$defs/cell"
+              },
+              "cashier": {
+                "$ref": "#/$defs/cell"
+              },
+              "review": {
+                "$ref": "#/$defs/cell"
+              },
+              "revoked": {
+                "$ref": "#/$defs/cell"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "kind",
+              "source",
+              "family",
+              "cashier",
+              "review",
+              "revoked"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "sync_pull"
+              },
+              "source": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              },
+              "family": {
+                "$ref": "#/$defs/cell"
+              },
+              "cashier": {
+                "$ref": "#/$defs/cell"
+              },
+              "review": {
+                "$ref": "#/$defs/cell"
+              },
+              "revoked": {
+                "$ref": "#/$defs/cell"
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision"
+      ],
+      "properties": {
+        "decision": {
+          "enum": [
+            "public",
+            "allow",
+            "deny",
+            "held",
+            "not_applicable",
+            "undecided"
+          ]
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "scope": {
+          "enum": [
+            "full_store",
+            "cashier_projection",
+            "name_spec_has_image",
+            "demo_fake_data"
+          ]
+        },
+        "proposed": {
+          "enum": [
+            "allow",
+            "deny",
+            "held"
+          ]
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "undecided"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "proposed"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "proposed"
+          ]
+        }
+      }
+    }
+  }
+}

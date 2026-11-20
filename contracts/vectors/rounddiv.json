@@ -1,0 +1,381 @@
+{
+ "$schema": "./schemas/rounddiv.schema.json",
+ "version": 1,
+ "cases": [
+  {
+   "id": "rd-01",
+   "numerator_factors": [
+    7
+   ],
+   "b": 2,
+   "expected": 4,
+   "rules": [
+    "5.0-半"
+   ],
+   "note": "3.5 → 4"
+  },
+  {
+   "id": "rd-02",
+   "numerator_factors": [
+    -7
+   ],
+   "b": 2,
+   "expected": -4,
+   "rules": [
+    "5.0-半",
+    "5.0-负"
+   ],
+   "note": "−3.5 → −4（远离零）"
+  },
+  {
+   "id": "rd-03",
+   "numerator_factors": [
+    5
+   ],
+   "b": 2,
+   "expected": 3,
+   "rules": [
+    "5.0-半"
+   ],
+   "note": "2.5 → 3（不是银行家舍入的 2）"
+  },
+  {
+   "id": "rd-04",
+   "numerator_factors": [
+    -5
+   ],
+   "b": 2,
+   "expected": -3,
+   "rules": [
+    "5.0-半",
+    "5.0-负"
+   ],
+   "note": "−2.5 → −3"
+  },
+  {
+   "id": "rd-05",
+   "numerator_factors": [
+    1
+   ],
+   "b": 2,
+   "expected": 1,
+   "rules": [
+    "5.0-半"
+   ],
+   "note": "0.5 → 1"
+  },
+  {
+   "id": "rd-06",
+   "numerator_factors": [
+    -1
+   ],
+   "b": 2,
+   "expected": -1,
+   "rules": [
+    "5.0-半",
+    "5.0-负"
+   ],
+   "note": "−0.5 → −1"
+  },
+  {
+   "id": "rd-07",
+   "numerator_factors": [
+    1
+   ],
+   "b": 3,
+   "expected": 0,
+   "rules": [
+    "5.0-舍"
+   ],
+   "note": "0.33 → 0"
+  },
+  {
+   "id": "rd-08",
+   "numerator_factors": [
+    -1
+   ],
+   "b": 3,
+   "expected": 0,
+   "rules": [
+    "5.0-负"
+   ],
+   "note": "−0.33 → 0（不是 −0、不是向下取整的 −1）"
+  },
+  {
+   "id": "rd-09",
+   "numerator_factors": [
+    2
+   ],
+   "b": 3,
+   "expected": 1,
+   "rules": [
+    "5.0-舍"
+   ],
+   "note": "0.67 → 1"
+  },
+  {
+   "id": "rd-10",
+   "numerator_factors": [
+    -2
+   ],
+   "b": 3,
+   "expected": -1,
+   "rules": [
+    "5.0-负"
+   ],
+   "note": "−0.67 → −1"
+  },
+  {
+   "id": "rd-11",
+   "numerator_factors": [
+    0
+   ],
+   "b": 7,
+   "expected": 0,
+   "rules": [
+    "5.0-舍"
+   ],
+   "note": "0"
+  },
+  {
+   "id": "rd-12",
+   "numerator_factors": [
+    10
+   ],
+   "b": 5,
+   "expected": 2,
+   "rules": [
+    "5.0-舍"
+   ],
+   "note": "整除"
+  },
+  {
+   "id": "rd-13",
+   "numerator_factors": [
+    -10
+   ],
+   "b": 5,
+   "expected": -2,
+   "rules": [
+    "5.0-负"
+   ],
+   "note": "负数整除"
+  },
+  {
+   "id": "rd-14",
+   "numerator_factors": [
+    3
+   ],
+   "b": 8,
+   "expected": 0,
+   "rules": [
+    "5.0-舍"
+   ],
+   "note": "0.375 → 0"
+  },
+  {
+   "id": "rd-15",
+   "numerator_factors": [
+    -3
+   ],
+   "b": 8,
+   "expected": 0,
+   "rules": [
+    "5.0-负"
+   ],
+   "note": "−0.375 → 0"
+  },
+  {
+   "id": "rd-16",
+   "numerator_factors": [
+    4
+   ],
+   "b": 8,
+   "expected": 1,
+   "rules": [
+    "5.0-半"
+   ],
+   "note": "0.5 → 1（b 为偶数）"
+  },
+  {
+   "id": "rd-17",
+   "numerator_factors": [
+    -4
+   ],
+   "b": 8,
+   "expected": -1,
+   "rules": [
+    "5.0-半",
+    "5.0-负"
+   ],
+   "note": "−0.5 → −1"
+  },
+  {
+   "id": "rd-18",
+   "numerator_factors": [
+    5
+   ],
+   "b": 8,
+   "expected": 1,
+   "rules": [
+    "5.0-舍"
+   ],
+   "note": "0.625 → 1"
+  },
+  {
+   "id": "rd-19",
+   "numerator_factors": [
+    6015
+   ],
+   "b": 10,
+   "expected": 602,
+   "rules": [
+    "5.0-半"
+   ],
+   "note": "601.5 → 602（cost-11 盘亏）"
+  },
+  {
+   "id": "rd-20",
+   "numerator_factors": [
+    -6015
+   ],
+   "b": 10,
+   "expected": -602,
+   "rules": [
+    "5.0-半",
+    "5.0-负"
+   ],
+   "note": "−601.5 → −602（撤销时对称）"
+  },
+  {
+   "id": "rd-21",
+   "numerator_factors": [
+    2500,
+    5300
+   ],
+   "b": 5350,
+   "expected": 2477,
+   "rules": [
+    "5.0-舍"
+   ],
+   "note": "alloc-01 第 0 行分摊前：13250000/5350 = 2476.64"
+  },
+  {
+   "id": "rd-22",
+   "numerator_factors": [
+    -2500,
+    5300
+   ],
+   "b": 5350,
+   "expected": -2477,
+   "rules": [
+    "5.0-负"
+   ],
+   "note": "对称"
+  },
+  {
+   "id": "rd-23",
+   "numerator_factors": [
+    99999999,
+    19999999799
+   ],
+   "b": 19999999800,
+   "expected": 99999999,
+   "rules": [
+    "5.0-溢出"
+   ],
+   "note": "alloc-18 每行：乘积 1999999959800000201 > 2^53，< 2^63"
+  },
+  {
+   "id": "rd-24",
+   "numerator_factors": [
+    3037000499,
+    3037000499
+   ],
+   "b": 6074000998,
+   "expected": 1518500250,
+   "rules": [
+    "5.0-溢出",
+    "5.0-半"
+   ],
+   "note": "乘积 9223372030926249001（最接近 2^63 的平方数），结果 1518500249.5 → 1518500250"
+  },
+  {
+   "id": "rd-25",
+   "numerator_factors": [
+    -3037000499,
+    3037000499
+   ],
+   "b": 6074000998,
+   "expected": -1518500250,
+   "rules": [
+    "5.0-溢出",
+    "5.0-半",
+    "5.0-负"
+   ],
+   "note": "同上取负"
+  },
+  {
+   "id": "rd-26",
+   "numerator_factors": [
+    3037000499,
+    3037000499
+   ],
+   "b": 1000000000,
+   "expected": 9223372031,
+   "rules": [
+    "5.0-溢出"
+   ],
+   "note": "9223372030.926249001 → 9223372031"
+  },
+  {
+   "id": "rd-27",
+   "numerator_factors": [
+    -3037000499,
+    3037000499
+   ],
+   "b": 1000000000,
+   "expected": -9223372031,
+   "rules": [
+    "5.0-溢出",
+    "5.0-负"
+   ],
+   "note": "同上取负"
+  },
+  {
+   "id": "rd-28",
+   "numerator_factors": [
+    49,
+    73,
+    127,
+    337,
+    92737,
+    649657
+   ],
+   "b": 4294967296,
+   "expected": 2147483648,
+   "rules": [
+    "5.0-溢出"
+   ],
+   "note": "乘积 = 2^63−1 = 9223372036854775807，÷2^32 = 2147483647.99999999977 → 2147483648；用 a + b/2 再除的写法在这里会溢出"
+  },
+  {
+   "id": "rd-29",
+   "numerator_factors": [
+    -49,
+    73,
+    127,
+    337,
+    92737,
+    649657
+   ],
+   "b": 4294967296,
+   "expected": -2147483648,
+   "rules": [
+    "5.0-溢出",
+    "5.0-负"
+   ],
+   "note": "乘积 = −(2^63−1)"
+  }
+ ]
+}

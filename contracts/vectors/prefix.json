@@ -1,0 +1,209 @@
+{
+ "$schema": "./schemas/prefix.schema.json",
+ "version": 1,
+ "catalog": [
+  {
+   "product_id": "P1",
+   "name": "康师傅红烧牛肉面",
+   "barcode": "6902514300011"
+  },
+  {
+   "product_id": "P2",
+   "name": "康师傅香辣牛肉面",
+   "barcode": "6902514300028"
+  },
+  {
+   "product_id": "P3",
+   "name": "怡宝纯净水 555ml（旧包装）",
+   "barcode": "6920202888883"
+  },
+  {
+   "product_id": "P3",
+   "name": "怡宝纯净水 555ml（新包装）",
+   "barcode": "6920202888890"
+  },
+  {
+   "product_id": "P4",
+   "name": "饼干 A",
+   "barcode": "6954767410012"
+  },
+  {
+   "product_id": "P5",
+   "name": "饼干 B",
+   "barcode": "6954767410029"
+  },
+  {
+   "product_id": "P6",
+   "name": "饼干 C",
+   "barcode": "6954767410036"
+  },
+  {
+   "product_id": "P7",
+   "name": "饼干 D",
+   "barcode": "6954767410043"
+  },
+  {
+   "product_id": "P8",
+   "name": "饼干 E",
+   "barcode": "6954767410050"
+  },
+  {
+   "product_id": "P9",
+   "name": "口香糖（EAN-8）",
+   "barcode": "12345670"
+  },
+  {
+   "product_id": "P10",
+   "name": "另一个以 12345670 开头的码",
+   "barcode": "1234567012340"
+  }
+ ],
+ "cases": [
+  {
+   "id": "pre-01",
+   "input": "69025143",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     "P1",
+     "P2"
+    ],
+    "shown_count": 2,
+    "too_many": false,
+    "auto_select": null
+   },
+   "note": "必过：同厂商两个商品都列出，不自动选"
+  },
+  {
+   "id": "pre-02",
+   "input": "6902514",
+   "expected": {
+    "listed": false,
+    "candidates": [],
+    "shown_count": 0,
+    "too_many": false,
+    "auto_select": null
+   },
+   "note": "不满 8 位不列"
+  },
+  {
+   "id": "pre-03",
+   "input": "690251430001",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     "P1"
+    ],
+    "shown_count": 1,
+    "too_many": false,
+    "auto_select": "P1"
+   },
+   "note": "只剩一个才自动选中"
+  },
+  {
+   "id": "pre-04",
+   "input": "6902514300028",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     "P2"
+    ],
+    "shown_count": 1,
+    "too_many": false,
+    "auto_select": "P2"
+   },
+   "note": "输满 13 位"
+  },
+  {
+   "id": "pre-05",
+   "input": "69202028",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     "P3"
+    ],
+    "shown_count": 1,
+    "too_many": false,
+    "auto_select": "P3"
+   },
+   "note": "两个单件码属于同一个商品，算一个候选"
+  },
+  {
+   "id": "pre-06",
+   "input": "69547674",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     "P4",
+     "P5",
+     "P6",
+     "P7",
+     "P8"
+    ],
+    "shown_count": 4,
+    "too_many": true,
+    "auto_select": null
+   },
+   "note": "5 个候选：显示 4 行并提示继续输"
+  },
+  {
+   "id": "pre-07",
+   "input": "69547674100",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     "P4",
+     "P5",
+     "P6",
+     "P7",
+     "P8"
+    ],
+    "shown_count": 4,
+    "too_many": true,
+    "auto_select": null
+   },
+   "note": "还是 5 个"
+  },
+  {
+   "id": "pre-08",
+   "input": "695476741004",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     "P7"
+    ],
+    "shown_count": 1,
+    "too_many": false,
+    "auto_select": "P7"
+   },
+   "note": "再输一位剩一个"
+  },
+  {
+   "id": "pre-09",
+   "input": "99999999",
+   "expected": {
+    "listed": true,
+    "candidates": [],
+    "shown_count": 0,
+    "too_many": false,
+    "auto_select": null
+   },
+   "note": "满 8 位但没有匹配"
+  },
+  {
+   "id": "pre-10",
+   "input": "12345670",
+   "expected": {
+    "listed": true,
+    "candidates": [
+     "P10",
+     "P9"
+    ],
+    "shown_count": 2,
+    "too_many": false,
+    "auto_select": null
+   },
+   "note": "完全等于一个 8 位码，但另一个码以它为前缀：按规则两个都列、不自动选"
+  }
+ ]
+}
