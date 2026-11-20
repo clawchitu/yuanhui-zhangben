@@ -6,9 +6,9 @@
 // 每个 op 的处理顺序：
 //  0. 存不进库、算不了哈希的 op（\u0000、不成对的代理项、解析不出时间或年份 0000 的 occurred_at、payload 嵌套超过 16 层或节点超过 1 万个）
 //     → rejected: invalid，不留档（§14 S04-13）。这一步是迭代的，之后的递归处理栈深度有界。
-//     兜底：每个 op 在自己的 savepoint 里处理，Postgres 报数据类错误（SQLSTATE 22xxx）时只回滚这个 op、拒 invalid、不留档，
-//     按 error 级别记日志（预检查漏掉了什么，要人看）。S05 接入记账 op 时要重新定这条兜底（§14 S04-14）。
-//     任何 op 的内容都不许让整个请求 500、连累同批的其他 op。
+//     兜底（§14 S04-14、S05-4 第三层）：每个 op 在自己的 savepoint 里处理。Postgres 报数据类错误（SQLSTATE 22xxx）时，
+//     商品类 op 只回滚这个 op、单个拒 invalid、不留档，不连累同批的其他 op；记账类 op（LEDGER_OPS）预检查之后仍报 22xxx
+//     说明预检查有漏洞，直接抛出、整个请求 500、同批回滚，不留半截账。两种都按 error 级别记日志（要人看）。
 //  1. 按 (store_id, id) 找留档：有 → 内容哈希相同就原样返回当初的结果（replayed: true），不同就 id_conflict（不留档、不应用）。
 //  2. 还没实现的 op 类型（盘点、补全、处理快过期，S06）→ rejected: invalid，不留档，等实现后重发能正常处理。
 //  3. 手机时钟超前 5 分钟以上 → occurred_at 改成服务器收到的时间，flags.clock_adjusted（§4.4）。
