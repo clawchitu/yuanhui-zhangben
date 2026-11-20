@@ -15,7 +15,7 @@ public enum OpType: String, Hashable, Sendable, CaseIterable {
     case expiryDispose = "expiry_dispose"
     case lotSnooze = "lot_snooze"
 
-    /// 只能联网提交、不进离线队列（§5.6 第 1 条）。`opening` 是否需要联网取决于商品新旧，由调用方判断。
+    /// 只能联网提交、不进离线队列（§5.6 第 1 条）。`opening` 是否需要联网取决于商品新旧，由本地库入队时判断（`LocalDB.checkOfflineOpening`）。
     public var onlineOnly: Bool { self == .count || self == .productReviewComplete }
 }
 
