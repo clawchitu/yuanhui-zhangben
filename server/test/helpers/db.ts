@@ -8,7 +8,7 @@ import { loadConfig, type Config } from "../../src/config.ts";
 
 export function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
-  if (!url) throw new Error("测试需要 DATABASE_URL（真实 Postgres 16），见 server/README 或 CLAUDE.md");
+  if (!url) throw new Error("测试需要 DATABASE_URL（真实 Postgres 16），见 CLAUDE.md「服务器」");
   return url;
 }
 
