@@ -1,9 +1,11 @@
 // POST /v1/sync（§4.2）：推 op + 拉变更。平时唯一的写账入口。
-// 顺序：最低版本 → epoch 握手 → 推（店铺锁内一个事务）→ 拉（只读快照）。
+// 顺序：最低版本 → epoch 握手 → 推（店铺锁内一个事务；注销期间整批跳过）→ 拉（只读快照）。
 import type { FastifyInstance } from "fastify";
 import { authOf } from "../auth/plugin.ts";
 import { Guard } from "../auth/guard.ts";
 import { emptyChanges, pullChanges, type Cursors } from "../sync/pull.ts";
+import { StoreBusy } from "../sync/lock.ts";
+import { deletePendingUntil } from "../auth/session.ts";
 import { EpochMismatch, pushOps, type DeviceState, type IncomingOp, type OpResult } from "../sync/push.ts";
 import { SCOPES, type Scope } from "../sync/projection.ts";
 import { strictValidatorCompiler, syncBodySchema } from "../sync/validate.ts";
@@ -44,6 +46,7 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
         revokedAt: a.device.revokedAt,
         revokeReason: a.device.revokeReason,
         deletePending: a.account.deleteRequestedAt !== null,
+        deleteRequestedAt: a.account.deleteRequestedAt,
       };
       if (body.ops.length > 0) {
         try {
@@ -53,9 +56,12 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
             now,
             epoch: body.epoch,
             config: { demoLoginEnabled: config.demoLoginEnabled, recoveryMode: config.recoveryMode },
+            queueLimit: config.storeQueueLimit,
           }));
         } catch (e) {
           if (e instanceof EpochMismatch) return reply.code(409).send({ code: "epoch_mismatch", epoch: e.epoch });
+          // 这家店在途的写入超过上限（§14 S04-8）：不进队列、不取连接，手机原样重发（按 id 幂等）
+          if (e instanceof StoreBusy) return sendError(reply, 503, "unavailable", { retry_after_s: e.retryAfterS });
           throw e;
         }
       }
@@ -76,8 +82,11 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
+      // 注销期间（§14 S04-2）：results 为空，带 delete_pending_until，手机把 op 留在 outbox、停止推送
+      const until = device.deletePending ? deletePendingUntil(device.deleteRequestedAt) : undefined;
       return {
         results,
+        ...(until ? { delete_pending_until: until } : {}),
         ...out,
         server_time: now.toISOString(),
         epoch: a.store.epoch,

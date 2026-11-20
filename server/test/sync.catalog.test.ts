@@ -134,7 +134,7 @@ describe("product_upsert", () => {
     expect(await products(shop.storeId)).toHaveLength(1);
   });
 
-  it("商品 id 已存在（同一商品再登记一个新条码）：不改商品，只挂上这个单件码", async () => {
+  it("商品 id 已存在（同一商品再登记一个新条码）：不改商品、不挂码，rejected invalid（S04-10，挂码只走 barcode_link）", async () => {
     const { shop, app, boss } = await setup();
     const p = upsertFull({ name: "矿泉水", price: 200 });
     await syncOk(app, boss.token, { epoch: shop.epoch, ops: [p] });
@@ -142,11 +142,10 @@ describe("product_upsert", () => {
     const again = upsertFull({ productId: p.payload.product_id as string, name: "别的名字", price: 999 });
     const r = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [again] });
     await app.close();
-    expect(r.results[0]).toEqual({ id: again.id, status: "applied" });
+    expect(r.results[0]).toEqual({ id: again.id, status: "rejected", code: "invalid" });
     expect(await products(shop.storeId)).toEqual([before]);
     const bs = await barcodes(shop.storeId);
-    expect(bs.map((b) => b.barcode).sort()).toEqual([p.payload.barcode, again.payload.barcode].sort());
-    expect(bs.every((b) => b.product_id === p.payload.product_id && b.pack_qty === 1)).toBe(true);
+    expect(bs.map((b) => b.barcode)).toEqual([p.payload.barcode]);
   });
 });
 

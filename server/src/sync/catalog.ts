@@ -110,7 +110,10 @@ async function writeBarcode(
 /**
  * product_upsert：
  * - 商品 id 已经是别名 → 什么都不改，返回 remap（重复登记）。
- * - 商品 id 已存在 → 不改商品的任何字段（改名称、卖价走 product_edit）；条码空闲就给它挂上一个单件码。
+ * - 商品 id 已存在 → 不改商品的任何字段（改名称、卖价走 product_edit），也不挂码（挂码只走 barcode_link，§14 S04-10）：
+ *   条码已挂在这个商品上 → applied 无操作；其他情况（空闲、解除过、挂在别的商品上）→ rejected: invalid。不论角色、不论 quick。
+ *   正常的手机每次登记都用新生成的商品 id，同一个 id 再出现只可能是重复提交或构造的请求；
+ *   否则收银员能借 quick 登记绕过 barcode_link 的权限给已有商品挂码。
  * - 条码已经挂在别的商品上（不论单件码还是整件码、不论角色）→ 不改赢家任何字段，记别名，返回 remap（§4.4）。
  * - 否则建商品 + 一个单件码。quick 的基本单位默认「个」、needs_review=true（§4.3）。
  */
@@ -121,10 +124,7 @@ export async function applyProductUpsert(tx: StoreTx, ctx: ApplyContext, p: Upse
 
   const existing = await productExists(tx, pid);
   const taken = await liveBarcode(tx, p.barcode);
-  if (existing) {
-    if (!taken) await writeBarcode(tx, { barcode: p.barcode, productId: pid, packQty: 1, unitName: existing.base_unit, packPriceFen: null });
-    return applied(remap);
-  }
+  if (existing) return taken && taken.product_id === pid ? applied(remap) : invalid(remap);
   if (taken) {
     await addAlias(tx, pid, taken.product_id);
     remap.add(p.product_id, taken.product_id);
@@ -205,14 +205,17 @@ export async function applyProductEdit(tx: StoreTx, ctx: ApplyContext, p: EditPa
  * - 已挂在同一商品上 → 改换算、单位名和整件价；
  * - 已挂在别的商品上 → rejected: invalid（不偷偷把条码挪走，要先解除）。
  * 商品不存在 → rejected: invalid。
+ * 单件码（pack_qty=1）的单位就是基本单位，只有一处（§14 S04-5）：一律写商品的 base_unit，不看 payload 的 unit_name（不拒）。
  */
 export async function applyBarcodeLink(tx: StoreTx, _ctx: ApplyContext, p: LinkPayload): Promise<Outcome> {
   const remap = new Remap();
   const pid = await resolveProductId(tx, p.product_id, remap);
-  if (!(await productExists(tx, pid))) return invalid(remap);
+  const product = await productExists(tx, pid);
+  if (!product) return invalid(remap);
   const taken = await liveBarcode(tx, p.barcode);
   if (taken && taken.product_id !== pid) return invalid(remap);
-  await writeBarcode(tx, { barcode: p.barcode, productId: pid, packQty: p.pack_qty, unitName: p.unit_name, packPriceFen: p.pack_price_fen ?? null });
+  const unitName = p.pack_qty === 1 ? product.base_unit : p.unit_name;
+  await writeBarcode(tx, { barcode: p.barcode, productId: pid, packQty: p.pack_qty, unitName, packPriceFen: p.pack_price_fen ?? null });
   return applied(remap);
 }
 

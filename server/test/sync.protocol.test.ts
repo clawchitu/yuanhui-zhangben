@@ -265,14 +265,15 @@ describe("被踢设备（§4.5）", () => {
 });
 
 describe("注销期间", () => {
-  it("注销申请期间登录的设备推 op：rejected forbidden，不留档（撤回注销后重发能正常入账）；拉取照常", async () => {
+  it("注销申请期间推 op：整批不应用、不留档、results 为空，带 delete_pending_until（S04-2，详见 sync.review.test.ts）", async () => {
     const shop = await makeLoginShop(tdb);
     const app = makeApp(tdb);
     const boss = await login(app, shop.username);
     await tdb.kysely.updateTable("accounts").set({ delete_requested_at: new Date() }).where("id", "=", shop.accountId).execute();
     const o = upsertFull();
     const r = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [o] });
-    expect(r.results).toEqual([{ id: o.id, status: "rejected", code: "forbidden" }]);
+    expect(r.results).toEqual([]);
+    expect(r.delete_pending_until).toEqual(expect.any(String));
     expect(await opsOf(shop.storeId)).toEqual([]);
     await tdb.kysely.updateTable("accounts").set({ delete_requested_at: null }).where("id", "=", shop.accountId).execute();
     const r2 = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [o] });

@@ -163,6 +163,8 @@ paths:
         - `epoch` 与服务器不一致：不应用任何 op，返回 409 `epoch_mismatch` 和新 epoch（§4.6）。
         - 被踢的令牌：不返回任何数据，`device.revoked=true`，推上来的 op 按 §4.5 处理。
         - `has_more` 某条流为真就继续拉那条流，每页最多 500 行。
+        - 账号注销期间：一个 op 都不应用，`results` 为空，响应带 `delete_pending_until`；拉取照常（§14 S04-2）。
+        - 这家店同时在途的写入太多：503 `unavailable` 带 `retry_after_s`，一个 op 都没应用，原样重发即可（§14 S04-8）。
       x-permission: POST /v1/sync
       requestBody:
         required: true
@@ -190,6 +192,7 @@ paths:
                   epoch: { $ref: "#/components/schemas/Uuid" }
                   message: { type: string }
         "426": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/barcode-lookup/{barcode}:
     get:
       tags: [查询]
@@ -791,7 +794,13 @@ components:
       additionalProperties: false
       required: [results, changes, cursors, has_more, total_products, server_time, epoch, min_build, device, store]
       properties:
-        results: { type: array, items: { $ref: "#/components/schemas/OpResult" } }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/OpResult" }
+          description: 账号注销期间为空数组（一个 op 都没应用、没留档），见 delete_pending_until
+        delete_pending_until:
+          $ref: "#/components/schemas/DateTime"
+          description: 账号在注销期间时出现（与 Session、Me 的同名字段一致）。这时推上来的 op 一个都不应用、不留档，手机把它们留在 outbox、停止推送，撤回注销后自动补传（§14 S04-2）
         changes:
           type: object
           additionalProperties: false

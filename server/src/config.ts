@@ -16,6 +16,8 @@ export interface Config {
   recoveryMode: boolean;
   /** 前面有 Caddy 反代时为真：按 X-Forwarded-For 取客户端 IP（§7 按 IP 限速） */
   trustProxy: boolean;
+  /** 每家店在本进程里在途（排队 + 正在处理）的同步写入上限，超过直接 503（§14 S04-8，默认 32） */
+  storeQueueLimit: number;
 }
 
 type Env = Record<string, string | undefined>;
@@ -65,5 +67,6 @@ export function loadConfig(env: Env = process.env): Config {
     supportUrl: url(env, "SUPPORT_URL", "https://yuanhuishop.cn/support"),
     recoveryMode: bool(env, "RECOVERY_MODE", false),
     trustProxy: bool(env, "TRUST_PROXY", false),
+    storeQueueLimit: int(env, "STORE_QUEUE_LIMIT", 32, 1, 10_000),
   };
 }

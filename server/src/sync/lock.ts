@@ -32,8 +32,13 @@ export interface StoreTx {
  * 在一个事务里拿店铺锁再执行 fn。fn 抛错则整个事务回滚（含取过的号）。
  * 同一店的写入在这里串行；不同店互不阻塞。不要在 fn 里再对同一家店调 withStoreLock（会自己等自己）。
  */
-export async function withStoreLock<T>(db: Kysely<Database>, storeId: string, fn: (tx: StoreTx) => Promise<T>): Promise<T> {
-  return queued(db, storeId.toLowerCase(), () =>
+export async function withStoreLock<T>(
+  db: Kysely<Database>,
+  storeId: string,
+  fn: (tx: StoreTx) => Promise<T>,
+  opts: { queueLimit?: number } = {},
+): Promise<T> {
+  return queued(db, storeId.toLowerCase(), opts.queueLimit ?? STORE_QUEUE_LIMIT, () =>
     db.transaction().execute(async (trx) => {
       await sql`SELECT pg_advisory_xact_lock(${storeLockKey(storeId)}::bigint)`.execute(trx);
       return fn({ trx, storeId, nextRev: () => takeRev(trx, storeId) });
@@ -41,23 +46,48 @@ export async function withStoreLock<T>(db: Kysely<Database>, storeId: string, fn
   );
 }
 
+/** 每家店在本进程里在途的写入上限（默认值；服务器用配置 STORE_QUEUE_LIMIT，§14 S04-8） */
+export const STORE_QUEUE_LIMIT = 32;
+/** 一家店在途的写入超过上限：不进队列、不取连接，调用方返回 503 unavailable */
+export class StoreBusy extends Error {
+  /** 建议手机多少秒后重试 */
+  readonly retryAfterS = 2;
+  constructor(storeId: string) {
+    super(`店 ${storeId} 在途的写入超过上限`);
+  }
+}
+
 /**
  * 进程内按店排队：同一店的写入先在进程里排好队，轮到了才去连接池取连接、再拿数据库里的店铺锁。
  * 否则一家店同时来很多请求时，每个请求都占着一条连接干等锁，连接池被这一家店占满，别的店也取不到连接。
  * 正确性只靠数据库里的店铺锁（多进程、多个连接池也成立）；这里只是不让等锁的请求占连接。队列按连接池分开。
+ * 队列有上限（§14 S04-8）：一家店在途（排队 + 正在处理）已经有 limit 个时，新来的直接抛 StoreBusy，
+ * 不进队列、不取连接——否则堆积的请求一直占内存，手机那头早已超时重发，越堆越多。
  */
-const queues = new WeakMap<object, Map<string, Promise<unknown>>>();
-function queued<T>(db: object, key: string, run: () => Promise<T>): Promise<T> {
-  let tails = queues.get(db);
-  if (!tails) queues.set(db, (tails = new Map()));
-  const prev = tails.get(key) ?? Promise.resolve();
-  const next = prev.then(run, run);
-  const tail = next.catch(() => {});
-  tails.set(key, tail);
-  // 队尾就是自己时清掉，Map 不会越积越多
-  void tail.then(() => {
-    if (tails!.get(key) === tail) tails!.delete(key);
-  });
+interface Lane {
+  tail: Promise<unknown>;
+  inFlight: number;
+}
+const lanes = new WeakMap<object, Map<string, Lane>>();
+function queued<T>(db: object, key: string, limit: number, run: () => Promise<T>): Promise<T> {
+  let byKey = lanes.get(db);
+  if (!byKey) lanes.set(db, (byKey = new Map()));
+  const m = byKey;
+  let lane = m.get(key);
+  if (!lane) m.set(key, (lane = { tail: Promise.resolve(), inFlight: 0 }));
+  const l = lane;
+  if (l.inFlight >= limit) return Promise.reject(new StoreBusy(key));
+  l.inFlight += 1;
+  const next = l.tail.then(run, run);
+  l.tail = next.then(
+    () => done(),
+    () => done(),
+  );
+  function done() {
+    l.inFlight -= 1;
+    // 没有在途的了就清掉，Map 不会越积越多
+    if (l.inFlight === 0 && m.get(key) === l) m.delete(key);
+  }
   return next;
 }
 
