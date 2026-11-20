@@ -52,6 +52,11 @@ export async function loadProduct(tx: StoreTx, id: string) {
   return tx.trx.selectFrom("products").selectAll().where("store_id", "=", tx.storeId).where("id", "=", id).executeTakeFirst();
 }
 
+/** 版本不一致（§5.6 第 2 条）：rejected stale，current 带回最新账面数和版本 */
+export function staleOf(prod: ProductRow, remap: Remap): Outcome {
+  return { status: "rejected", code: "stale", current: { stock_qty: prod.stock_qty, stock_ver: Number(prod.stock_ver) }, ...withRemap(remap) };
+}
+
 export function stateOf(p: ProductRow): CostState {
   return { q: BigInt(p.stock_qty), v: BigInt(p.stock_value_fen), c: p.last_cost_fen === null ? null : BigInt(p.last_cost_fen), k: p.cost_known };
 }
@@ -73,7 +78,7 @@ export async function missingSales(tx: StoreTx, pid: string): Promise<MissingSal
   return rows.map((r) => ({ ref: r.id, qty: -BigInt(r.qty_delta), amount_fen: BigInt(r.amount_fen) }));
 }
 
-async function entryFree(tx: StoreTx, id: string) {
+export async function entryFree(tx: StoreTx, id: string) {
   const e = await tx.trx.selectFrom("entries").select("id").where("store_id", "=", tx.storeId).where("id", "=", id.toLowerCase()).executeTakeFirst();
   if (e) bad(`entry_id ${id} 已被占用`);
 }
@@ -236,7 +241,7 @@ export async function applyOpening(tx: StoreTx, ctx: LedgerContext, p: OpeningPa
     const prod = (await loadProduct(tx, await resolveProductId(tx, p.product_id, remap))) ?? bad("商品不存在");
     const ver = BigInt(prod.stock_ver);
     if (p.base_ver !== undefined ? ver !== BigInt(p.base_ver) : ver !== 0n) {
-      return { status: "rejected", code: "stale", current: { stock_qty: prod.stock_qty, stock_ver: Number(ver) }, ...withRemap(remap) };
+      return staleOf(prod, remap);
     }
     await entryFree(tx, p.entry_id);
     const b = p.unit_cost_fen === undefined ? null : BigInt(p.unit_cost_fen);

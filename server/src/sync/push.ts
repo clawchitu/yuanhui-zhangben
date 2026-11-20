@@ -29,6 +29,8 @@ import type { Identity } from "../auth/permissions.ts";
 import { applyBarcodeLink, applyBarcodeUnlink, applyProductEdit, applyProductUpsert, type ApplyContext, type Outcome } from "./catalog.ts";
 import { applyOpening, applySaleBatch, applyStockIn } from "../ledger/apply.ts";
 import { applyVoid, voidTargetSale } from "../ledger/void.ts";
+import { applyCount } from "../ledger/count.ts";
+import { applyReviewComplete } from "../ledger/costfix.ts";
 import { STORE_QUEUE_LIMIT, withStoreLock, type StoreTx } from "./lock.ts";
 import { opSchemaValid, type OpType } from "./validate.ts";
 
@@ -84,6 +86,8 @@ const HANDLERS: Partial<Record<OpType, Handler>> = {
   stock_in: applyStockIn as Handler,
   opening: applyOpening as Handler,
   void: applyVoid as Handler,
+  count: applyCount as Handler,
+  product_review_complete: applyReviewComplete as Handler,
 };
 
 /** 记账类 op：预检查之后写库再出 22xxx 只能是服务器自己错了，整个请求 500，不单个拒收（§14 S04-14、S05-4 第三层） */
