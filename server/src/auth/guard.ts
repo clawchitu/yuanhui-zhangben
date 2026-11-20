@@ -87,7 +87,8 @@ export function evalCondition(c: Condition, f: Facts): boolean {
     case "within_revoke_window":
       return !!f.revokedAt && f.now.getTime() - f.revokedAt.getTime() <= REVOKE_WINDOW_MS;
     case "not_self":
-      return !!f.targetDeviceId && f.targetDeviceId !== f.callerDeviceId;
+      // UUID 不分大小写（Postgres 认为是同一台设备），规范化后再比
+      return !!f.targetDeviceId && !!f.callerDeviceId && f.targetDeviceId.toLowerCase() !== f.callerDeviceId.toLowerCase();
     case "demo_login_enabled":
       return f.config.demoLoginEnabled;
     case "recovery_mode_on":

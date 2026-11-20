@@ -184,6 +184,19 @@ describe("guard 的边界", () => {
     expect(guard.decideOp("drop_table", {}, "family", okFacts())).toMatchObject({ ok: false, code: "forbidden" });
   });
 
+  it("收银员 quick 登记只能带名称和卖价：带 base_unit、unit_cost_fen 等别的字段 → 拒（独立反例，不靠遍历表里声明的条件）", () => {
+    const quickRule = perms.rules.find((r) => r.id === "op:product_upsert[quick]")!;
+    expect(quickRule.cashier.conditions).toEqual(["quick_only"]);
+    expect(guard.decideOp("product_upsert", quickPayload, "cashier", okFacts())).toMatchObject({ ok: true, held: false });
+    for (const extra of [{ base_unit: "瓶" }, { unit_cost_fen: 250 }, { low_at: 3 }, { track_expiry: true }]) {
+      const v = guard.decideOp("product_upsert", { ...quickPayload, ...extra }, "cashier", okFacts());
+      expect(v, JSON.stringify(extra)).toMatchObject({ ok: false, code: "forbidden" });
+      expect(v.failed).toContain("quick_only");
+    }
+    // 家用不受这条限制
+    expect(guard.decideOp("product_upsert", { ...quickPayload, base_unit: "瓶" }, "family", okFacts()).ok).toBe(true);
+  });
+
   it("product_upsert 不带 quick（选不到行）→ 拒", () => {
     const { quick: _q, ...noQuick } = quickPayload;
     expect(guard.decideOp("product_upsert", noQuick, "family", okFacts()).ok).toBe(false);

@@ -38,6 +38,68 @@ describe("改密码", () => {
   });
 });
 
+describe("原密码输错的限速（§14 S03-8）", () => {
+  const pw = (token: string, old: string) => ({ method: "POST" as const, url: "/v1/account/password", headers: bearer(token), payload: { old, new: "new-password-9" } });
+  const del = (token: string, password: string) => ({ method: "POST" as const, url: "/v1/account/delete-request", headers: bearer(token), payload: { password } });
+
+  it("按账号 15 分钟内错 5 次后 429 rate_limited（带 retry_after_s，正确密码也拒）；改密码和申请注销共用计数；15 分钟后恢复", async () => {
+    const shop = await makeLoginShop(tdb);
+    const clock = new TestClock();
+    const app = makeApp(tdb, { clock });
+    const a = await login(app, shop.username);
+    const b = await login(app, shop.username); // 同账号另一台手机：计数按账号，不按设备
+    const ev = validatorFor((await loadOpenApi()).components.schemas.Error);
+    for (let i = 1; i <= 5; i++) {
+      const r = await app.inject(i % 2 ? pw(a.token, `wrong-${i}`) : del(b.token, `wrong-${i}`));
+      expect([r.statusCode, r.json().code], `第 ${i} 次`).toEqual([401, "bad_credentials"]);
+      clock.advance(1000);
+    }
+    for (const req of [pw(a.token, "wrong-6"), del(b.token, "wrong-6"), pw(a.token, PASSWORD), del(a.token, PASSWORD)]) {
+      const r = await app.inject(req);
+      expect([r.statusCode, r.json().code], req.url).toEqual([429, "rate_limited"]);
+      expect(ev(r.json()), JSON.stringify(ev.errors)).toBe(true);
+      expect(r.json().retry_after_s).toBeGreaterThan(0);
+      expect(r.headers["retry-after"]).toBe(String(r.json().retry_after_s));
+    }
+    // 不计入登录锁定：账号照样能登录
+    await login(app, shop.username);
+    const acct = await tdb.kysely.selectFrom("accounts").select(["failed_logins", "locked_until", "delete_requested_at"]).where("id", "=", shop.accountId).executeTakeFirstOrThrow();
+    expect(acct).toEqual({ failed_logins: 0, locked_until: null, delete_requested_at: null });
+
+    // 第 1 次输错满 15 分钟后让出一格
+    clock.advance(15 * 60_000 - 5000);
+    const ok = await app.inject(pw(a.token, PASSWORD));
+    await app.close();
+    expect(ok.statusCode).toBe(204);
+  });
+
+  it("输对的不占计数；别的账号不受影响", async () => {
+    const shop = await makeLoginShop(tdb);
+    const other = await makeLoginShop(tdb);
+    const app = makeApp(tdb);
+    const a = await login(app, shop.username);
+    const o = await login(app, other.username);
+    for (let i = 0; i < 4; i++) expect((await app.inject(pw(a.token, `wrong-${i}`))).statusCode).toBe(401);
+    // 对的密码不算一次错
+    expect((await app.inject({ ...pw(a.token, PASSWORD), payload: { old: PASSWORD, new: PASSWORD } })).statusCode).toBe(204);
+    expect((await app.inject(pw(a.token, "wrong-5"))).statusCode).toBe(401);
+    expect((await app.inject(pw(a.token, "wrong-6"))).statusCode).toBe(429);
+    expect((await app.inject(pw(o.token, "wrong-x"))).statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("同时发 20 个错的原密码：最多 5 个真的去验，其余 429", async () => {
+    const shop = await makeLoginShop(tdb);
+    const app = makeApp(tdb);
+    const a = await login(app, shop.username);
+    const rs = await Promise.all(Array.from({ length: 20 }, (_, i) => app.inject(pw(a.token, `wrong-${i}`))));
+    await app.close();
+    const codes = rs.map((r) => r.statusCode);
+    expect(codes.filter((c) => c === 401)).toHaveLength(5);
+    expect(codes.filter((c) => c === 429)).toHaveLength(15);
+  });
+});
+
 describe("注销", () => {
   it("申请注销：要密码；记 delete_requested_at，全部设备（含本机）退出，未用的开通码作废", async () => {
     const shop = await makeLoginShop(tdb);

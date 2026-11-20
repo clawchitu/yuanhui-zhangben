@@ -1,8 +1,9 @@
 // 账号（§7）：改密码、申请注销、撤回注销。
 // 本段只做申请、撤回和「注销期间禁止写账与开通」（guard 的 delete_pending）；7 天后真正删除和导出在 S09。
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authOf } from "../auth/plugin.ts";
-import { hashPassword, PASSWORD_MAX, PASSWORD_MIN, verifyPassword } from "../auth/password.ts";
+import { hashPassword, PASSWORD_MAX, PASSWORD_MIN } from "../auth/password.ts";
+import { SlidingWindowLimiter } from "../auth/ratelimit.ts";
 import { DELETE_GRACE_MS, deletePendingUntil } from "../auth/session.ts";
 import { sendError } from "./errors.ts";
 
@@ -11,6 +12,26 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
 
   const currentHash = async (accountId: string) =>
     (await db.selectFrom("accounts").select("password_hash").where("id", "=", accountId).executeTakeFirstOrThrow()).password_hash;
+
+  // 原密码输错按账号限速（§14 S03-8）：改密码和申请注销共用一个计数，不计入登录锁定（否则一台家用手机能把登录锁死）。
+  // 先占一格再验密码，验对了撤回：同时发来的一批请求也最多猜 5 次。
+  const wrongPassword = new SlidingWindowLimiter(app.deps.rateLimits.accountPassword);
+  const checkOldPassword = async (req: FastifyRequest, reply: FastifyReply, password: string): Promise<boolean> => {
+    const a = authOf(req);
+    const at = req.receivedAt.getTime();
+    const wait = wrongPassword.hit(a.account.id, at);
+    if (wait > 0) {
+      reply.header("retry-after", String(wait));
+      sendError(reply, 429, "rate_limited", { retry_after_s: wait, message: "密码错了太多次，请稍后再试" });
+      return false;
+    }
+    if (await app.deps.verifyPassword(await currentHash(a.account.id), password)) {
+      wrongPassword.undo(a.account.id, at);
+      return true;
+    }
+    sendError(reply, 401, "bad_credentials", { message: "密码不对" });
+    return false;
+  };
 
   // 不强制其他手机退出（§7）
   app.post<{ Body: { old: string; new: string } }>(
@@ -30,9 +51,7 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       const a = authOf(req);
-      if (!(await verifyPassword(await currentHash(a.account.id), req.body.old))) {
-        return sendError(reply, 401, "bad_credentials", { message: "原密码不对" });
-      }
+      if (!(await checkOldPassword(req, reply, req.body.old))) return reply;
       await db.updateTable("accounts").set({ password_hash: await hashPassword(req.body.new) }).where("id", "=", a.account.id).execute();
       return reply.code(204).send();
     },
@@ -53,9 +72,7 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       const a = authOf(req);
-      if (!(await verifyPassword(await currentHash(a.account.id), req.body.password))) {
-        return sendError(reply, 401, "bad_credentials", { message: "密码不对" });
-      }
+      if (!(await checkOldPassword(req, reply, req.body.password))) return reply;
       const now = req.receivedAt;
       const requestedAt = await db.transaction().execute(async (trx) => {
         const acct = await trx

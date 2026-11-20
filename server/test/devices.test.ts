@@ -46,6 +46,37 @@ describe("设备管理", () => {
     expect(r.json().code).toBe("cannot_revoke_self");
   });
 
+  it("不能踢自己：自己的 id 写成大写、大小写混写也是 400 cannot_revoke_self，设备仍有效", async () => {
+    const shop = await makeLoginShop(tdb);
+    const app = makeApp(tdb);
+    const boss = await login(app, shop.username);
+    const mixed = boss.deviceId
+      .split("")
+      .map((ch, i) => (i % 2 ? ch.toUpperCase() : ch))
+      .join("");
+    for (const id of [boss.deviceId.toUpperCase(), mixed]) {
+      const r = await app.inject({ method: "POST", url: `/v1/devices/${id}/revoke`, headers: bearer(boss.token) });
+      expect([r.statusCode, r.json().code], id).toEqual([400, "cannot_revoke_self"]);
+    }
+    const me = await app.inject({ method: "GET", url: "/v1/me", headers: bearer(boss.token) });
+    await app.close();
+    expect(me.statusCode).toBe(200);
+    const row = await tdb.kysely.selectFrom("devices").select("revoked_at").where("id", "=", boss.deviceId).executeTakeFirstOrThrow();
+    expect(row.revoked_at).toBeNull();
+  });
+
+  it("踢别的手机时 id 写成大写也能踢（大小写只是写法不同）", async () => {
+    const shop = await makeLoginShop(tdb);
+    const app = makeApp(tdb);
+    const boss = await login(app, shop.username);
+    const other = await pair(app, boss.token, "family");
+    const r = await app.inject({ method: "POST", url: `/v1/devices/${other.deviceId.toUpperCase()}/revoke`, headers: bearer(boss.token) });
+    const after = await app.inject({ method: "GET", url: "/v1/me", headers: bearer(other.token) });
+    await app.close();
+    expect(r.statusCode).toBe(204);
+    expect([after.statusCode, after.json().code]).toEqual([401, "revoked"]);
+  });
+
   it("让其他手机全部退出：只留自己，返回退出的台数", async () => {
     const shop = await makeLoginShop(tdb);
     const app = makeApp(tdb);

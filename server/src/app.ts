@@ -10,6 +10,7 @@ import { accountRoutes } from "./routes/account.ts";
 import { Guard } from "./auth/guard.ts";
 import { installGuard } from "./auth/plugin.ts";
 import { DEFAULT_RATE_LIMITS, type RateLimits } from "./auth/ratelimit.ts";
+import { verifyPassword } from "./auth/password.ts";
 
 export interface AppDeps {
   config: Config;
@@ -20,11 +21,14 @@ export interface AppDeps {
   clock?: () => Date;
   /** 按 IP 限速（测试里调小） */
   rateLimits?: Partial<RateLimits>;
+  /** 验密码（测试里包一层，控制并发请求的交错顺序；照样调真实的 argon2id） */
+  verifyPassword?: typeof verifyPassword;
 }
 
 export interface ResolvedDeps extends AppDeps {
   clock: () => Date;
   rateLimits: RateLimits;
+  verifyPassword: typeof verifyPassword;
 }
 
 declare module "fastify" {
@@ -38,6 +42,7 @@ export function buildApp(input: AppDeps): FastifyInstance {
     ...input,
     clock: input.clock ?? (() => new Date()),
     rateLimits: { ...DEFAULT_RATE_LIMITS, ...input.rateLimits },
+    verifyPassword: input.verifyPassword ?? verifyPassword,
   };
   const app = Fastify({
     // 前面有 Caddy 反代时打开，按 X-Forwarded-For 取客户端 IP（按 IP 限速要用）

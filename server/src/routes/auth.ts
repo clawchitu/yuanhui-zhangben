@@ -2,7 +2,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { sql } from "kysely";
 import { authOf } from "../auth/plugin.ts";
-import { verifyPassword } from "../auth/password.ts";
 import { SlidingWindowLimiter } from "../auth/ratelimit.ts";
 import { createDevice, deletePendingUntil, DeviceIdTaken } from "../auth/session.ts";
 import { sha256Hex } from "../auth/tokens.ts";
@@ -44,6 +43,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   const redeemLimiter = new SlidingWindowLimiter(limits.redeem);
   const demoLimiter = new SlidingWindowLimiter(limits.demo);
   const db = app.deps.db.kysely;
+  const verifyPassword = app.deps.verifyPassword;
 
   const limited = (l: SlidingWindowLimiter, req: FastifyRequest, reply: FastifyReply) => {
     const wait = l.hit(req.ip, req.receivedAt.getTime());
@@ -85,7 +85,6 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           "a.password_hash",
           "a.kind",
           "a.locked_until",
-          "a.delete_requested_at",
           "s.name as store_name",
           "s.is_demo",
           "s.epoch",
@@ -98,32 +97,39 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         await verifyPassword(undefined, password);
         return sendError(reply, 401, "bad_credentials", { message: "用户名或密码不对" });
       }
-      // 锁定期内正确密码也拒（S03 验收）
-      if (acct.locked_until && acct.locked_until > now) {
-        return sendError(reply, 423, "locked", { locked_until: acct.locked_until.toISOString(), message: "密码错了太多次，请稍后再试" });
-      }
-      if (!(await verifyPassword(acct.password_hash, password))) {
-        // 原子地 +1；到 5 次就锁 15 分钟并把计数清零（解锁后重新数）
-        const r = await db
-          .updateTable("accounts")
-          .set({ failed_logins: sql`failed_logins + 1` })
-          .where("id", "=", acct.id)
-          .where((eb) => eb.or([eb("locked_until", "is", null), eb("locked_until", "<=", now)]))
-          .returning("failed_logins")
-          .executeTakeFirst();
-        if (!r || r.failed_logins >= MAX_FAILED_LOGINS) {
-          const until = new Date(now.getTime() + LOCK_MS);
-          if (r) await db.updateTable("accounts").set({ failed_logins: 0, locked_until: until }).where("id", "=", acct.id).execute();
-          const lockedUntil = r ? until : ((await db.selectFrom("accounts").select("locked_until").where("id", "=", acct.id).executeTakeFirst())?.locked_until ?? until);
-          return sendError(reply, 423, "locked", { locked_until: lockedUntil.toISOString(), message: "密码错了太多次，请稍后再试" });
-        }
-        return sendError(reply, 401, "bad_credentials", { message: "用户名或密码不对" });
-      }
+      const lockedReply = (until: Date) =>
+        sendError(reply, 423, "locked", { locked_until: until.toISOString(), message: "密码错了太多次，请稍后再试" });
+      // 锁定期内正确密码也拒（S03 验收）。这里只是省一次 argon2；真正的判定在下面的事务里
+      if (acct.locked_until && acct.locked_until > now) return lockedReply(acct.locked_until);
+      const passwordOk = await verifyPassword(acct.password_hash, password);
 
+      // 验完密码后锁住账号行重查（§14 S03-3）：同时发来的一批请求里，别的请求可能刚把账号锁上。
+      // 计数、上锁、清零、建设备都在这一把锁里做，锁生效后不会再签发令牌，也不会把锁清掉。
+      type Out = { locked: Date } | { bad: true } | { ok: { token: string; label: string; deleteRequestedAt: Date | null } };
+      let out: Out;
       try {
-        const s = await db.transaction().execute(async (trx) => {
+        out = await db.transaction().execute(async (trx): Promise<Out> => {
+          const row = await trx
+            .selectFrom("accounts")
+            .select(["failed_logins", "locked_until", "delete_requested_at"])
+            .where("id", "=", acct.id)
+            .forUpdate()
+            .executeTakeFirstOrThrow();
+          // 锁定期内再输错不计数、不延长；正确密码也拒、不清锁
+          if (row.locked_until && row.locked_until > now) return { locked: row.locked_until };
+          if (!passwordOk) {
+            const n = row.failed_logins + 1;
+            if (n >= MAX_FAILED_LOGINS) {
+              // 第 5 次输错本身就回 423；上锁时计数清零（解锁后重新数）
+              const until = new Date(now.getTime() + LOCK_MS);
+              await trx.updateTable("accounts").set({ failed_logins: 0, locked_until: until }).where("id", "=", acct.id).execute();
+              return { locked: until };
+            }
+            await trx.updateTable("accounts").set({ failed_logins: n }).where("id", "=", acct.id).execute();
+            return { bad: true };
+          }
           await trx.updateTable("accounts").set({ failed_logins: 0, locked_until: null }).where("id", "=", acct.id).execute();
-          return createDevice(trx, {
+          const d = await createDevice(trx, {
             storeId: acct.store_id,
             accountId: acct.id,
             deviceId: device_id,
@@ -131,19 +137,22 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
             label: req.body.label,
             now,
           });
-        });
-        return sessionBody({
-          token: s.token,
-          role: "family",
-          store: { name: acct.store_name, is_demo: acct.is_demo },
-          label: s.label,
-          epoch: acct.epoch,
-          deleteRequestedAt: acct.delete_requested_at,
+          return { ok: { ...d, deleteRequestedAt: row.delete_requested_at } };
         });
       } catch (e) {
         if (e instanceof DeviceIdTaken) return sendError(reply, 400, "invalid", { message: "device_id 已经用过，请重新生成" });
         throw e;
       }
+      if ("locked" in out) return lockedReply(out.locked);
+      if ("bad" in out) return sendError(reply, 401, "bad_credentials", { message: "用户名或密码不对" });
+      return sessionBody({
+        token: out.ok.token,
+        role: "family",
+        store: { name: acct.store_name, is_demo: acct.is_demo },
+        label: out.ok.label,
+        epoch: acct.epoch,
+        deleteRequestedAt: out.ok.deleteRequestedAt,
+      });
     },
   );
 
@@ -166,6 +175,16 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       let out: Out;
       try {
         out = await db.transaction().execute(async (trx): Promise<Out> => {
+          const codeHash = sha256Hex(req.body.code);
+          // 加锁顺序统一「账号 → 开通码」（和申请注销一致，否则两边反向等待会死锁）：
+          // 先不加锁地查出码属于哪个账号，锁账号行，再锁码、在锁内重查用过 / 过期 / 注销
+          const owner = await trx
+            .selectFrom("pairing_tokens")
+            .select("account_id")
+            .where("token_hash", "=", codeHash)
+            .executeTakeFirst();
+          if (!owner) return { err: [404, "not_found", "这个码不认识"] };
+          await trx.selectFrom("accounts").select("id").where("id", "=", owner.account_id).forUpdate().execute();
           // 锁住这张码：两台手机同时扫同一张码，只有一台成功
           const pt = await trx
             .selectFrom("pairing_tokens as p")
@@ -186,7 +205,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
               "s.epoch",
               "c.revoked_at as creator_revoked_at",
             ])
-            .where("p.token_hash", "=", sha256Hex(req.body.code))
+            .where("p.token_hash", "=", codeHash)
             .forUpdate("p")
             .executeTakeFirst();
           if (!pt) return { err: [404, "not_found", "这个码不认识"] };
