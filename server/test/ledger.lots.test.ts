@@ -149,6 +149,25 @@ describe("批次的生成与扣减（§5.4）", () => {
     await assertDbLedger(tdb.kysely, shop.storeId, pid);
     await app.close();
   });
+
+  it("扔掉 → 撤销来源进货 → 再撤销「扔掉」：库存加回，批次不重开、改记 voided（来源已撤销的批次不再提醒）", async () => {
+    const { shop, app, send, newProduct } = await setup();
+    const db = S(shop.storeId);
+    const pid = await newProduct();
+    const si = stockIn(pid, 5, 100, "2026-12-01");
+    await send(si);
+    const [l0] = await db.lots(pid);
+    const d = dispose(l0!.id, 0, "discard", 2);
+    await send(d);
+    await send(voidEntry(si.payload.entry_id as string));
+    expect((await db.lot(l0!.id)).closed_reason).toBe("disposed"); // 已关闭的不改
+    await send(voidEntry(d.payload.entry_id as string));
+    const l = await db.lot(l0!.id);
+    expect([l.closed_at !== null, l.closed_reason, l.qty_left, l.handle_ver]).toEqual([true, "voided", 5, 1]);
+    expect((await db.product(pid)).stock_qty).toBe(0);
+    await assertDbLedger(tdb.kysely, shop.storeId, pid);
+    await app.close();
+  });
 });
 
 describe("处理快过期（expiry_dispose / lot_snooze）", () => {

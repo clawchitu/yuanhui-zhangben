@@ -150,7 +150,8 @@ export async function deductLots(tx: StoreTx, productId: string, entryId: string
  * 撤销一行流水时的批次动作（§5.4 生命周期表）：
  * - 卖出 / 盘亏：按 lot_moves 原样加回；对应批次已关闭的这部分不加回、也不重开。
  * - 来源进货 / 期初（不论流水类型，按 source_entry_id 找）：这次生成的批次关闭，closed_reason = voided；已扣过的 lot_moves 保留不动。
- * - 扔掉 / 退货：批次重新打开，qty_left 恢复为处理前的值（存在流水 flags 里）。
+ * - 扔掉 / 退货：批次重新打开，qty_left 恢复为处理前的值（存在流水 flags 里）。来源流水在处理之后已被撤销的，
+ *   不重开，closed_reason 改为 voided（等于来源撤销时它还开着的结果）。
  */
 export async function onVoid(tx: StoreTx, ctx: LedgerContext, e: EntryRow) {
   if (e.type === "sale" || e.type === "count") {
@@ -182,9 +183,13 @@ export async function onVoid(tx: StoreTx, ctx: LedgerContext, e: EntryRow) {
   if (e.type === "expire_loss" || e.type === "supplier_return") {
     const f = (e.flags ?? {}) as { lot_id?: string; qty_left_before?: number };
     if (typeof f.lot_id === "string" && typeof f.qty_left_before === "number") {
+      // 处理之后来源进货 / 期初又被撤销了：回到「来源已撤销」该有的样子（关闭、voided），不重开、不再提醒
+      const lot = await lotsOf(tx).select("source_entry_id").where("id", "=", f.lot_id).executeTakeFirstOrThrow();
+      const src = await tx.trx.selectFrom("entries").select("voided_at").where("store_id", "=", tx.storeId).where("id", "=", lot.source_entry_id).executeTakeFirstOrThrow();
+      const reopen = src.voided_at === null ? { closed_at: null, closed_reason: null } : { closed_reason: "voided" };
       await tx.trx
         .updateTable("stock_lots")
-        .set({ closed_at: null, closed_reason: null, qty_left: f.qty_left_before, rev: await tx.nextRev() } as never)
+        .set({ ...reopen, qty_left: f.qty_left_before, rev: await tx.nextRev() } as never)
         .where("store_id", "=", tx.storeId)
         .where("id", "=", f.lot_id)
         .execute();
