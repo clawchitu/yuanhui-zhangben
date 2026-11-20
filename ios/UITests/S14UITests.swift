@@ -54,11 +54,11 @@ final class S14UITests: XCTestCase {
         waitLog(app, "6921168509256/gun/known|6921168509256/gun/known|6900000000000/gun/unknown|6901035600016/manual/known")
     }
 
-    /// 验收：FakeScanner 能由启动参数喂码；相机来源同码 1.5 秒内只算一次
+    /// 验收：FakeScanner 能由启动参数喂码；相机来源同码 1.5 秒内只算一次，按码各记各的（§14 S14-1：A、B 交替不来回刷）
     func testFakeScannerFeedsCameraCodesWithDedupe() {
         let app = launch(["-uiFixture", "scanner", "-uiCamera", "authorized",
-                          "-uiScan", "6921168509256,6921168509256,6921168509256,6901035600016", "-uiScanSource", "camera",
-                          "-uiScanGap", "0.2"])
+                          "-uiScan", "6921168509256,6921168509256,6901035600016,6921168509256,6901035600016,6921168509256",
+                          "-uiScanSource", "camera", "-uiScanGap", "0.2"])
         XCTAssertTrue(app.descendants(matching: .any)["scanner.viewfinder"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.descendants(matching: .any)["scanner.noCamera"].exists)
         waitLog(app, "6921168509256/camera/known|6901035600016/camera/known")
