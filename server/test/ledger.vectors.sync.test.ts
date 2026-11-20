@@ -3,9 +3,11 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { buildApp } from "../src/app.ts";
 import { INT64 } from "../src/ledger/cost.ts";
-import { createTestDb, type TestDb } from "./helpers/db.ts";
+import { createTestDb, testConfig, type TestDb } from "./helpers/db.ts";
 import { makeApp, TestClock } from "./helpers/auth.ts";
 import { CONTRACTS_DIR } from "./helpers/contract.ts";
 import { assertDbLedger, makeFastShop } from "./helpers/ledger.ts";
@@ -147,4 +149,73 @@ describe("手机时钟超前（§4.4，§8 S05 验收）", () => {
     expect(b.occurred_at).toEqual(now);
     await app.close();
   });
+});
+
+describe("记账 op 预检查之后写库报 22xxx（§14 S04-14、S05-4 第三层，注入故障）", () => {
+  beforeAll(async () => {
+    await sql`CREATE TABLE fault_ops (op_id uuid PRIMARY KEY, sqlstate text NOT NULL)`.execute(tdb.kysely);
+    await sql.raw(`
+      CREATE FUNCTION inject_entry_fault() RETURNS trigger LANGUAGE plpgsql AS $$
+      DECLARE s text;
+      BEGIN
+        SELECT sqlstate INTO s FROM fault_ops WHERE op_id = NEW.op_id;
+        IF s IS NOT NULL THEN RAISE EXCEPTION '注入的故障 %', s USING ERRCODE = s; END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER inject_entry_fault BEFORE INSERT ON entries FOR EACH ROW EXECUTE FUNCTION inject_entry_fault();
+    `).execute(tdb.kysely);
+  });
+
+  /** 这家店的全部记账状态：ops、流水、批次头、投影、stores.rev */
+  const snapshot = async (storeId: string) => {
+    const k = tdb.kysely;
+    return {
+      ops: await k.selectFrom("ops").selectAll().where("store_id", "=", storeId).orderBy("id").execute(),
+      entries: await k.selectFrom("entries").selectAll().where("store_id", "=", storeId).orderBy("seq").execute(),
+      batches: await k.selectFrom("sale_batches").selectAll().where("store_id", "=", storeId).orderBy("id").execute(),
+      products: await k.selectFrom("products").selectAll().where("store_id", "=", storeId).orderBy("id").execute(),
+      rev: (await k.selectFrom("stores").select("rev").where("id", "=", storeId).executeTakeFirstOrThrow()).rev,
+    };
+  };
+  const saleOf = (pid: string) =>
+    op("sale_batch", { batch_id: randomUUID(), paid_total_fen: 300, lines: [{ entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", name: "x", unit_name: "个", pack_qty: 1, pack_count: 1, unit_price_fen: 300 }] }, { at: AT });
+  const kinds = {
+    stock_in: async (pid: string) => op("stock_in", { entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", pack_qty: 1, pack_count: 2, unit_cost_fen: 100 }, { at: AT }),
+    opening: async (pid: string, ver: number) => op("opening", { entry_id: randomUUID(), product_id: pid, counted_qty: 7, base_ver: ver, unit_cost_fen: 120 }, { at: AT }),
+    sale_batch: async (pid: string) => saleOf(pid),
+    void: async (_pid: string, _ver: number, saleBatchId: string) => op("void", { target: { batch_id: saleBatchId } }, { at: AT }),
+  } as const;
+
+  for (const [type, make] of Object.entries(kinds)) {
+    for (const sqlstate of ["22003", "22P02"]) {
+      it(`${type}（${sqlstate}）：整个请求 500、同批的 op 一起回滚、库里什么都不变、记 error 日志；去掉故障重发后正常入账`, async () => {
+        const shop = await makeFastShop(tdb.kysely);
+        const lines: Array<Record<string, unknown>> = [];
+        const app = buildApp({ config: testConfig(), db: tdb, logStream: { write: (l) => void lines.push(JSON.parse(l)) } });
+        const u = upsertFull();
+        const pid = u.payload.product_id as string;
+        const sale0 = saleOf(pid);
+        await syncOk(app, shop.family.token, { epoch: shop.epoch, ops: [u, sale0], pull: false });
+        // 同批前面那条进货先应用、stock_ver + 1，期初的 base_ver 要对上它之后的版本
+        const ver = Number((await product(shop.storeId, pid)).stock_ver) + 1;
+        const bad = await make(pid, ver, sale0.payload.batch_id as string);
+        const other = op("stock_in", { entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", pack_qty: 1, pack_count: 1, unit_cost_fen: 50 }, { at: AT });
+        await tdb.kysely.insertInto("fault_ops" as never).values({ op_id: bad.id, sqlstate } as never).execute();
+        const before = await snapshot(shop.storeId);
+        const r = await sync(app, shop.family.token, { epoch: shop.epoch, ops: [other, bad], pull: false });
+        expect(r.status, JSON.stringify(r.body)).toBe(500);
+        expect(r.body).toEqual({ code: "unavailable" });
+        expect(await snapshot(shop.storeId), "库里有部分写入").toEqual(before);
+        expect(lines.some((l) => l.level === 50 && l.op_id === bad.id && l.sqlstate === sqlstate), "没记 error 日志").toBe(true);
+        expect(lines.some((l) => String(l.msg).includes("savepoint 兜底")), "记账 op 不许走单个拒收").toBe(false);
+
+        await tdb.kysely.deleteFrom("fault_ops" as never).where("op_id" as never, "=", bad.id as never).execute();
+        const again = await syncOk(app, shop.family.token, { epoch: shop.epoch, ops: [other, bad], pull: false });
+        expect(again.results).toEqual([{ id: other.id, status: "applied" }, { id: bad.id, status: "applied" }]);
+        expect((await tdb.kysely.selectFrom("entries").select("id").where("store_id", "=", shop.storeId).where("op_id", "=", bad.id).execute()).length).toBeGreaterThan(0);
+        await assertDbLedger(tdb.kysely, shop.storeId, pid);
+        await app.close();
+      });
+    }
+  }
 });
