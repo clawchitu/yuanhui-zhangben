@@ -259,6 +259,8 @@ public struct StockInPayload: OpPayload, Hashable {
         try Limits.checkText(barcode, max: Limits.maxBarcodeLength, "条码")
         try Limits.baseQty(packQty: packQty, packCount: packCount)
         try Limits.lineAmount(unitFen: unitCostFen.raw, packCount: packCount)   // 进货总价 ≤ 上限
+        // 进货 0 件：这批单位成本 roundDiv(T, 0) 无定义，服务器拒 invalid（§14 S05-3）；卖出行 0 件不拒
+        guard packCount >= 1 else { throw invalid("进货件数至少 1：\(packCount)") }
         self.entryId = entryId; self.productId = productId; self.barcode = barcode; self.packQty = packQty
         self.packCount = packCount; self.unitCostFen = unitCostFen; self.expiryDate = expiryDate
     }

@@ -151,7 +151,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 |---|---|---|---|---|---|
 | `sale` | −数量 | 摊完优惠的实收 | 原价 | 这行货的进价（服务器算） | −cogs |
 | `stock_in` | +数量 | 进货总价 = 件数 × 单价 | 同 amount | 0 | +总价；`unit_cost_fen` 存录入的每件（条/箱）单价 |
-| `opening`（期初库存） | 设为实数后的差 | 0 | 0 | 0 | 库存值的变化 |
+| `opening`（期初库存） | 设为实数后的差 | 0 | 0 | 0 | 库存值的变化；填了进价时 `unit_cost_fen` 存 `b`（留档，冲销行照抄），没填存空（§14 S05-7） |
 | `count`（盘点） | 实数 − 账面 | 0 | 0 | 盘亏为正、盘盈为负 | −cogs |
 | `expire_loss`（过期扔掉） | −数量 | 0 | 0 | 损耗金额 | −cogs |
 | `supplier_return`（退供货商） | −数量 | 0 | 0 | 0（不计盈亏） | −按平均进价算的货值 |
@@ -253,6 +253,9 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | 盘点、期初、补全、处理快过期时，手机看到的版本已经过时 | `rejected: stale`，`current` 带回最新的账面数或批次状态，手机让人重新确认（§5.4、§5.6） |
 | 同一 id 不同内容 | `rejected: id_conflict` |
 | 金额、数量超出 §5.0 的上限或格式不对 | `rejected: invalid` |
+| 进货 0 件（`pack_count = 0`，这批单位成本无定义） | `rejected: invalid` 并留档；卖出行 0 件不拒，照普通行记（§14 S05-3） |
+| 只看 op 自己就能判定的问题，包括算出来的新库存、货值存不进列（`stock_qty` 是 `integer`，满额进货约 215 次就到） | 写库之前判，`rejected: invalid`。留不留档只看 `ops` 这一行存不存得下：`expiry_date` 年份 0000 → 留档；`occurred_at` 年份 0000 → 不留档（并入 §4.2 的存不进库检查，所有 op 类型都判）。只按存不存得下判，不按合不合理判：1970 年的 `occurred_at` 照收（§14 S05-4） |
+| 记账类 op 过了上面的预检查，写库时仍报 22xxx | 只能是服务器自己错了：整个请求 500、记 error 日志（op id、类型、SQLSTATE），不单个拒收，手机会重发；记账类 op 的兜底永远不产生 `rejected`（§14 S04-14、S05-4） |
 | `occurred_at` 比服务器时间晚 5 分钟以上（手机时钟错） | 改成 `received_at`，`flags.clock_adjusted=true` |
 | 库存变负 | 允许，永不拦卖出 |
 
@@ -299,6 +302,8 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
   - 一笔卖出的实收 `paid_total_fen` ≤ 19,999,999,800 分（= 200 行 × 单行上限；多收也不能超过它）；
   - 件数 `pack_count` ≤ 99,999；`pack_qty` ≤ 9,999；**基本单位数量**（件数 × 换算、盘点数、期初数、处理快过期时的实际数、扔掉和退货的数量）≤ 9,999,999；`base_qty`（账面数，可以为负）绝对值 ≤ 9,999,999；
   - 一笔卖出 ≤ 200 行；除 `base_qty` 外数量和金额不为负。
+  - 进货件数 `pack_count` ≥ 1（0 件时 `b = roundDiv(T, 0)` 无定义）：`ops.schema.json` 不改，服务器在应用时判，拒 `invalid` 并留档；`limits.json` 有对应的一组，手机同样拦。卖出行 0 件不拒（§14 S05-3）。
+  - 算出来的结果也要存得进列：新的 `stock_qty`（`integer`）和 `stock_value_fen`、各行金额（`bigint`）用 `BigInt` 算完再比，超出拒 `invalid` 并留档，在写库之前判；过了这一层写库时再出 22xxx 的记账 op 整个请求 500（§14 S05-4）。
   - 在这些上限内，JSON 数字不超过 2^53，分摊的中间乘积 `2 × L_i × P + L` 不超过 2^63。「件数 × 换算」「件数 × 单价」这类乘积上限 JSON schema 表达不了，由服务器在应用 op 时校验。
 - S01 的向量要覆盖：负数的 `roundDiv`、恰好一半、上限值、全零购物篮、接近溢出的中间乘积。
 
@@ -321,6 +326,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 - **进货** `n` 个基本单位、总价 `T`（整件码先换算：5 箱 × 24 = 120 罐），这批单位成本 `b = roundDiv(T, n)`：
   - `k` 为真且 `q > 0`：`q += n; v += T; c = b`。
   - 否则（`q <= 0`，或进价一直没填）：`q += n`；目标货值 = `q > 0 ? roundDiv(T × q, n) : q × b`；进货行照记 `value_delta = T`，再记一条 `cost_adjust` = 目标货值 − (`v + T`)；`v` = 目标货值，`c = b`，`k = 真`。**差额为 0 时不记这一条**（通则：金额为 0 的 `cost_adjust` 一律不记；没有可补记行的 `cost_fix` 也不记）。
+  - `n = 0`（进货 0 件）：拒 `invalid` 并留档，什么都不记（§14 S05-3）。
 - **卖出** `n` 个：
   - `k` 为假：`cogs = 0`，`cost_missing = true`，`value_delta = 0`，只减数量。这行不进「赚了」，报表写「有 N 样进价没填」。**库存是正的也一样。**
   - `k` 为真且 `q > 0`：`take = min(n, q)`；`cogs = (take = q ? v : roundDiv(v × take, q)) + (n − take) × u`；若 `n >= q` 则 `c = u`。然后 `q −= n; v −= cogs`。
@@ -392,6 +398,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 1. **盘点、待确认补全、对已有商品的期初，只能联网提交，不进离线队列。** 手机先把自己的 outbox 传完，再发这一条。没网时这些页面提示「要联网才能盘点」。
 2. op 带 `base_ver`（当时的 `products.stock_ver`；每次库存变动 +1）和 `base_qty`（数的时候账上显示几个）。**服务器只比对 `base_ver`**，`base_qty` 只用来留档和排查，不参与判断：`count` 两个都必带；`product_review_complete` 必带 `base_ver`，`base_qty` 可选；`opening` 两个都可选，但受第 3 条约束。服务器发现 `stock_ver` 已经变了 → 拒 `stale`，带回最新账面数。手机显示「刚才别的手机又记了账，账上现在是 8 个。你数的 10 个还对吗？」，确认或改数后带新版本重发。
 3. **新商品登记第二步的期初**可以离线（商品是新的，没有可冲突的账面数），随 `product_upsert` 一起排队，不带 `base_ver`。服务器的判断办法（schema 判断不了商品新旧）：**不带 `base_ver` 的 `opening` 只在这个商品的 `stock_ver = 0`（还没有过任何库存变动）时接受**，否则拒 `stale` 并带回最新账面数，提示重新数；带了 `base_ver` 的按第 2 条比对。条码其实已被别的手机登记（发生别名合并）时，赢家商品通常已有库存变动，自然落入被拒这一支。
+   因此**每次库存变动**（卖出、进货、期初、撤销等任何改 `stock_qty` 的流水）`stock_ver + 1`，期初和盘点写 `last_count_at`。`opening` 的第 2、3 条由 S05b 实现；第 4 条、`count / product_review_complete` 的校验和批次在 S06（§14 S05-2）。
 4. **迟到的流水**：任何影响库存的 op 入账时，如果它的 `occurred_at` 早于这个商品最近一次盘点 / 期初的时间（`products.last_count_at`），说明数的时候这些货已经不在货架上了。处理：流水照常入账（收入、成本照记），同时自动追加一条 `count` 类型的补偿流水（数量和货值正好抵消这笔流水对库存的影响，`flags.late_before_count`），库存保持为盘点得到的数。效果：原先被算成盘亏的那几个，改由这笔卖出解释。
 5. 不做「盘点期间暂停其他手机记账」，店里不能因为有人在盘点就卖不了东西。
 
@@ -554,6 +561,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 
 **S06 记账引擎二：盘点、保质期批次、损耗、退货、待确认补全、成本补记**
 - 产出：`ledger/count.ts lots.ts costfix.ts`，op：`count / expiry_dispose / lot_snooze / product_review_complete`，§5.6 的版本校验和迟到流水补偿。
+- 与 S05 的分工（§14）：成本补记已由 S05b 在 `stock_in / opening / void` 里当场写库，`costfix.ts` 只剩 `product_review_complete` 的接入，不许另写一套补记逻辑（S05-1）；`opening` 的版本校验、`stock_ver + 1`、`last_count_at` 已在 S05b，本段做 §5.6 第 4 条迟到补偿、`count / product_review_complete` 的版本校验，并把进货、期初、卖出、撤销的批次动作（`stock_lots / lot_moves`）一并补上（S05b 只在流水上存 `expiry_date`，S05-2）；给 `cost.json` 加一组 u ≠ c 的盘盈（例如库存 6、货值 24280、c = 4000，数到 8 → 盘盈 2 × 4047），服务器和手机都要过（S05-8）。
 - 验收：
   - `expiry.json` 向量通过；账面 2 实数 1 → 盘亏 1 个，按平均进价。
   - 并发盘点：A 看到 10（版本 n）→ B 卖 2 → A 提交盘点 10 被拒 `stale` 并带回 8 → A 带新版本确认后成功，库存 10、盘盈 2。

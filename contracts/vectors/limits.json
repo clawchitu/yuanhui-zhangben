@@ -100,6 +100,17 @@
    },
    "expected": "invalid",
    "note": "单行金额 100,098,999 超上限"
+  },
+  {
+   "id": "lim-10",
+   "op_type": "stock_in",
+   "fields": {
+    "pack_qty": 1,
+    "pack_count": 0,
+    "unit_cost_fen": 100
+   },
+   "expected": "invalid",
+   "note": "进货 0 件：这批单位成本 roundDiv(T, 0) 无定义，拒 invalid 并留档（§14 S05-3）；卖出行 0 件不拒"
   }
  ]
 }

@@ -120,7 +120,7 @@
 | `fields` | `pack_qty, pack_count`，以及 `unit_cost_fen`（进货每件单价）或 `unit_price_fen`（卖出单价） |
 | `expected` | `ok` 或 `invalid` |
 
-规则：`pack_qty × pack_count ≤ 9,999,999`（基本单位数量）；进货 `pack_count × unit_cost_fen ≤ 99,999,999`（进货总价）；卖出 `unit_price_fen × pack_count ≤ 99,999,999`（单行金额）。实收上限见 allocation.json alloc-25、26。
+规则：`pack_qty × pack_count ≤ 9,999,999`（基本单位数量）；进货 `pack_count × unit_cost_fen ≤ 99,999,999`（进货总价）；卖出 `unit_price_fen × pack_count ≤ 99,999,999`（单行金额）。另外进货 `pack_count ≥ 1`（0 件拒 `invalid`，§14 S05-3；卖出行 0 件不拒）。实收上限见 allocation.json alloc-25、26。
 
 ---
 
