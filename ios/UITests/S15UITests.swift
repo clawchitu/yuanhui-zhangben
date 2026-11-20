@@ -203,9 +203,11 @@ final class S15UITests: XCTestCase {
         XCTAssertTrue(unsynced.waitForExistence(timeout: 10))
         XCTAssertTrue(expiring.exists)
         XCTAssertLessThan(unsynced.frame.maxY, expiring.frame.minY + 0.5, "没同步的在上")
-        let sync = app.descendants(matching: .any)["syncStatus"]
-        XCTAssertTrue(sync.exists, "顶栏有同步状态")
-        XCTAssertTrue(sync.label.contains("5 笔待传"), "顶栏同步状态：\(sync.label)")
+        // 顶栏同步状态（占位用的隐藏副本也带同一标识，取看得见的那个）
+        let sync = app.descendants(matching: .any).matching(identifier: "syncStatus").allElementsBoundByIndex
+            .filter(\.isHittable)
+        XCTAssertEqual(sync.count, 1, "顶栏只有一个看得见的同步状态")
+        XCTAssertTrue(sync.first?.label.contains("5 笔待传") == true, "顶栏同步状态：\(sync.map(\.label))")
     }
 
     // MARK: - 最大辅助字号
