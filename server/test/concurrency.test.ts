@@ -1,5 +1,6 @@
 // S03 的并发回归（真实 Postgres）：并发登录不能绕过或清掉锁定；兑码和申请注销同时进行不死锁、不漏撤销。
 import { randomUUID } from "node:crypto";
+import type { FastifyInstance } from "fastify";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
@@ -176,6 +177,102 @@ describe("兑码和申请注销同时进行（加锁顺序：账号 → 开通�
       expect([200, 403, 410], r.body).toContain(r.statusCode);
       const live = await tdb.kysely.selectFrom("devices").select("id").where("store_id", "=", shop.storeId).where("revoked_at", "is", null).execute();
       expect(live).toEqual([]);
+    }
+  });
+});
+
+describe("演示登录和同一审核号的密码登录 / 兑码同时进行（加锁顺序：账号 → 开通码 → 设备称呼）", () => {
+  let demo: Awaited<ReturnType<typeof makeLoginShop>>;
+  beforeAll(async () => {
+    // 本文件 schema 里唯一的演示店；/auth/demo 总是落到它的审核号上
+    demo = await makeLoginShop(tdb, { demo: true });
+  });
+  const demoApp = () => makeApp(tdb, { config: { demoLoginEnabled: true } });
+  const demoReq = (deviceId: string) => ({ method: "POST" as const, url: "/v1/auth/demo", payload: { device_id: deviceId } });
+
+  /**
+   * 演示登录先发，用测试钩子停在「拿到称呼锁、还没插设备」；另一边（同一审核号）随后发，等它卡在锁上再放开演示登录。
+   * 修之前：另一边拿着账号 FOR UPDATE 等称呼锁，演示登录插设备的外键检查要账号 KEY SHARE → 死锁 → 一边 500。
+   */
+  // 只用来取 app.inject(选项) 的返回类型（inject 有重载，ReturnType 取到的是链式那一个）
+  const inject = (app: FastifyInstance) => app.inject({ method: "GET", url: "/" });
+  async function raceWithDemo(other: (app: FastifyInstance) => Promise<Awaited<ReturnType<typeof inject>>>) {
+    const app = demoApp();
+    const g = gate();
+    let reached!: () => void;
+    const atLabelLock = new Promise<void>((r) => (reached = r));
+    let pauseNext = true;
+    app.deps.afterDeviceLabelLock = async () => {
+      if (!pauseNext) return;
+      pauseNext = false;
+      reached();
+      await g.p;
+    };
+    try {
+      const demoDevice = randomUUID();
+      const d = app.inject(demoReq(demoDevice));
+      await atLabelLock;
+      const o = other(app);
+      await waitFor(async () => (await lockWaiters()) >= 1, "另一边卡在锁上");
+      g.open();
+      const [dr, or] = await Promise.all([d, o]);
+      return { demo: dr, other: or, demoDevice };
+    } finally {
+      g.open();
+      await app.close();
+    }
+  }
+
+  it("受控交错：演示登录 vs 同一审核号的密码登录 → 都 200，不死锁", async () => {
+    const loginDevice = randomUUID();
+    const { demo: d, other: l, demoDevice } = await raceWithDemo((app) => app.inject(loginReq(demo.username, PASSWORD, loginDevice)));
+    expect(d.statusCode, d.body).toBe(200);
+    expect(l.statusCode, l.body).toBe(200);
+    expect(d.json()).toMatchObject({ role: "family", store: { is_demo: true } });
+    const rows = await tdb.kysely
+      .selectFrom("devices")
+      .select(["account_id", "label", "revoked_at"])
+      .where("store_id", "=", demo.storeId)
+      .where("id", "in", [demoDevice, loginDevice])
+      .execute();
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.account_id === demo.accountId && r.revoked_at === null)).toBe(true);
+    expect(new Set(rows.map((r) => r.label)).size).toBe(2);
+  });
+
+  it("受控交错：演示登录 vs 同一审核号的开通码兑换 → 都 200，码只用一次，不死锁", async () => {
+    const setup = demoApp();
+    const boss = await login(setup, demo.username);
+    const c = await setup.inject({ method: "POST", url: "/v1/pairing-tokens", headers: bearer(boss.token), payload: { role: "cashier", label: "小王" } });
+    await setup.close();
+    expect(c.statusCode).toBe(201);
+    const { id: pairingId, code } = c.json() as { id: string; code: string };
+    const redeemDevice = randomUUID();
+    const { demo: d, other: r, demoDevice } = await raceWithDemo((app) =>
+      app.inject({ method: "POST", url: "/v1/auth/pair/redeem", payload: { code, device_id: redeemDevice } }),
+    );
+    expect(d.statusCode, d.body).toBe(200);
+    expect(r.statusCode, r.body).toBe(200);
+    expect(r.json()).toMatchObject({ role: "cashier", label: "小王" });
+    const pt = await tdb.kysely.selectFrom("pairing_tokens").select("used_by_device").where("id", "=", pairingId).executeTakeFirstOrThrow();
+    expect(pt.used_by_device).toBe(redeemDevice);
+    const devs = await tdb.kysely.selectFrom("devices").select("id").where("store_id", "=", demo.storeId).where("id", "in", [demoDevice, redeemDevice]).execute();
+    expect(devs).toHaveLength(2);
+  });
+
+  it("不加控制同时发 10 轮（演示 ×2 + 密码登录 + 兑码）：没有 500", async () => {
+    for (let round = 0; round < 10; round++) {
+      const app = demoApp();
+      const boss = await login(app, demo.username);
+      const c = await app.inject({ method: "POST", url: "/v1/pairing-tokens", headers: bearer(boss.token), payload: { role: "family" } });
+      const rs = await Promise.all([
+        app.inject(demoReq(randomUUID())),
+        app.inject(loginReq(demo.username, PASSWORD)),
+        app.inject({ method: "POST", url: "/v1/auth/pair/redeem", payload: { code: c.json().code, device_id: randomUUID() } }),
+        app.inject(demoReq(randomUUID())),
+      ]);
+      await app.close();
+      expect(rs.map((r) => r.statusCode), rs.map((r) => r.body).join("\n")).toEqual([200, 200, 200, 200]);
     }
   });
 });

@@ -41,11 +41,20 @@ export interface NewDevice {
   role: "family" | "cashier";
   label?: string | null;
   now: Date;
+  /** 测试钩子（AppDeps.afterDeviceLabelLock），生产是空函数 */
+  afterLabelLock?: () => Promise<void>;
 }
 
-/** 建一台设备，返回令牌原文（只在这一次响应里出现）。必须在事务里调用。 */
+/**
+ * 建一台设备，返回令牌原文（只在这一次响应里出现）。必须在事务里调用。
+ * 调用方必须先锁住账号行（FOR NO KEY UPDATE），再调这里拿称呼锁：密码登录、兑码、演示登录统一
+ * 「账号 → 开通码 → 设备称呼锁」，否则一边拿着称呼锁、一边拿着账号锁会互等死锁（§14 S03-3）。
+ * 用 FOR NO KEY UPDATE 而不是 FOR UPDATE：彼此照样互斥，但不挡插设备时外键检查要的 KEY SHARE；
+ * accounts 的键列从来不改，用不着 FOR UPDATE。
+ */
 export async function createDevice(trx: Transaction<Database>, d: NewDevice): Promise<{ token: string; label: string }> {
   await lockStoreLabels(trx, d.storeId);
+  await d.afterLabelLock?.();
   // 设备 id 由手机每次登录或兑码新生成，从不重复使用（§3.1）；同店里撞了就是手机的 bug，明确报错
   const exists = await trx
     .selectFrom("devices")

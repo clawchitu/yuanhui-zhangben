@@ -23,12 +23,18 @@ export interface AppDeps {
   rateLimits?: Partial<RateLimits>;
   /** 验密码（测试里包一层，控制并发请求的交错顺序；照样调真实的 argon2id） */
   verifyPassword?: typeof verifyPassword;
+  /**
+   * 只给测试用：建设备拿到称呼锁之后、插入设备之前调用，用来在真实 Postgres 上做受控交错。
+   * 生产不传，默认无操作；只能在 buildApp 时由代码传入，没有任何请求能触发或改它。
+   */
+  afterDeviceLabelLock?: () => Promise<void>;
 }
 
 export interface ResolvedDeps extends AppDeps {
   clock: () => Date;
   rateLimits: RateLimits;
   verifyPassword: typeof verifyPassword;
+  afterDeviceLabelLock: () => Promise<void>;
 }
 
 declare module "fastify" {
@@ -43,6 +49,7 @@ export function buildApp(input: AppDeps): FastifyInstance {
     clock: input.clock ?? (() => new Date()),
     rateLimits: { ...DEFAULT_RATE_LIMITS, ...input.rateLimits },
     verifyPassword: input.verifyPassword ?? verifyPassword,
+    afterDeviceLabelLock: input.afterDeviceLabelLock ?? (async () => {}),
   };
   const app = Fastify({
     // 前面有 Caddy 反代时打开，按 X-Forwarded-For 取客户端 IP（按 IP 限速要用）

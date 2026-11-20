@@ -113,7 +113,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
             .selectFrom("accounts")
             .select(["failed_logins", "locked_until", "delete_requested_at"])
             .where("id", "=", acct.id)
-            .forUpdate()
+            .forNoKeyUpdate()
             .executeTakeFirstOrThrow();
           // 锁定期内再输错不计数、不延长；正确密码也拒、不清锁
           if (row.locked_until && row.locked_until > now) return { locked: row.locked_until };
@@ -136,6 +136,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
             role: "family",
             label: req.body.label,
             now,
+            afterLabelLock: app.deps.afterDeviceLabelLock,
           });
           return { ok: { ...d, deleteRequestedAt: row.delete_requested_at } };
         });
@@ -184,7 +185,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
             .where("token_hash", "=", codeHash)
             .executeTakeFirst();
           if (!owner) return { err: [404, "not_found", "这个码不认识"] };
-          await trx.selectFrom("accounts").select("id").where("id", "=", owner.account_id).forUpdate().execute();
+          await trx.selectFrom("accounts").select("id").where("id", "=", owner.account_id).forNoKeyUpdate().execute();
           // 锁住这张码：两台手机同时扫同一张码，只有一台成功
           const pt = await trx
             .selectFrom("pairing_tokens as p")
@@ -220,6 +221,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
             role: pt.role,
             label: pt.label,
             now,
+            afterLabelLock: app.deps.afterDeviceLabelLock,
           });
           await trx
             .updateTable("pairing_tokens")
@@ -269,16 +271,19 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       if (!acct) return sendError(reply, 404, "demo_disabled", { message: "演示小店还没建" });
       try {
         // 发的是演示店的家用设备令牌（§7）；账号是审核号，所以身份是 review
-        const d = await db.transaction().execute((trx) =>
-          createDevice(trx, {
+        const d = await db.transaction().execute(async (trx) => {
+          // 和密码登录、兑码同一加锁顺序：先锁审核号的账号行，再在 createDevice 里拿称呼锁
+          await trx.selectFrom("accounts").select("id").where("id", "=", acct.id).forNoKeyUpdate().execute();
+          return createDevice(trx, {
             storeId: acct.store_id,
             accountId: acct.id,
             deviceId: req.body.device_id,
             role: "family",
             label: DEMO_LABEL,
             now: req.receivedAt,
-          }),
-        );
+            afterLabelLock: app.deps.afterDeviceLabelLock,
+          });
+        });
         return sessionBody({
           token: d.token,
           role: "family",

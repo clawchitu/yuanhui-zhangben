@@ -79,7 +79,8 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
           .selectFrom("accounts")
           .select("delete_requested_at")
           .where("id", "=", a.account.id)
-          .forUpdate()
+          // 和登录、兑码同一把账号锁（FOR NO KEY UPDATE，见 createDevice 的说明）
+          .forNoKeyUpdate()
           .executeTakeFirstOrThrow();
         // 重复申请不重新起算 7 天
         const at = acct.delete_requested_at ?? now;
