@@ -4,8 +4,10 @@
 // 注销可以撤回，不是终局，不能用 rejected 表达（手机会当成「没记上」不再重发，撤回后丢账）。被踢设备同样处理。
 //
 // 每个 op 的处理顺序：
-//  0. 存不进库、算不了哈希的 op（\u0000、不成对的代理项、解析不出时间的 occurred_at）→ rejected: invalid，不留档（§14 S04-13）。
-//     兜底：每个 op 在自己的 savepoint 里处理，Postgres 报数据类错误（SQLSTATE 22xxx）时只回滚这个 op、拒 invalid、不留档。
+//  0. 存不进库、算不了哈希的 op（\u0000、不成对的代理项、解析不出时间的 occurred_at、payload 嵌套超过 16 层或节点超过 1 万个）
+//     → rejected: invalid，不留档（§14 S04-13）。这一步是迭代的，之后的递归处理栈深度有界。
+//     兜底：每个 op 在自己的 savepoint 里处理，Postgres 报数据类错误（SQLSTATE 22xxx）时只回滚这个 op、拒 invalid、不留档，
+//     按 error 级别记日志（预检查漏掉了什么，要人看）。S05 接入记账 op 时要重新定这条兜底（§14 S04-14）。
 //     任何 op 的内容都不许让整个请求 500、连累同批的其他 op。
 //  1. 按 (store_id, id) 找留档：有 → 内容哈希相同就原样返回当初的结果（replayed: true），不同就 id_conflict（不留档、不应用）。
 //  2. 本段还没实现的 op 类型（卖出、进货、盘点等，S05/S06）→ rejected: invalid，不留档，等实现后重发能正常处理。
@@ -101,21 +103,64 @@ export interface PushInput {
   config: { demoLoginEnabled: boolean; recoveryMode: boolean };
   /** 这家店在途写入的上限（§14 S04-8），超过抛 StoreBusy */
   queueLimit?: number;
+  /** savepoint 兜底触发时记 error 日志（路由传 req.log） */
+  log?: OpLogger;
+}
+
+export interface OpLogger {
+  error(obj: Record<string, unknown>, msg: string): void;
 }
 
 /** 不成对的代理项（高位后面没跟低位、低位前面没有高位）和 \u0000：Postgres 的 text / jsonb 都存不了 */
 const UNSTORABLE = /\u0000|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
-function storableJson(v: unknown): boolean {
-  if (typeof v === "string") return !UNSTORABLE.test(v);
-  if (Array.isArray(v)) return v.every(storableJson);
-  if (v && typeof v === "object") return Object.entries(v).every(([k, x]) => !UNSTORABLE.test(k) && storableJson(x));
+
+/**
+ * payload 的嵌套层数上限（payload 对象本身算第 1 层）。合法的 op 最深 3 层（payload → lines → 行），16 层留足余量。
+ * 层数有上限，后面所有递归处理（canonical 算哈希、JSON.stringify、ajv、Postgres 解析 jsonb）的栈深度才有界。
+ */
+export const MAX_PAYLOAD_DEPTH = 16;
+/** payload 的节点数上限（对象、数组、标量各算一个）。合法的 op 最多约 2000 个（一笔卖出 200 行 × 每行 9 个）。 */
+export const MAX_PAYLOAD_NODES = 10_000;
+
+/**
+ * 不递归地检查 payload：层数、节点数在上限内，键和字符串值都存得进库。
+ * 必须是迭代的：请求体 1 MiB 以内就能拼出几十万层嵌套，递归检查本身会栈溢出（Codex 第二轮 P2）。
+ */
+function storablePayload(payload: unknown): boolean {
+  const stack: Array<[unknown, number]> = [[payload, 1]];
+  // 入栈时计数：超过上限立即停，栈本身也不会超过上限
+  let nodes = 1;
+  const push = (x: unknown, depth: number) => {
+    if (++nodes > MAX_PAYLOAD_NODES) return false;
+    stack.push([x, depth]);
+    return true;
+  };
+  while (stack.length > 0) {
+    const [v, depth] = stack.pop()!;
+    if (typeof v === "string") {
+      if (UNSTORABLE.test(v)) return false;
+    } else if (v !== null && typeof v === "object") {
+      if (depth > MAX_PAYLOAD_DEPTH) return false;
+      if (Array.isArray(v)) {
+        for (const x of v) if (!push(x, depth + 1)) return false;
+      } else {
+        for (const [k, x] of Object.entries(v)) {
+          if (UNSTORABLE.test(k) || !push(x, depth + 1)) return false;
+        }
+      }
+    }
+  }
   return true;
 }
-/** op 过了外壳校验，但服务器算不了哈希或存不进库（§14 S04-13） */
+
+/**
+ * op 过了外壳校验，但服务器算不了哈希或存不进库（§14 S04-13）：rejected invalid、不留档。
+ * 包括 payload 嵌套过深 / 节点过多（超过 MAX_PAYLOAD_DEPTH / MAX_PAYLOAD_NODES）。
+ */
 export function storable(op: IncomingOp): boolean {
   // 闰秒写法 23:59:60 等：ajv 的 date-time 放行，但解析不出时间
   if (!Number.isFinite(Date.parse(op.occurred_at))) return false;
-  return storableJson(op.payload);
+  return storablePayload(op.payload);
 }
 
 export async function pushOps(db: Kysely<Database>, guard: Guard, input: PushInput): Promise<{ results: OpResult[]; device: DeviceState }> {
@@ -128,7 +173,7 @@ export async function pushOps(db: Kysely<Database>, guard: Guard, input: PushInp
     // 注销期间（锁内重新读的状态）：一个都不应用、不留档、不给结果（§14 S04-2）
     if (device.deletePending) return { results: [], device };
     const results: OpResult[] = [];
-    for (const op of input.ops) results.push(await processOpSafely(tx, guard, device, auth.device.id, op, now, input.config));
+    for (const op of input.ops) results.push(await processOpSafely(input.log, tx, guard, device, auth.device.id, op, now, input.config));
     return { results, device };
   }, { queueLimit: input.queueLimit ?? STORE_QUEUE_LIMIT });
 }
@@ -137,7 +182,7 @@ export async function pushOps(db: Kysely<Database>, guard: Guard, input: PushInp
  * 一个 op 一个 savepoint：Postgres 报数据类错误（22xxx：存不了的字符、超出范围的值等）时只回滚这个 op，
  * rejected: invalid、不留档（存不进去），同批其余照常（§14 S04-13）。别的错误（连接断了、程序错）照常抛出。
  */
-async function processOpSafely(...args: Parameters<typeof processOp>): Promise<OpResult> {
+async function processOpSafely(log: OpLogger | undefined, ...args: Parameters<typeof processOp>): Promise<OpResult> {
   const [tx, , , , op] = args;
   const invalid: OpResult = { id: op.id, status: "rejected", code: "invalid" };
   if (!storable(op)) return invalid;
@@ -150,6 +195,8 @@ async function processOpSafely(...args: Parameters<typeof processOp>): Promise<O
     const code = (e as { code?: unknown }).code;
     if (typeof code === "string" && code.startsWith("22")) {
       await sql`ROLLBACK TO SAVEPOINT op`.execute(tx.trx);
+      // 预检查本该拦住：走到这里说明有一类输入没想到，或者服务器自己算错了，要人看
+      log?.error({ op_id: op.id, op_type: op.type, sqlstate: code, err: (e as Error).message }, "sync：op 触发数据类错误，已单个拒收（savepoint 兜底）");
       return invalid;
     }
     throw e;

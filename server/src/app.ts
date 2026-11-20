@@ -14,11 +14,19 @@ import { installGuard } from "./auth/plugin.ts";
 import { DEFAULT_RATE_LIMITS, type RateLimits } from "./auth/ratelimit.ts";
 import { verifyPassword } from "./auth/password.ts";
 
+/**
+ * 请求体上限 1 MiB（§4.2）。最大的合法 op（200 行的卖出、每个字符串都写满、非 ASCII 全转义成 \uXXXX）约 0.75 MiB，
+ * 单独一个总能发出去；手机按字节拆批（≤200 个 op 且 ≤ 1 MiB）。超过返回 413 invalid，一个 op 都不处理。
+ */
+export const BODY_LIMIT = 1024 * 1024;
+
 export interface AppDeps {
   config: Config;
   db: Db;
   /** 测试里传 false 关日志 */
   logger?: boolean;
+  /** 只给测试用：日志写到这里（逐行 JSON），用来断言某条路径记了日志。传了就忽略 logger: false */
+  logStream?: { write(line: string): void };
   /** 服务器时钟（测试里拨钟测锁定、开通码过期） */
   clock?: () => Date;
   /** 按 IP 限速（测试里调小） */
@@ -62,17 +70,18 @@ export function buildApp(input: AppDeps): FastifyInstance {
     // 前面有 Caddy 反代时打开，按 X-Forwarded-For 取客户端 IP（按 IP 限速要用）
     trustProxy: deps.config.trustProxy,
     logger:
-      deps.logger === false
+      deps.logger === false && !deps.logStream
         ? false
         : {
-            level: deps.config.logLevel,
+            level: deps.logStream ? "info" : deps.config.logLevel,
+            ...(deps.logStream ? { stream: deps.logStream } : {}),
             // 令牌、口令、开通码不进日志
             redact: {
               paths: ["req.headers.authorization", "req.headers.cookie", "body.password", "body.code", "body.token"],
               remove: true,
             },
           },
-    bodyLimit: 1024 * 1024,
+    bodyLimit: BODY_LIMIT,
   });
   app.decorate("deps", deps);
 
@@ -87,6 +96,10 @@ export function buildApp(input: AppDeps): FastifyInstance {
     }
     const status = err.statusCode && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 500;
     if (status >= 500) req.log.error({ err }, "未处理的错误");
+    if (status === 413) {
+      reply.code(413).send({ code: "invalid", message: `请求体超过 ${BODY_LIMIT} 字节，拆成几批再发` });
+      return;
+    }
     reply.code(status).send(status === 400 ? { code: "invalid" } : status === 404 ? { code: "not_found" } : { code: "unavailable" });
   });
 

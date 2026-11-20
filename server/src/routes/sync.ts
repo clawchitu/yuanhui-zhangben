@@ -57,6 +57,7 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
             epoch: body.epoch,
             config: { demoLoginEnabled: config.demoLoginEnabled, recoveryMode: config.recoveryMode },
             queueLimit: config.storeQueueLimit,
+            log: req.log,
           }));
         } catch (e) {
           if (e instanceof EpochMismatch) return reply.code(409).send({ code: "epoch_mismatch", epoch: e.epoch });

@@ -2,13 +2,18 @@
 // - S04-2：注销期间整批不应用、results 为空、响应带 delete_pending_until
 // - S04-8：按店排队上限，超过 503 unavailable
 // - S04-10：product_upsert 的商品 id 已存在时不挂码（堵收银员绕过 barcode_link 权限）
-// - S04-13：存不进库 / 算不了哈希的 op 单个 rejected invalid、不留档，绝不 500
+// - S04-13：存不进库 / 算不了哈希的 op 单个 rejected invalid、不留档，绝不 500（第二轮：嵌套极深 / 节点过多的 payload；savepoint 兜底注入故障）
+// - 请求体上限 1 MiB：最大的合法 op 放得下，超过 413 invalid
 // - S04-5 补充：barcode_link 挂单件码时单位名一律写商品的基本单位
 import { randomUUID } from "node:crypto";
+import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createTestDb, type TestDb } from "./helpers/db.ts";
-import { login, makeApp, makeLoginShop, pair } from "./helpers/auth.ts";
-import { newBarcode, op, sync, syncOk, upsertFull, upsertQuick } from "./helpers/sync.ts";
+import { createTestDb, testConfig, type TestDb } from "./helpers/db.ts";
+import { bearer, login, makeApp, makeLoginShop, pair } from "./helpers/auth.ts";
+import { expectContract, newBarcode, op, sync, syncOk, upsertFull, upsertQuick } from "./helpers/sync.ts";
+import { BODY_LIMIT, buildApp } from "../src/app.ts";
+import { opSchemaValid } from "../src/sync/validate.ts";
+import { storable, type IncomingOp } from "../src/sync/push.ts";
 import { storeLockKey } from "../src/sync/lock.ts";
 
 let tdb: TestDb;
@@ -246,6 +251,60 @@ describe("S04-13 存不进库、算不了哈希的 op", () => {
     });
   }
 
+  // 嵌套极深的 payload：请求本身很小（5000 层约 10 KB），但递归处理会栈溢出。
+  // 手机 SDK 序列化不出这种东西，所以请求体按字符串拼，走真实的 HTTP 解析。
+  const nest = (depth: number, open: string, close: string, leaf = "0") => open.repeat(depth) + leaf + close.repeat(depth);
+  const deepCases: [string, string][] = [
+    ["多余字段里 5000 层嵌套数组", nest(5000, "[", "]")],
+    ["多余字段里 5000 层嵌套对象", nest(5000, '{"a":', "}")],
+    ["多余字段里 50 万层嵌套数组（约 1 MB，请求体上限以内）", nest(500_000, "[", "]")],
+    ["多余字段里 17 层嵌套（payload 本身算 1 层，超过上限 16 层）", nest(16, "[", "]")],
+    ["多余字段里 2 万个元素的数组（超过节点数上限）", `[${Array(20_000).fill("0").join(",")}]`],
+  ];
+  async function pushRaw(app: ReturnType<typeof makeApp>, token: string, epoch: string, opsJson: string[]) {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/sync",
+      headers: { ...bearer(token), "content-type": "application/json" },
+      payload: `{"epoch":"${epoch}","cursors":{"catalog":0,"ledger":0},"app_build":1,"pull":false,"ops":[${opsJson.join(",")}]}`,
+    });
+    return { status: res.statusCode, body: res.json() };
+  }
+  const withExtra = (o: ReturnType<typeof upsertFull>, raw: string) => JSON.stringify(o).replace(/}}$/, `,"extra":${raw}}}`);
+  for (const [name, raw] of deepCases) {
+    it(`${name}：这个 op rejected invalid、不留档，前后正常的 op applied；重发结果相同`, async () => {
+      const { shop, app, boss } = await setup();
+      const good = upsertFull();
+      const bad = upsertFull();
+      const tail = upsertFull();
+      const r = await pushRaw(app, boss.token, shop.epoch, [JSON.stringify(good), withExtra(bad, raw), JSON.stringify(tail)]);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.results).toEqual([
+        { id: good.id, status: "applied" },
+        { id: bad.id, status: "rejected", code: "invalid" },
+        { id: tail.id, status: "applied" },
+      ]);
+      expect((await opsOf(shop.storeId)).map((o) => o.id).sort()).toEqual([good.id, tail.id].sort());
+      expect((await productsOf(shop.storeId)).map((p) => p.id).sort()).toEqual([good.payload.product_id, tail.payload.product_id].sort());
+      const again = await pushRaw(app, boss.token, shop.epoch, [withExtra(bad, raw)]);
+      await app.close();
+      expect(again.status).toBe(200);
+      expect(again.body.results).toEqual([{ id: bad.id, status: "rejected", code: "invalid" }]);
+    });
+  }
+
+  it("嵌套正好在上限（payload 共 16 层）：照常算哈希、按 schema 拒 invalid 并留档，重发 replayed", async () => {
+    const { shop, app, boss } = await setup();
+    const bad = upsertFull();
+    const raw = nest(15, "[", "]");
+    const r = await pushRaw(app, boss.token, shop.epoch, [withExtra(bad, raw)]);
+    expect(r.body.results).toEqual([{ id: bad.id, status: "rejected", code: "invalid" }]);
+    expect((await opsOf(shop.storeId)).map((o) => o.id)).toEqual([bad.id]);
+    const again = await pushRaw(app, boss.token, shop.epoch, [withExtra(bad, raw)]);
+    await app.close();
+    expect(again.body.results).toEqual([{ id: bad.id, status: "rejected", code: "invalid", replayed: true }]);
+  });
+
   it("成对的代理项（emoji）是合法的，照常入账", async () => {
     const { shop, app, boss } = await setup();
     const o = upsertFull({ name: "可乐🥤" });
@@ -278,5 +337,154 @@ describe("S04-5 补充：barcode_link 挂单件码", () => {
     expect(bs.get(single)).toBe("罐");
     expect(bs.get(p.payload.barcode as string)).toBe("罐");
     expect(bs.get(pack)).toBe("箱");
+  });
+});
+
+// savepoint 兜底（§14 S04-13）：正常输入走不到（预检查已经拦住），所以在数据库里装一个触发器注入故障——
+// 挂某个条码时按指定的 SQLSTATE 报错。product_upsert 先插商品（取一个号）、再插条码（再取一个号）时出错，
+// 所以出错前这个 op 已经真的取过号、改过行。走真实请求，不改服务器代码。
+describe("S04-13 savepoint 兜底（注入故障）", () => {
+  beforeAll(async () => {
+    await sql`CREATE TABLE fault_barcodes (barcode text PRIMARY KEY, sqlstate text NOT NULL)`.execute(tdb.kysely);
+    await sql.raw(`
+      CREATE FUNCTION inject_fault() RETURNS trigger LANGUAGE plpgsql AS $$
+      DECLARE s text;
+      BEGIN
+        SELECT sqlstate INTO s FROM fault_barcodes WHERE barcode = NEW.barcode;
+        IF s IS NOT NULL THEN RAISE EXCEPTION '注入的故障 %', s USING ERRCODE = s; END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER inject_fault BEFORE INSERT OR UPDATE ON product_barcodes FOR EACH ROW EXECUTE FUNCTION inject_fault();
+    `).execute(tdb.kysely);
+  });
+
+  const faulty = async (sqlstate: string) => {
+    const barcode = newBarcode();
+    await tdb.kysely.insertInto("fault_barcodes" as never).values({ barcode, sqlstate } as never).execute();
+    return upsertFull({ barcode });
+  };
+  /** 本店所有带 rev 的行的号，排好序 */
+  const revsOf = async (storeId: string) => {
+    const all: number[] = [];
+    for (const t of ["products", "product_barcodes", "removed"] as const) {
+      const rows = await tdb.kysely.selectFrom(t).select("rev").where("store_id", "=", storeId).execute();
+      all.push(...rows.map((r) => Number(r.rev)));
+    }
+    return all.sort((a, b) => a - b);
+  };
+  async function setupLogged() {
+    const shop = await makeLoginShop(tdb);
+    const lines: Array<Record<string, unknown>> = [];
+    const app = buildApp({ config: testConfig(), db: tdb, logStream: { write: (l) => void lines.push(JSON.parse(l)) } });
+    const boss = await login(app, shop.username);
+    return { shop, app, boss, lines };
+  }
+
+  it("22012：只有这个 op rejected invalid、不留档，它取的号和改的行一起回滚，同批其余照常；一批两次也一样；记 error 日志", async () => {
+    const { shop, app, boss, lines } = await setupLogged();
+    const a = upsertFull();
+    const bad1 = await faulty("22012");
+    const b = upsertFull();
+    const bad2 = await faulty("22003");
+    const c = upsertFull();
+    const r = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [a, bad1, b, bad2, c], pull: false });
+    expect(r.results).toEqual([
+      { id: a.id, status: "applied" },
+      { id: bad1.id, status: "rejected", code: "invalid" },
+      { id: b.id, status: "applied" },
+      { id: bad2.id, status: "rejected", code: "invalid" },
+      { id: c.id, status: "applied" },
+    ]);
+    expect((await opsOf(shop.storeId)).map((o) => o.id).sort()).toEqual([a.id, b.id, c.id].sort());
+    expect((await productsOf(shop.storeId)).map((p) => p.id).sort()).toEqual(
+      [a, b, c].map((o) => o.payload.product_id as string).sort(),
+    );
+    // 号从 1 连续、没有空洞：坏 op 取过的号随 savepoint 回滚了
+    const revs = await revsOf(shop.storeId);
+    expect(revs).toEqual(Array.from({ length: revs.length }, (_, i) => i + 1));
+    expect(await storeRev(shop.storeId)).toBe(String(revs.length));
+
+    const logged = lines.filter((l) => l.msg === "sync：op 触发数据类错误，已单个拒收（savepoint 兜底）");
+    expect(logged).toHaveLength(2);
+    expect(logged.map((l) => [l.level, l.op_id, l.op_type, l.sqlstate])).toEqual([
+      [50, bad1.id, "product_upsert", "22012"],
+      [50, bad2.id, "product_upsert", "22003"],
+    ]);
+    // 日志里不带令牌
+    expect(JSON.stringify(lines)).not.toContain(boss.token);
+
+    // 重发：同样单个拒收、不留档（存不进去，每次都重新处理）
+    const again = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [bad1], pull: false });
+    await app.close();
+    expect(again.results).toEqual([{ id: bad1.id, status: "rejected", code: "invalid" }]);
+    expect(await opsOf(shop.storeId)).toHaveLength(3);
+  });
+
+  for (const sqlstate of ["23505", "40001", "XX000"]) {
+    it(`不是数据类错误（${sqlstate}）：不吞掉，整个请求 500、整批回滚`, async () => {
+      const { shop, app, boss, lines } = await setupLogged();
+      await syncOk(app, boss.token, { epoch: shop.epoch, ops: [upsertFull()], pull: false });
+      const revBefore = await storeRev(shop.storeId);
+      const opsBefore = await opsOf(shop.storeId);
+      const r = await sync(app, boss.token, { epoch: shop.epoch, ops: [upsertFull(), await faulty(sqlstate), upsertFull()], pull: false });
+      await app.close();
+      expect(r.status).toBe(500);
+      expect(r.body).toEqual({ code: "unavailable" });
+      expect(await storeRev(shop.storeId)).toBe(revBefore);
+      expect(await opsOf(shop.storeId)).toEqual(opsBefore);
+      expect(lines.some((l) => String(l.msg).includes("savepoint 兜底"))).toBe(false);
+    });
+  }
+});
+
+describe("请求体上限（§4.2，1 MiB）", () => {
+  /** 非 ASCII 全转义成 \uXXXX：最坏的 JSON 写法（emoji 一个字 12 字节） */
+  const asciiJson = (v: unknown) => JSON.stringify(v).replace(/[\u0080-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  const emoji = (n: number) => "🥤".repeat(n);
+  /** 最大的合法 op：200 行的卖出，每个字符串写满上限、全是 emoji */
+  const biggestOp = () =>
+    op("sale_batch", {
+      batch_id: randomUUID(),
+      paid_total_fen: 19_999_999_800,
+      lines: Array.from({ length: 200 }, () => ({
+        entry_id: randomUUID(),
+        product_id: randomUUID(),
+        barcode: emoji(64),
+        name: emoji(200),
+        unit_name: emoji(20),
+        pack_qty: 9999,
+        pack_count: 99999,
+        unit_price_fen: 99_999_999,
+      })),
+    });
+
+  it("最大的合法 op 用最坏的 JSON 写法也放得进一个请求：200，不是 413", async () => {
+    const { shop, app, boss } = await setup();
+    const big = biggestOp();
+    expect(opSchemaValid(big)).toBe(true);
+    // 最大的合法 op 不会被嵌套层数 / 节点数上限误伤（S04-13）
+    expect(storable(big as IncomingOp)).toBe(true);
+    const body = `{"epoch":"${shop.epoch}","cursors":{"catalog":0,"ledger":0},"app_build":1,"pull":false,"ops":[${asciiJson(big)}]}`;
+    expect(Buffer.byteLength(body)).toBeGreaterThan(BODY_LIMIT / 2);
+    expect(Buffer.byteLength(body)).toBeLessThan(BODY_LIMIT);
+    const res = await app.inject({ method: "POST", url: "/v1/sync", headers: { ...bearer(boss.token), "content-type": "application/json" }, payload: body });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    // sale_batch 是 S05 的事，本段拒 invalid；这里只证明它能送达服务器
+    expect(res.json().results).toEqual([{ id: big.id, status: "rejected", code: "invalid" }]);
+  });
+
+  it("超过 1 MiB：413 invalid（契约 Error），一个 op 都不处理", async () => {
+    const { shop, app, boss } = await setup();
+    const ops = [upsertFull(), biggestOp(), biggestOp()];
+    const body = `{"epoch":"${shop.epoch}","cursors":{"catalog":0,"ledger":0},"app_build":1,"pull":false,"ops":[${ops.map(asciiJson).join(",")}]}`;
+    expect(Buffer.byteLength(body)).toBeGreaterThan(BODY_LIMIT);
+    const res = await app.inject({ method: "POST", url: "/v1/sync", headers: { ...bearer(boss.token), "content-type": "application/json" }, payload: body });
+    await app.close();
+    expect(res.statusCode).toBe(413);
+    expect(res.json()).toMatchObject({ code: "invalid" });
+    await expectContract("Error", res.json());
+    expect(await opsOf(shop.storeId)).toEqual([]);
+    expect(await storeRev(shop.storeId)).toBe("0");
   });
 });

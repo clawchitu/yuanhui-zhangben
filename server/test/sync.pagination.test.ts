@@ -70,25 +70,40 @@ describe("分页", () => {
   });
 
   it("I7 性质测试：随机的 op 序列、随机页大小，分页拉取的结果集合 = 一次拉完的结果集合", async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.array(fc.constantFrom("new", "edit", "edit_unit", "link", "unlink", "sale", "stock_in"), { minLength: 1, maxLength: 25 }),
-        fc.integer({ min: 1, max: 7 }),
-        fc.integer({ min: 0, max: 2 ** 31 }),
-        async (script, pageSize, seed) => {
-          const shop = await makeFastShop(tdb.kysely);
-          const app = makeApp(tdb, { syncPageSize: pageSize });
-          await runScript(app, shop, script, seed);
-          const paged = await pullAll(app, shop.family.token, shop.epoch, new PageCheck(pageSize));
-          await app.close();
-          const once = await full(shop.family.token, shop.epoch);
-          expect(paged.snapshot()).toEqual(once.snapshot());
-          expect(paged.duplicates()).toEqual([]);
-          await expectRevsUnique(shop.storeId);
-        },
-      ),
-      { numRuns: 40 },
-    );
+    // 每种页大小建一个应用、各轮共用（每轮新建应用要重新编译路由的 schema，机器忙的时候很慢）
+    const apps = new Map<number, FastifyInstance>();
+    const appWithPageSize = (n: number) => {
+      let a = apps.get(n);
+      if (!a) apps.set(n, (a = makeApp(tdb, { syncPageSize: n })));
+      return a;
+    };
+    try {
+      const details = await fc.check(
+        fc.asyncProperty(
+          fc.array(fc.constantFrom("new", "edit", "edit_unit", "link", "unlink", "sale", "stock_in"), { minLength: 1, maxLength: 25 }),
+          fc.integer({ min: 1, max: 7 }),
+          fc.integer({ min: 0, max: 2 ** 31 }),
+          async (script, pageSize, seed) => {
+            const shop = await makeFastShop(tdb.kysely);
+            const app = appWithPageSize(pageSize);
+            await runScript(app, shop, script, seed);
+            const paged = await pullAll(app, shop.family.token, shop.epoch, new PageCheck(pageSize));
+            const once = await full(shop.family.token, shop.epoch);
+            expect(paged.snapshot()).toEqual(once.snapshot());
+            expect(paged.duplicates()).toEqual([]);
+            await expectRevsUnique(shop.storeId);
+          },
+        ),
+        // 时间预算：这条测试的耗时 ≈ 几千次顺序的数据库往返，机器忙（同批的 argon2 测试、共享的 Mac）时每次往返慢几十倍，
+        // 固定跑 40 轮会超过用例的 30 秒时限，报成「超时」而不是反例（Codex 第二轮实测首跑超时）。
+        // 改成最多 40 轮、最多 20 秒（含缩小反例），到时间停下不算失败，但至少要跑满 10 轮；平时 40 轮不到 1 秒。
+        { numRuns: 40, interruptAfterTimeLimit: 20_000, markInterruptAsFailure: false },
+      );
+      if (details.failed) throw new Error(fc.defaultReportMessage(details));
+      expect(details.numRuns).toBeGreaterThanOrEqual(details.interrupted ? 10 : 40);
+    } finally {
+      for (const a of apps.values()) await a.close();
+    }
   });
 
   it("拉取进行到一半时别的手机继续记账：最终不漏不重（新增的行每个版本只收到一次）", async () => {
@@ -278,7 +293,16 @@ async function runScript(app: FastifyInstance, shop: Awaited<ReturnType<typeof m
   };
   const products: string[] = [];
   const links: Array<{ barcode: string; pid: string }> = [];
-  const send = (o: Op) => syncOk(app, shop.family.token, { epoch: shop.epoch, ops: [o], pull: false });
+  // 连续的商品类 op 攒成一个请求发（一个请求里按顺序逐个应用，号的先后和一个一个发完全一样），
+  // 遇到直接写库的卖出 / 进货之前先发掉，保证号的先后就是脚本的先后
+  let pending: Op[] = [];
+  const send = async (o: Op) => void pending.push(o);
+  const flush = async () => {
+    if (pending.length === 0) return;
+    const ops = pending;
+    pending = [];
+    await syncOk(app, shop.family.token, { epoch: shop.epoch, ops, pull: false });
+  };
   for (const step of script) {
     if (step === "new" || products.length === 0) {
       const p = upsertFull({ name: `p${products.length}` });
@@ -306,11 +330,14 @@ async function runScript(app: FastifyInstance, shop: Awaited<ReturnType<typeof m
         break;
       }
       case "sale":
+        await flush();
         await insertSale(tdb.kysely, { storeId: shop.storeId, deviceId: shop.family.id, productIds: [pid, products[rnd(products.length)]!] });
         break;
       case "stock_in":
+        await flush();
         await insertStockIn(tdb.kysely, { storeId: shop.storeId, deviceId: shop.family.id, productId: pid });
         break;
     }
   }
+  await flush();
 }
