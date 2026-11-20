@@ -14,6 +14,8 @@ export interface Config {
   supportUrl: string;
   /** 恢复模式：平时关闭，打开后才接受 POST /v1/recovery/import（§4.6） */
   recoveryMode: boolean;
+  /** 前面有 Caddy 反代时为真：按 X-Forwarded-For 取客户端 IP（§7 按 IP 限速） */
+  trustProxy: boolean;
 }
 
 type Env = Record<string, string | undefined>;
@@ -62,5 +64,6 @@ export function loadConfig(env: Env = process.env): Config {
     privacyUrl: url(env, "PRIVACY_URL", "https://yuanhuishop.cn/privacy"),
     supportUrl: url(env, "SUPPORT_URL", "https://yuanhuishop.cn/support"),
     recoveryMode: bool(env, "RECOVERY_MODE", false),
+    trustProxy: bool(env, "TRUST_PROXY", false),
   };
 }

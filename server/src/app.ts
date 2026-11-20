@@ -4,22 +4,44 @@ import type { Config } from "./config.ts";
 import type { Db } from "./db.ts";
 import { healthRoutes } from "./routes/health.ts";
 import { configRoutes } from "./routes/config.ts";
+import { authRoutes } from "./routes/auth.ts";
+import { deviceRoutes } from "./routes/devices.ts";
+import { accountRoutes } from "./routes/account.ts";
+import { Guard } from "./auth/guard.ts";
+import { installGuard } from "./auth/plugin.ts";
+import { DEFAULT_RATE_LIMITS, type RateLimits } from "./auth/ratelimit.ts";
 
 export interface AppDeps {
   config: Config;
   db: Db;
   /** 测试里传 false 关日志 */
   logger?: boolean;
+  /** 服务器时钟（测试里拨钟测锁定、开通码过期） */
+  clock?: () => Date;
+  /** 按 IP 限速（测试里调小） */
+  rateLimits?: Partial<RateLimits>;
+}
+
+export interface ResolvedDeps extends AppDeps {
+  clock: () => Date;
+  rateLimits: RateLimits;
 }
 
 declare module "fastify" {
   interface FastifyInstance {
-    deps: AppDeps;
+    deps: ResolvedDeps;
   }
 }
 
-export function buildApp(deps: AppDeps): FastifyInstance {
+export function buildApp(input: AppDeps): FastifyInstance {
+  const deps: ResolvedDeps = {
+    ...input,
+    clock: input.clock ?? (() => new Date()),
+    rateLimits: { ...DEFAULT_RATE_LIMITS, ...input.rateLimits },
+  };
   const app = Fastify({
+    // 前面有 Caddy 反代时打开，按 X-Forwarded-For 取客户端 IP（按 IP 限速要用）
+    trustProxy: deps.config.trustProxy,
     logger:
       deps.logger === false
         ? false
@@ -49,7 +71,12 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     reply.code(status).send(status === 400 ? { code: "invalid" } : status === 404 ? { code: "not_found" } : { code: "unavailable" });
   });
 
+  // guard 必须在注册路由之前装上：onRoute 要检查每个路由都在 permissions.json 里
+  installGuard(app, new Guard());
   app.register(healthRoutes);
   app.register(configRoutes);
+  app.register(authRoutes);
+  app.register(deviceRoutes);
+  app.register(accountRoutes);
   return app;
 }

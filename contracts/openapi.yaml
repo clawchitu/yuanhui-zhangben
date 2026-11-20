@@ -87,7 +87,7 @@ paths:
       tags: [登录]
       operationId: redeemPairing
       summary: 扫码登录（14），兑换开通码
-      description: 二维码内容是 `YHZB1:<code>`，这里传 `<code>`。码用过 → `pairing_used`，过期 → `pairing_expired`（25d）。
+      description: 二维码内容是 `YHZB1:<code>`，这里传 `<code>`。码用过 → `pairing_used`，过期 → `pairing_expired`（25d）；出码的手机已被退出也算过期。账号在注销期间 → 403 `delete_pending`。
       security: []
       x-permission: POST /v1/auth/pair/redeem
       requestBody:
@@ -104,6 +104,7 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/Session" }
         "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "410": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
