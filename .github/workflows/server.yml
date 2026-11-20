@@ -26,7 +26,6 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       DATABASE_URL: postgres://yuanhui:ci-only-not-secret@localhost:5432/yuanhui_test
-      REQUIRE_DB: "1"
     defaults:
       run:
         working-directory: server

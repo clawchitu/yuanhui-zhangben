@@ -67,6 +67,30 @@ describe("GET /healthz", () => {
     expect(ms).toBeLessThan(3000);
   });
 
+  it("连接建立了但查询卡住（表被锁）：约 2 秒内 503，卡住的连接被销毁不回池，之后恢复 200、连接池能正常关闭", async () => {
+    const db = createDb({ connectionString: tdb.url, max: 2 });
+    const app = buildApp({ config: testConfig(), db, logger: false });
+    const locker = await tdb.pool.connect();
+    try {
+      await locker.query("BEGIN");
+      await locker.query("LOCK TABLE stores IN ACCESS EXCLUSIVE MODE");
+      // 连续探 3 次，池子只有 2 条连接：如果卡住的连接不释放，第 3 次会一直取不到连接
+      for (let i = 0; i < 3; i++) {
+        const t0 = Date.now();
+        const res = await app.inject({ method: "GET", url: "/healthz" });
+        expect(res.statusCode).toBe(503);
+        expect(Date.now() - t0).toBeLessThan(3000);
+      }
+      expect(db.pool.totalCount).toBe(0); // 卡住的连接都销毁了
+    } finally {
+      await locker.query("ROLLBACK");
+      locker.release();
+    }
+    expect((await app.inject({ method: "GET", url: "/healthz" })).statusCode).toBe(200);
+    await app.close();
+    await db.close(); // 不会因为残留的查询挂住
+  }, 15_000);
+
   it("S00 的 /v1/health 已经去掉（Q13）", async () => {
     const app = buildApp({ config: testConfig(), db: tdb, logger: false });
     const res = await app.inject({ method: "GET", url: "/v1/health" });

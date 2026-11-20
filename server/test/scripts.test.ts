@@ -69,6 +69,15 @@ describe("createAccount", () => {
     await expect(createAccount(t.kysely, { storeId: demo.id, username: "rv2", password: "12345678", kind: "review" })).resolves.toBeTruthy();
   });
 
+  it("密码长度边界：7 位拒、8 位可以、256 位可以、257 位拒", async () => {
+    const mk = async (len: number, u: string) =>
+      createAccount(t.kysely, { storeId: (await createStore(t.kysely, { name: `长度${u}` })).id, username: u, password: "x".repeat(len) });
+    await expect(mk(7, "len7")).rejects.toThrow(/密码长度/);
+    await expect(mk(8, "len8")).resolves.toBeTruthy();
+    await expect(mk(256, "len256")).resolves.toBeTruthy();
+    await expect(mk(257, "len257")).rejects.toThrow(/密码长度/);
+  });
+
   it("密码太短、用户名带空格、店不存在都被拒", async () => {
     const s = await createStore(t.kysely, { name: "店D" });
     await expect(createAccount(t.kysely, { storeId: s.id, username: "d1", password: "short" })).rejects.toThrow(/密码/);
@@ -97,6 +106,20 @@ describe("命令行", () => {
     const a = await cli("create-account.ts", ["--store", s.id, "--username", "CLIUSER"], { stdin: "another-pass\n" });
     expect(a.code).not.toBe(0);
     expect(a.stderr).toContain("用户名已被占用");
+  });
+
+  it("密码也可以从环境变量 ACCOUNT_PASSWORD 读；失败时输出里不带密码", async () => {
+    const s = JSON.parse((await cli("create-store.ts", ["--name", "命令行店3"])).stdout);
+    const ok = await cli("create-account.ts", ["--store", s.id, "--username", "envuser"], { env: { ACCOUNT_PASSWORD: "env-pass-12345" } });
+    expect(ok.code, ok.stderr).toBe(0);
+    const row = await t.kysely.selectFrom("accounts").selectAll().where("username", "=", "envuser").executeTakeFirstOrThrow();
+    expect(await argon2.verify(row.password_hash, "env-pass-12345")).toBe(true);
+    // 太短被拒，错误信息里不回显密码
+    const s2 = JSON.parse((await cli("create-store.ts", ["--name", "命令行店4"])).stdout);
+    const bad = await cli("create-account.ts", ["--store", s2.id, "--username", "short1"], { stdin: "pw7char\n" });
+    expect(bad.code).not.toBe(0);
+    expect(bad.stdout + bad.stderr).not.toContain("pw7char");
+    expect(bad.stderr).toContain("密码长度");
   });
 
   it("缺参数时打印用法，退出码 2", async () => {

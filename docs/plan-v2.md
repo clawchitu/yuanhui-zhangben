@@ -113,7 +113,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 ## 3. 数据模型（Postgres）
 
-通用约定：金额一律整数**分**（`bigint`）；数量一律整数、以**基本单位**计；时间 `timestamptz`，业务上的「天」「月」一律按 `Asia/Shanghai`；主键除特别说明外是 UUID，流水和商品的 id 由手机生成。每张业务表都有 `store_id`，**所有查询必须带 `store_id` 条件**（S03 的中间件把 `store_id` 从设备令牌里取出来，路由里拿不到别的店）。
+通用约定：金额一律整数**分**（`bigint`）；数量一律整数、以**基本单位**计；时间 `timestamptz`，业务上的「天」「月」一律按 `Asia/Shanghai`；主键除特别说明外是 UUID，流水和商品的 id 由手机生成。**凡是 id 由手机生成的表（`devices`、`products`、`ops`、`sale_batches`、`entries`、`stock_lots`），主键是 `(store_id, id)`，不做全库唯一**：一家店（尤其是对公众开放的演示店）里出现的 id 不能挡住另一家店用同一个 id；幂等查找一律按 `(store_id, id)`。表之间的引用都用带 `store_id` 的复合外键。每张业务表都有 `store_id`，**所有查询必须带 `store_id` 条件**（S03 的中间件把 `store_id` 从设备令牌里取出来，路由里拿不到别的店）。
 
 ### 3.1 账号与设备
 
@@ -121,14 +121,14 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 |---|---|---|
 | `stores` | `id, name, is_demo bool, low_stock_default int=3, rev bigint=0, epoch uuid, created_at` | `rev` 是本店的变更序号计数器，店铺锁内**每改一行取一个新号**（§4.2）；`epoch` 在数据库从备份恢复后换新（§4.6）；演示店每日重置不换 `epoch`（§4.5） |
 | `accounts` | `id, store_id, username, password_hash, kind 'family'\|'review', failed_logins int, locked_until, delete_requested_at, created_at` | `unique(lower(username))`；一个店一个账号；没有注册接口，账号只能用 `scripts/create-account.ts` 建 |
-| `devices` | `id, account_id, store_id, role 'family'\|'cashier', label, token_hash, app_build, created_at, last_seen_at, revoked_at, revoke_reason` | `unique(token_hash)`；令牌 256 位随机数，库里只存 sha256；被踢后**行保留**（要靠它认出被踢设备补传的流水）；同店未撤销设备的 `label` 不重名（重名时自动加序号） |
+| `devices` | `id, account_id, store_id, role 'family'\|'cashier', label, token_hash, app_build, created_at, last_seen_at, revoked_at, revoke_reason` | `unique(token_hash)`；**`id` 由手机在每次登录或兑码时新生成，从不重复使用**（同一台手机被踢后重新开通、先进演示店再登录正式账号，都是新的设备行）；`revoke_reason ∈ kicked, revoke_others, logout, account_delete, demo_reset`，与 `revoked_at` 同有同无，`demo_reset` 就是响应里的 `discard_outbox`；令牌 256 位随机数，库里只存 sha256；被踢后**行保留**（要靠它认出被踢设备补传的流水）；同店未撤销设备的 `label` 不重名（重名时自动加序号） |
 | `pairing_tokens` | `id, token_hash, account_id, store_id, role, label, created_by_device, expires_at, used_at, used_by_device` | 2 分钟过期，一次性；只有 `role='family'` 的设备能创建 |
 
 ### 3.2 商品
 
 | 表 | 字段 | 约束 / 说明 |
 |---|---|---|
-| `products` | `id, store_id, name, base_unit, price_fen, stock_qty int, stock_value_fen bigint, last_cost_fen null, cost_known bool, stock_ver bigint, last_count_at null, low_at int null, stock_known bool, track_expiry bool, expiry_warn_days int=7, shelf_life_months int null, needs_review bool, image_key null, image_source null, archived_at null, created_by_device, rev, updated_at` | 平均进价不存，等于 `stock_value_fen / stock_qty`；`cost_known` = 进价是否已知，用来区分「真的零成本」和「没填」（§5.2）；`stock_ver` 每次库存变动 +1，`last_count_at` 是最近一次盘点或期初的时间（§5.6）；`needs_review` = 收银员临时登记、等家用号补全；`price_fen >= 0` |
+| `products` | `id, store_id, name, base_unit, price_fen, stock_qty int, stock_value_fen bigint, last_cost_fen null, cost_known bool, stock_ver bigint, last_count_at null, low_at int null, stock_known bool, track_expiry bool, expiry_warn_days int=7, shelf_life_months int null, needs_review bool, image_key null, image_source null, image_ver int=0, archived_at null, created_by_device, rev, updated_at` | 平均进价不存，等于 `stock_value_fen / stock_qty`；`cost_known` = 进价是否已知，用来区分「真的零成本」和「没填」（§5.2）；`stock_ver` 每次库存变动 +1，`last_count_at` 是最近一次盘点或期初的时间（§5.6）；`needs_review` = 收银员临时登记、等家用号补全；`price_fen >= 0` |
 | `product_barcodes` | `store_id, barcode, product_id, pack_qty int, unit_name, pack_price_fen, rev, deleted_at` | 主键 `(store_id, barcode)`；`pack_qty >= 1`；**单件码（`pack_qty=1`）的 `pack_price_fen` 必须为空，卖价一律读 `products.price_fen`**（CHECK 约束），只有整件码存自己的价；一个商品可以有多个单件码 |
 | `product_aliases` | `store_id, alias_id, product_id` | 两台手机离线时各自登记了同一个条码：先到的赢，后到的商品 id 记成别名，之后引用别名的 op 一律改写到赢家 |
 | `barcode_catalog` | `barcode, found bool, name, spec, brand, image_url, source, raw jsonb, fetched_at` | 全局缓存，不分店；查不到也缓存（7 天后可重查） |
@@ -137,11 +137,11 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 | 表 | 字段 | 约束 / 说明 |
 |---|---|---|
-| `ops` | `id uuid, store_id, device_id, type, payload jsonb, payload_hash, occurred_at, received_at, status 'applied'\|'rejected'\|'held', reject_code, result jsonb, flags jsonb` | 主键 `id`，幂等靠它；`result` 存当初返回给手机的结果（含 remap、拒绝原因），重发时原样返回；被拒的、暂存待确认的（§4.5）也留档 |
+| `ops` | `id uuid, store_id, device_id, type, payload jsonb, payload_hash, occurred_at, received_at, status 'applied'\|'rejected'\|'held', reject_code, result jsonb, resolved_at null, resolved_by_device null, flags jsonb` | 主键 `id`，幂等靠它；`result` 存当初返回给手机的结果（含 remap、拒绝原因），重发时原样返回；被拒的、暂存待确认的（§4.5）也留档；暂存的 op 被家用手机处理后，`status` 改成 `applied`（记上）或 `rejected`（`reject_code = discarded`，不要），并写 `resolved_at / resolved_by_device` |
 | `sale_batches` | `id, store_id, device_id, list_total_fen, paid_total_fen, occurred_at, received_at, rev` | 原价和实收；`paid_total_fen` 在撤销单行后不改，报表按行求和 |
-| `entries` | `id, store_id, seq bigint, op_id, batch_id null, type, reverses_entry_id null, product_id, barcode, name_snapshot, unit_name, pack_qty, pack_count, qty_delta int, list_amount_fen, amount_fen, unit_cost_fen null, cogs_fen, value_delta_fen, cost_missing bool, expiry_date null, device_id, occurred_at, received_at, voided_at null, voided_by_device null, cost_fix_entry_id null, flags jsonb, rev` | `seq` 是本店内的应用顺序；`type ∈ sale, stock_in, opening, count, cost_adjust, cost_fix, expire_loss, supplier_return`；`unique(store_id, seq)` |
+| `entries` | `id, store_id, seq bigint, op_id, batch_id null, type, reverses_entry_id null, product_id, barcode, name_snapshot, unit_name, pack_qty, pack_count, qty_delta int, list_amount_fen, amount_fen, unit_cost_fen null, cogs_fen, value_delta_fen, cost_missing bool, expiry_date null, device_id, occurred_at, received_at, voided_at null, voided_by_device null, cost_fix_entry_id null, flags jsonb, rev` | `seq` 是本店内的应用顺序；`type ∈ sale, stock_in, opening, count, cost_adjust, cost_fix, expire_loss, supplier_return`；`unique(store_id, seq)`；除 `cost_fix` 外一行最多被冲销一次（`cost_fix` 可以被多次部分冲销：它补记的每一笔卖出被撤销时各冲一条） |
 | `stock_lots` | `id, store_id, product_id, source_entry_id, expiry_date null, qty_in, qty_left, snoozed_until null, closed_at null, closed_reason null, handle_ver int, rev` | 只用于到期提醒，**不参与成本**；生命周期和 `handle_ver` 见 §5.4 |
-| `lot_moves` | `entry_id, lot_id, qty` | 每笔卖出/损耗/盘点扣了哪个批次，撤销时原样加回 |
+| `lot_moves` | `store_id, entry_id, lot_id, qty` | 每笔卖出/损耗/盘点扣了哪个批次，撤销时原样加回 |
 | `image_jobs` | `product_id, store_id, source_url, attempts, next_try_at, done_at, last_error` | 图片下载队列，失败重试 3 次 |
 | `removed` | `store_id, rev, kind, row_id` | 墓碑：被删的行（解除的整件码等），让手机同步删除 |
 
@@ -593,7 +593,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 
 **S11 工程骨架、设计令牌、字号系统、共用组件**
 - 设计稿：01、03、24a、26（只为取颜色、字号、组件样子）。
-- 产出：`ios/project.yml`、三个 xcconfig、`App/Design/*`（颜色令牌：米纸 `#F3EFE3`、白卡 `#FFFDF8`、墨 `#1F1A17`、朱红 `#C4321C` = 卖出、靛青 `#1E5A7A` = 进货、价签黄 `#F5C83A` = 刚扫到和提醒、已过期 = 墨底白字；数字用 DIN Alternate Bold 等宽）、`TypeScale`（大字模式 = 把动态字号下限抬到 `xxxLarge`，上限封在 `accessibility2`；关 = 跟随系统；价格、总价、主按钮、键盘、步进器是固定尺寸，不走这套）、组件库和一个组件陈列页、`-uiFixture` 机制和 `make shots` 截图脚本。
+- 产出：`ios/project.yml`、三个 xcconfig、`App/Design/*`（颜色令牌：米纸 `#F3EFE3`、白卡 `#FFFDF8`、墨 `#1F1A17`、朱红 `#C4321C` = 卖出、靛青 `#1E5A7A` = 进货、价签黄 `#F5C83A` = 刚扫到和提醒、已过期 = 墨底白字；数字用 DIN Alternate Bold 等宽）、`TypeScale`（大字模式 = 把动态字号下限抬到 `xxxLarge`，上限封在 `accessibility2`；关 = 跟随系统，但**上限同样封在 `accessibility2`**；正文和次要用系统的 body / subheadline 文字样式，不自定义基准字号；价格、总价、主按钮、键盘、步进器是固定尺寸，不走这套；固定尺寸的控件点按区域不小于 56pt）、组件库和一个组件陈列页、`-uiFixture` 机制和 `make shots` 截图脚本。
 - 验收：模拟器（iPhone 13 尺寸 390×844）构建通过；组件陈列页在 大字 / 标准 / 系统最大辅助字号 三种情况下各截一张图附在 PR；单元测试：大字模式下正文 ≥ 22pt、次要 ≥ 18pt；主按钮高度 ≥ 60pt。
 
 **S11b 空壳 Beta 探针（尽早做）**
@@ -618,7 +618,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 **S15 两种首页、首次进入、设置壳**
 - 设计稿：01、02、24a、25a、16、16b、21a、21b。
 - 产出：`Features/Home Onboarding Settings`、导航骨架（按角色决定有哪些入口）。
-- 验收：XCUITest：收银员形态下遍历所有可点元素，**到不了**进货、看账、商品、盘点、快过期、开通；家用形态下都能到；16 默认选中大字，选择保存在本机，重启后保持；16b 不出现起名；21b 恰好五项；「没同步」和「快过期」两条提醒同时出现时没同步的在上；系统最大辅助字号下首页两个大按钮不被截断；截图与 01、02、16、21a 对照附 PR。
+- 验收：XCUITest：收银员形态下遍历所有可点元素，**到不了**进货、看账、商品、盘点、快过期、开通；家用形态下都能到；16 默认选中大字，选择保存在本机，重启后保持；标准模式下系统字号调到最大时也封顶在 `accessibility2`（S11 留下的改动，连同单元测试）；小号步进器（46pt 圆钮）的点按区域不小于 56pt；16b 不出现起名；21b 恰好五项；「没同步」和「快过期」两条提醒同时出现时没同步的在上；系统最大辅助字号下首页两个大按钮不被截断；截图与 01、02、16、21a 对照附 PR。
 
 **S16 卖出**
 - 设计稿：03、03b、03c、03d、24b、27a。
@@ -998,4 +998,28 @@ S01 改完后（提交 e1046a0）又留了 5 条，裁定如下：
 | R3 | 一个候选有多个匹配条码时取哪个 | 取代表条码：完全相等的优先，否则最小的匹配条码；排序、显示、加入购物篮都用它（执行者的做法正确） | §5.5 |
 | R4 | 冲销 `cost_fix` 行存不存 `unit_cost_fen` | 存，照抄原行不取反；所有冲销行的 `unit_cost_fen` 都这样（执行者的做法正确） | §3.3 |
 | R5 | 进价未知且盘点数等于账面数时记不记 | 记。`d = 0` 的盘点一律记一条数量和金额为 0 的 `count`，不标 `cost_missing`，不论进价是否已知 | §5.2 |
+
+S11 的 PR（#5）提了 4 条，裁定如下：
+
+| # | 疑问 | 裁定 | 改在哪里 |
+|---|---|---|---|
+| S11-1 | 标准模式要不要字号上限 | 要。两种模式的上限都封在 `accessibility2`（review-1119 第 2 节本来就是这个意思，计划写漏了）。标准模式范围 = `xSmall … accessibility2`。改动放到 S15 做 | S11、S15 |
+| S11-2 | 大字模式实际是 23 / 21pt，不是设计稿的 22 / 18 | 接受。要求是「不低于 22 / 18」，用系统文字样式比自定义基准字号稳妥；后面哪一页因此放不下，再单独处理那一页，不改这套字号 | S11 |
+| S11-3 | Beta / Release 还没有服务器地址 | 可以。接口基址在 S11b（Beta）和 S21（三个配置）加进 xcconfig | 不用改 |
+| S11-4 | 数字键 56pt（稿子 54），步进器 56 / 46pt | 接受 56pt 的数字键和 56pt 的步进器。46pt 的小号步进器外观照稿子，但点按区域要扩到不小于 56pt，在 S15 / S16 第一次用到时改 | S11、S15 |
+
+S02 的 PR（#6）提了 10 条，裁定如下：
+
+| # | 疑问 | 裁定 | 改在哪里 |
+|---|---|---|---|
+| S02-1 | `products.image_ver` | 保留为单独一列，`image_key` 每变一次 +1，0 = 没图 | §3.2 |
+| S02-2 | 跨表的 `rev` 唯一要不要库层面强制 | 不用。每张表 `unique(store_id, rev)` 加 S04 的统一取号函数和 I7 性质测试就够 | 不用改 |
+| S02-3 | 暂存 op 的处理结果存哪 | 改 `status`（记上 → `applied`；不要 → `rejected` + `reject_code = discarded`），更新 `result`，并加 `resolved_at`、`resolved_by_device` 两列 | §3.3 |
+| S02-4 | `devices.revoke_reason` 的取值 | `kicked / revoke_others / logout / account_delete / demo_reset`，加 CHECK，与 `revoked_at` 同有同无；`demo_reset` 即 `discard_outbox` | §3.1 |
+| S02-5 | 整件码是否必须带价 | 不必。为空表示按「单件卖价 × 换算数量」算 | 不用改 |
+| S02-6 | 默认隐私链接；密码最短 8 位 | 都可以。密码最短 8 位作为规定 | 不用改 |
+| S02-7 | 启动时不自动迁移 | 同意，由 `deploy.sh` 先单独跑迁移，失败不换镜像 | 不用改 |
+| S02-8 | 复合外键；`lot_moves` 没有 `store_id` | 复合外键的做法对。`lot_moves` 加 `store_id` 和两条复合外键（计划漏写了）。另外手机生成 id 的表主键改成 `(store_id, id)`；设备 id 每次登录或兑码新生成 | §3 通用约定、§3.1、§3.3 |
+| S02-9 | 一行流水只能被冲销一次 | 对 `cost_fix` 不成立，它会被多次部分冲销。约束改成只管非 `cost_fix` 的行 | §3.3 |
+| S02-10 | `REQUIRE_DB` 不再使用 | 同意，服务器测试一律要真实 Postgres | 不用改 |
 

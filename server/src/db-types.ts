@@ -32,6 +32,9 @@ export interface AccountsTable {
   created_at: TsDefault;
 }
 
+/** demo_reset 就是同步响应里的 discard_outbox（§4.5） */
+export type RevokeReason = "kicked" | "revoke_others" | "logout" | "account_delete" | "demo_reset";
+
 export interface DevicesTable {
   id: string;
   account_id: string;
@@ -43,7 +46,7 @@ export interface DevicesTable {
   created_at: TsDefault;
   last_seen_at: Ts | null;
   revoked_at: Ts | null;
-  revoke_reason: string | null;
+  revoke_reason: RevokeReason | null;
 }
 
 export interface PairingTokensTable {
@@ -54,7 +57,6 @@ export interface PairingTokensTable {
   role: "family" | "cashier";
   label: string | null;
   created_by_device: string;
-  created_at: TsDefault;
   expires_at: Ts;
   used_at: Ts | null;
   used_by_device: string | null;
@@ -142,6 +144,8 @@ export interface OpsTable {
   status: "applied" | "rejected" | "held";
   reject_code: string | null;
   result: Json;
+  resolved_at: Ts | null;
+  resolved_by_device: string | null;
   flags: JsonDefault;
 }
 
@@ -214,6 +218,7 @@ export interface StockLotsTable {
 }
 
 export interface LotMovesTable {
+  store_id: string;
   entry_id: string;
   lot_id: string;
   qty: number;

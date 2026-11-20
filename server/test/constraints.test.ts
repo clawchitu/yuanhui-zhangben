@@ -203,7 +203,7 @@ describe("其他约束", () => {
     const big = "9223372036854775807";
     const r = await t.kysely
       .updateTable("products")
-      .set({ stock_value_fen: big })
+      .set({ stock_value_fen: big, cost_known: true, last_cost_fen: 1 })
       .where("id", "=", p.id)
       .returning("stock_value_fen")
       .executeTakeFirstOrThrow();
@@ -245,35 +245,216 @@ describe("其他约束", () => {
         .execute();
     await expectPgError(insertOp({ type: "refund" }), CHECK, "ops_type_check");
     await expectPgError(insertOp({ status: "pending" }), CHECK, "ops_status_check");
-    await expectPgError(insertOp({ status: "rejected" }), CHECK, "ops_check");
+    await expectPgError(insertOp({ status: "rejected" }), CHECK, "ops_rejected_has_code");
     await expect(insertOp({ status: "rejected", reject_code: "forbidden" })).resolves.toBeTruthy();
     await expect(insertOp({ status: "held" })).resolves.toBeTruthy();
   });
 
-  it("op id 全局唯一（幂等键）", async () => {
+  it("手机生成 id 的六张表：主键是 (store_id, id)，两家店可以有相同 id，同一家店重复失败（§14 S02-8）", async () => {
     const a = await makeShop(t.kysely);
-    const op = await makeOp(t.kysely, a.store.id, a.device.id);
-    await expectPgError(
+    const b = await makeShop(t.kysely);
+    const id = randomUUID();
+    const rev = async (s: string) => nextRev(t.kysely, s);
+    const now = new Date();
+
+    // devices
+    const dev = (s: typeof a, label: string) =>
+      t.kysely
+        .insertInto("devices")
+        .values({ id, store_id: s.store.id, account_id: s.account.id, role: "family", label, token_hash: tokenHash() })
+        .execute();
+    await dev(a, "同id甲");
+    await expect(dev(b, "同id乙")).resolves.toBeTruthy();
+    await expectPgError(dev(a, "同id丙"), UNIQUE, "devices_pkey");
+
+    // products
+    const prod = async (s: typeof a) =>
+      t.kysely.insertInto("products").values({ id, store_id: s.store.id, name: "同id", price_fen: 1, rev: await rev(s.store.id) }).execute();
+    await prod(a);
+    await expect(prod(b)).resolves.toBeTruthy();
+    await expectPgError(prod(a), UNIQUE, "products_pkey");
+
+    // ops
+    const op = (s: typeof a) =>
       t.kysely
         .insertInto("ops")
         .values({
-          id: op.id, store_id: a.store.id, device_id: a.device.id, type: "void", payload: "{}", payload_hash: "h2",
-          occurred_at: new Date(), status: "applied", result: "{}",
+          id, store_id: s.store.id, device_id: s.device.id, type: "stock_in", payload: "{}", payload_hash: "h",
+          occurred_at: now, status: "applied", result: "{}",
         })
-        .execute(),
-      UNIQUE,
-      "ops_pkey",
-    );
+        .execute();
+    await op(a);
+    await expect(op(b)).resolves.toBeTruthy();
+    await expectPgError(op(a), UNIQUE, "ops_pkey");
+
+    // sale_batches
+    const batch = async (s: typeof a) =>
+      t.kysely
+        .insertInto("sale_batches")
+        .values({ id, store_id: s.store.id, device_id: s.device.id, list_total_fen: 0, paid_total_fen: 0, occurred_at: now, rev: await rev(s.store.id) })
+        .execute();
+    await batch(a);
+    await expect(batch(b)).resolves.toBeTruthy();
+    await expectPgError(batch(a), UNIQUE, "sale_batches_pkey");
+
+    // entries（商品、op 都用上面同 id 的那两行，各店挂各店的）
+    const entry = async (s: typeof a) =>
+      t.kysely
+        .insertInto("entries")
+        .values({
+          id, store_id: s.store.id, seq: Number(await rev(s.store.id)), op_id: id, type: "stock_in", product_id: id,
+          name_snapshot: "同id", qty_delta: 1, list_amount_fen: 0, amount_fen: 0, device_id: s.device.id, occurred_at: now,
+          rev: await rev(s.store.id),
+        })
+        .execute();
+    await entry(a);
+    await expect(entry(b)).resolves.toBeTruthy();
+    await expectPgError(entry(a), UNIQUE, "entries_pkey");
+
+    // stock_lots
+    const lot = async (s: typeof a) =>
+      t.kysely
+        .insertInto("stock_lots")
+        .values({ id, store_id: s.store.id, product_id: id, source_entry_id: id, qty_in: 1, qty_left: 1, rev: await rev(s.store.id) })
+        .execute();
+    await lot(a);
+    await expect(lot(b)).resolves.toBeTruthy();
+    await expectPgError(lot(a), UNIQUE, "stock_lots_pkey");
   });
 
-  it("一行流水最多被冲销一次", async () => {
+  it("同一台手机被踢后用新的设备 id 重新开通：旧行保留，新行插入成功（§3.1）", async () => {
+    const a = await makeShop(t.kysely);
+    const old = await makeDevice(t.kysely, a.store.id, a.account.id, { label: "店里的手机" });
+    await t.kysely
+      .updateTable("devices")
+      .set({ revoked_at: new Date(), revoke_reason: "kicked" })
+      .where("store_id", "=", a.store.id)
+      .where("id", "=", old.id)
+      .execute();
+    const fresh = await makeDevice(t.kysely, a.store.id, a.account.id, { label: "店里的手机" });
+    expect(fresh.id).not.toBe(old.id);
+    const rows = await t.kysely.selectFrom("devices").select("id").where("store_id", "=", a.store.id).execute();
+    expect(rows.map((r) => r.id)).toEqual(expect.arrayContaining([old.id, fresh.id]));
+  });
+
+  it("revoke_reason 只能取五种值，且与 revoked_at 同有同无（§14 S02-4）", async () => {
+    const a = await makeShop(t.kysely);
+    const dev = (revoked_at: Date | null, revoke_reason: string | null) =>
+      t.kysely
+        .insertInto("devices")
+        .values({
+          id: randomUUID(), store_id: a.store.id, account_id: a.account.id, role: "family",
+          label: `d_${randomUUID().slice(0, 8)}`, token_hash: tokenHash(), revoked_at,
+          revoke_reason: revoke_reason as "kicked" | null,
+        })
+        .execute();
+    await expectPgError(dev(new Date(), "bored"), CHECK, "devices_revoke_reason_check");
+    await expectPgError(dev(new Date(), null), CHECK, "devices_revoked_consistent");
+    await expectPgError(dev(null, "kicked"), CHECK, "devices_revoked_consistent");
+    for (const r of ["kicked", "revoke_others", "logout", "account_delete", "demo_reset"]) {
+      await expect(dev(new Date(), r), r).resolves.toBeTruthy();
+    }
+    await expect(dev(null, null)).resolves.toBeTruthy();
+  });
+
+  it("暂存 op 的处理：resolved_at 与 resolved_by_device 同有同无、处理设备必须是本店的、处理后不能还是 held（§14 S02-3）", async () => {
+    const a = await makeShop(t.kysely);
+    const b = await makeShop(t.kysely);
+    const kicked = await makeDevice(t.kysely, a.store.id, a.account.id, { revoked: true });
+    const held = async (o: { status?: string; reject_code?: string | null; resolved_at?: Date | null; by?: string | null }) =>
+      t.kysely
+        .insertInto("ops")
+        .values({
+          id: randomUUID(), store_id: a.store.id, device_id: kicked.id, type: "stock_in", payload: "{}", payload_hash: "h",
+          occurred_at: new Date(), status: (o.status ?? "held") as "held", reject_code: o.reject_code ?? null, result: "{}",
+          resolved_at: o.resolved_at ?? null, resolved_by_device: o.by ?? null,
+        })
+        .execute();
+    await expect(held({})).resolves.toBeTruthy();
+    await expectPgError(held({ status: "applied", resolved_at: new Date() }), CHECK, "ops_resolved_consistent");
+    await expectPgError(held({ status: "applied", by: a.device.id }), CHECK, "ops_resolved_consistent");
+    await expectPgError(held({ status: "held", resolved_at: new Date(), by: a.device.id }), CHECK, "ops_resolved_not_held");
+    await expectPgError(held({ status: "applied", resolved_at: new Date(), by: b.device.id }), FK, "ops_store_id_resolved_by_device_fkey");
+    await expect(held({ status: "applied", resolved_at: new Date(), by: a.device.id })).resolves.toBeTruthy();
+    await expect(
+      held({ status: "rejected", reject_code: "discarded", resolved_at: new Date(), by: a.device.id }),
+    ).resolves.toBeTruthy();
+  });
+
+  it("冲销：普通流水最多被冲销一次；同一条 cost_fix 可以被多条冲销行引用（§14 S02-9）", async () => {
     const a = await makeShop(t.kysely);
     const p = await makeProduct(t.kysely, a.store.id);
     const op = await makeOp(t.kysely, a.store.id, a.device.id);
     const s = { storeId: a.store.id, deviceId: a.device.id, productId: p.id, opId: op.id };
-    const orig = await makeEntry(t.kysely, s);
-    await makeEntry(t.kysely, s, { reverses: orig.id });
-    await expectPgError(makeEntry(t.kysely, s, { reverses: orig.id }), UNIQUE, "entries_reverses_key");
+    const sale = await makeEntry(t.kysely, s, { type: "sale" });
+    await makeEntry(t.kysely, s, { type: "sale", reverses: sale.id });
+    await expectPgError(makeEntry(t.kysely, s, { type: "sale", reverses: sale.id }), UNIQUE, "entries_reverses_key");
+
+    // 一条 cost_fix 补记了两笔卖出，两笔分别撤销 → 两条部分冲销都指向它（cost.json cost-19 的形状）
+    const fix = await makeEntry(t.kysely, s, { type: "cost_fix" });
+    await makeEntry(t.kysely, s, { type: "cost_fix", reverses: fix.id });
+    await expect(makeEntry(t.kysely, s, { type: "cost_fix", reverses: fix.id })).resolves.toBeTruthy();
+    const n = await t.kysely
+      .selectFrom("entries")
+      .select((eb) => eb.fn.countAll<string>().as("n"))
+      .where("store_id", "=", a.store.id)
+      .where("reverses_entry_id", "=", fix.id)
+      .executeTakeFirstOrThrow();
+    expect(Number(n.n)).toBe(2);
+
+    // 别的店的冲销行不能指向本店的原行
+    const b = await makeShop(t.kysely);
+    const pb = await makeProduct(t.kysely, b.store.id);
+    const opb = await makeOp(t.kysely, b.store.id, b.device.id);
+    await expectPgError(
+      makeEntry(t.kysely, { storeId: b.store.id, deviceId: b.device.id, productId: pb.id, opId: opb.id }, { reverses: sale.id }),
+      FK,
+      "entries_store_id_reverses_entry_id_fkey",
+    );
+  });
+
+  it("lot_moves：同店可以挂；把 A 店的流水挂到 B 店的批次上失败（插入和更新都拦，§14 S02-8）", async () => {
+    const mk = async () => {
+      const shop = await makeShop(t.kysely);
+      const p = await makeProduct(t.kysely, shop.store.id);
+      const op = await makeOp(t.kysely, shop.store.id, shop.device.id);
+      const e = await makeEntry(t.kysely, { storeId: shop.store.id, deviceId: shop.device.id, productId: p.id, opId: op.id });
+      const lotId = randomUUID();
+      await t.kysely
+        .insertInto("stock_lots")
+        .values({ id: lotId, store_id: shop.store.id, product_id: p.id, source_entry_id: e.id, qty_in: 5, qty_left: 5, rev: await nextRev(t.kysely, shop.store.id) })
+        .execute();
+      return { shop, entryId: e.id, lotId };
+    };
+    const A = await mk();
+    const B = await mk();
+    const move = (store: string, entry: string, lot: string) =>
+      t.kysely.insertInto("lot_moves").values({ store_id: store, entry_id: entry, lot_id: lot, qty: 1 }).execute();
+    await expect(move(A.shop.store.id, A.entryId, A.lotId)).resolves.toBeTruthy();
+    await expectPgError(move(A.shop.store.id, A.entryId, B.lotId), FK, "lot_moves_store_id_lot_id_fkey");
+    await expectPgError(move(B.shop.store.id, A.entryId, B.lotId), FK, "lot_moves_store_id_entry_id_fkey");
+    await expectPgError(
+      t.kysely
+        .updateTable("lot_moves")
+        .set({ lot_id: B.lotId })
+        .where("store_id", "=", A.shop.store.id)
+        .where("entry_id", "=", A.entryId)
+        .execute(),
+      FK,
+      "lot_moves_store_id_lot_id_fkey",
+    );
+    await expectPgError(move(A.shop.store.id, A.entryId, A.lotId), UNIQUE, "lot_moves_pkey");
+  });
+
+  it("商品：进价未知时货值必须为 0；进价已知时必须有最近进价（I3 的库层兜底）", async () => {
+    const a = await makeShop(t.kysely);
+    const p = await makeProduct(t.kysely, a.store.id);
+    const upd = (v: { cost_known?: boolean; stock_value_fen?: number; last_cost_fen?: number | null }) =>
+      t.kysely.updateTable("products").set(v).where("store_id", "=", a.store.id).where("id", "=", p.id).execute();
+    await expectPgError(upd({ cost_known: false, stock_value_fen: 100 }), CHECK, "products_unknown_cost_zero_value");
+    await expectPgError(upd({ cost_known: true, last_cost_fen: null }), CHECK, "products_known_cost_has_last");
+    await expect(upd({ cost_known: true, last_cost_fen: 0, stock_value_fen: 0 })).resolves.toBeTruthy();
+    await expect(upd({ stock_value_fen: -300 })).resolves.toBeTruthy();
   });
 
   it("批次：closed_at 与 closed_reason 同有同无；closed_reason 只能 disposed / voided；qty_left 不为负", async () => {
@@ -290,8 +471,8 @@ describe("其他约束", () => {
           closed_reason: (o.closed_reason ?? null) as "disposed" | null, rev: await nextRev(t.kysely, a.store.id),
         })
         .execute();
-    await expectPgError(lot({ closed_at: new Date() }), CHECK, "stock_lots_check");
-    await expectPgError(lot({ closed_reason: "disposed" }), CHECK, "stock_lots_check");
+    await expectPgError(lot({ closed_at: new Date() }), CHECK, "stock_lots_closed_consistent");
+    await expectPgError(lot({ closed_reason: "disposed" }), CHECK, "stock_lots_closed_consistent");
     await expectPgError(lot({ closed_at: new Date(), closed_reason: "sold" }), CHECK, "stock_lots_closed_reason_check");
     await expectPgError(lot({ qty_left: -1 }), CHECK, "stock_lots_qty_left_check");
     await expect(lot({ closed_at: new Date(), closed_reason: "voided" })).resolves.toBeTruthy();

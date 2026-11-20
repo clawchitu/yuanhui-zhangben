@@ -6,32 +6,68 @@ import { listMigrations, migrate } from "../src/db.ts";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
 import { CONTRACTS_DIR, loadOpenApi } from "./helpers/contract.ts";
 
-// §3.1–§3.3 每张表的字段（照抄计划）；products 另加契约要的 image_ver（见 PR 疑问）
-const SPEC: Record<string, string[]> = {
-  stores: ["id", "name", "is_demo", "low_stock_default", "rev", "epoch", "created_at"],
-  accounts: ["id", "store_id", "username", "password_hash", "kind", "failed_logins", "locked_until", "delete_requested_at", "created_at"],
-  devices: ["id", "account_id", "store_id", "role", "label", "token_hash", "app_build", "created_at", "last_seen_at", "revoked_at", "revoke_reason"],
-  pairing_tokens: ["id", "token_hash", "account_id", "store_id", "role", "label", "created_by_device", "expires_at", "used_at", "used_by_device", "created_at"],
-  products: [
-    "id", "store_id", "name", "base_unit", "price_fen", "stock_qty", "stock_value_fen", "last_cost_fen", "cost_known", "stock_ver",
-    "last_count_at", "low_at", "stock_known", "track_expiry", "expiry_warn_days", "shelf_life_months", "needs_review", "image_key",
-    "image_source", "archived_at", "created_by_device", "rev", "updated_at", "image_ver",
-  ],
-  product_barcodes: ["store_id", "barcode", "product_id", "pack_qty", "unit_name", "pack_price_fen", "rev", "deleted_at"],
-  product_aliases: ["store_id", "alias_id", "product_id"],
-  barcode_catalog: ["barcode", "found", "name", "spec", "brand", "image_url", "source", "raw", "fetched_at"],
-  ops: ["id", "store_id", "device_id", "type", "payload", "payload_hash", "occurred_at", "received_at", "status", "reject_code", "result", "flags"],
-  sale_batches: ["id", "store_id", "device_id", "list_total_fen", "paid_total_fen", "occurred_at", "received_at", "rev"],
-  entries: [
-    "id", "store_id", "seq", "op_id", "batch_id", "type", "reverses_entry_id", "product_id", "barcode", "name_snapshot", "unit_name",
-    "pack_qty", "pack_count", "qty_delta", "list_amount_fen", "amount_fen", "unit_cost_fen", "cogs_fen", "value_delta_fen",
-    "cost_missing", "expiry_date", "device_id", "occurred_at", "received_at", "voided_at", "voided_by_device", "cost_fix_entry_id",
-    "flags", "rev",
-  ],
-  stock_lots: ["id", "store_id", "product_id", "source_entry_id", "expiry_date", "qty_in", "qty_left", "snoozed_until", "closed_at", "closed_reason", "handle_ver", "rev"],
-  lot_moves: ["entry_id", "lot_id", "qty"],
-  image_jobs: ["product_id", "store_id", "source_url", "attempts", "next_try_at", "done_at", "last_error"],
-  removed: ["store_id", "rev", "kind", "row_id"],
+// §3.1–§3.3 每张表的字段：直接从 docs/plan-v2.md 的表格里解析（不手抄，计划改了测试跟着变）
+const PLAN = readFileSync(resolve(CONTRACTS_DIR, "../docs/plan-v2.md"), "utf8");
+function specFromPlan(): Record<string, string[]> {
+  const sec = PLAN.slice(PLAN.indexOf("### 3.1"), PLAN.indexOf("### 3.4"));
+  const out: Record<string, string[]> = {};
+  for (const m of sec.matchAll(/^\| `([a-z_]+)` \| `([^`]+)` \|/gm)) {
+    out[m[1]] = m[2].split(",").map((f) => f.trim().split(/\s+/)[0]);
+  }
+  return out;
+}
+const SPEC = specFromPlan();
+
+// 索引：名字 → 定义里必须出现的片段（结构回归保护，Codex 审核意见）
+const INDEXES: Record<string, string> = {
+  accounts_pkey: "(id)",
+  accounts_store_id_id_key: "(store_id, id)",
+  accounts_username_lower_key: "UNIQUE INDEX accounts_username_lower_key ON accounts USING btree (lower(username))",
+  accounts_store_key: "UNIQUE INDEX accounts_store_key ON accounts USING btree (store_id)",
+  stores_pkey: "(id)",
+  devices_pkey: "(store_id, id)",
+  devices_token_hash_key: "(token_hash)",
+  devices_active_label_key: "(store_id, label) WHERE (revoked_at IS NULL)",
+  devices_account_idx: "(store_id, account_id)",
+  pairing_tokens_pkey: "(id)",
+  pairing_tokens_token_hash_key: "(token_hash)",
+  pairing_tokens_store_idx: "(store_id, expires_at)",
+  products_pkey: "(store_id, id)",
+  products_store_rev_key: "UNIQUE INDEX products_store_rev_key ON products USING btree (store_id, rev)",
+  products_store_name_idx: "(store_id, name)",
+  products_needs_review_idx: "(store_id) WHERE needs_review",
+  product_barcodes_pkey: "(store_id, barcode)",
+  product_barcodes_store_rev_key: "UNIQUE INDEX product_barcodes_store_rev_key ON product_barcodes USING btree (store_id, rev)",
+  product_barcodes_product_idx: "(store_id, product_id)",
+  product_barcodes_prefix_idx: "(store_id, barcode text_pattern_ops) WHERE (deleted_at IS NULL)",
+  product_aliases_pkey: "(store_id, alias_id)",
+  barcode_catalog_pkey: "(barcode)",
+  ops_pkey: "(store_id, id)",
+  ops_device_idx: "(store_id, device_id, received_at)",
+  ops_held_idx: "(store_id, device_id) WHERE (status = 'held'::text)",
+  sale_batches_pkey: "(store_id, id)",
+  sale_batches_store_rev_key: "UNIQUE INDEX sale_batches_store_rev_key ON sale_batches USING btree (store_id, rev)",
+  sale_batches_occurred_idx: "(store_id, occurred_at)",
+  entries_pkey: "(store_id, id)",
+  entries_store_seq_key: "UNIQUE INDEX entries_store_seq_key ON entries USING btree (store_id, seq)",
+  entries_store_rev_key: "UNIQUE INDEX entries_store_rev_key ON entries USING btree (store_id, rev)",
+  entries_reverses_key: "UNIQUE INDEX entries_reverses_key ON entries USING btree (store_id, reverses_entry_id) WHERE ((reverses_entry_id IS NOT NULL) AND (type <> 'cost_fix'::text))",
+  entries_occurred_idx: "(store_id, occurred_at)",
+  entries_product_idx: "(store_id, product_id, seq)",
+  entries_batch_idx: "(store_id, batch_id) WHERE (batch_id IS NOT NULL)",
+  entries_op_idx: "(store_id, op_id)",
+  entries_device_idx: "(store_id, device_id, occurred_at)",
+  stock_lots_pkey: "(store_id, id)",
+  stock_lots_store_rev_key: "UNIQUE INDEX stock_lots_store_rev_key ON stock_lots USING btree (store_id, rev)",
+  stock_lots_open_idx: "(store_id, product_id, expiry_date",
+  stock_lots_source_idx: "(store_id, source_entry_id)",
+  lot_moves_pkey: "(store_id, entry_id, lot_id)",
+  lot_moves_lot_idx: "(store_id, lot_id)",
+  image_jobs_pkey: "(store_id, product_id)",
+  image_jobs_pending_idx: "(next_try_at) WHERE (done_at IS NULL)",
+  removed_pkey: "(store_id, rev)",
+  removed_row_idx: "(store_id, kind, row_id)",
+  schema_migrations_pkey: "(name)",
 };
 
 async function columns(t: TestDb): Promise<Record<string, Record<string, string>>> {
@@ -94,12 +130,25 @@ describe("迁移", () => {
     await t.pool.query("UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_init.sql'", [listMigrations()[0].checksum]);
   });
 
-  it("§3 的每张表、每个字段都在，没有多余的表", async () => {
+  it("§3 的每张表、每个字段都在（从计划解析），没有多余的表和列", async () => {
+    expect(Object.keys(SPEC).length).toBe(15);
+    expect(SPEC.lot_moves).toEqual(["store_id", "entry_id", "lot_id", "qty"]);
+    expect(SPEC.ops).toContain("resolved_by_device");
     const cols = await columns(t);
     expect(Object.keys(cols).sort()).toEqual([...Object.keys(SPEC), "schema_migrations"].sort());
     for (const [table, fields] of Object.entries(SPEC)) {
       expect(Object.keys(cols[table]).sort(), table).toEqual([...fields].sort());
     }
+  });
+
+  it("索引齐全，定义与预期一致（手机生成 id 的表主键是 (store_id, id)）", async () => {
+    const r = await t.pool.query<{ indexname: string; indexdef: string }>(
+      "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1",
+      [t.schema],
+    );
+    const got = Object.fromEntries(r.rows.map((x) => [x.indexname, x.indexdef.replaceAll(`${t.schema}.`, "")]));
+    expect(Object.keys(got).sort()).toEqual(Object.keys(INDEXES).sort());
+    for (const [name, frag] of Object.entries(INDEXES)) expect(got[name], name).toContain(frag);
   });
 
   it("金额列一律 bigint（整数分），数量列 integer，时间列 timestamptz", async () => {

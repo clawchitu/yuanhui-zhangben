@@ -2,6 +2,8 @@
 -- 金额一律整数分 bigint；数量整数基本单位；时间 timestamptz；业务日按 Asia/Shanghai（由应用计算，库里存 timestamptz）。
 -- 不写 schema 名：迁移跑在连接的 search_path 上（测试里每个文件一个独立 schema）。
 -- 跨表引用一律带 store_id 的复合外键，库层面就不可能把 A 店的行挂到 B 店的商品、设备上。
+-- id 由手机生成的六张表（devices、products、ops、sale_batches、entries、stock_lots）主键是 (store_id, id)，
+-- 不做全库唯一：一家店里出现的 id 不挡另一家店（§3 通用约定、§14 S02-8）。
 
 -- ───────────────────────── 3.1 账号与设备 ─────────────────────────
 
@@ -35,8 +37,8 @@ CREATE UNIQUE INDEX accounts_username_lower_key ON accounts (lower(username));
 CREATE UNIQUE INDEX accounts_store_key ON accounts (store_id);
 
 CREATE TABLE devices (
-  -- 设备 id 由手机生成（登录请求里的 device_id）
-  id            uuid PRIMARY KEY,
+  -- 设备 id 由手机在每次登录或兑码时新生成，从不重复使用（§3.1）
+  id            uuid NOT NULL,
   account_id    uuid NOT NULL,
   store_id      uuid NOT NULL,
   role          text NOT NULL CHECK (role IN ('family', 'cashier')),
@@ -48,14 +50,16 @@ CREATE TABLE devices (
   last_seen_at  timestamptz,
   -- 被踢后行保留，靠它认出被踢设备补传的流水（§4.5）
   revoked_at    timestamptz,
-  revoke_reason text,
+  -- demo_reset 就是同步响应里的 discard_outbox（§4.5）
+  revoke_reason text CHECK (revoke_reason IN ('kicked', 'revoke_others', 'logout', 'account_delete', 'demo_reset')),
+  PRIMARY KEY (store_id, id),
   UNIQUE (token_hash),
-  UNIQUE (store_id, id),
-  FOREIGN KEY (store_id, account_id) REFERENCES accounts (store_id, id)
+  FOREIGN KEY (store_id, account_id) REFERENCES accounts (store_id, id),
+  CONSTRAINT devices_revoked_consistent CHECK ((revoked_at IS NULL) = (revoke_reason IS NULL))
 );
 -- 同店未撤销设备的称呼不重名（重名时由应用自动加序号）
 CREATE UNIQUE INDEX devices_active_label_key ON devices (store_id, label) WHERE revoked_at IS NULL;
-CREATE INDEX devices_account_idx ON devices (account_id);
+CREATE INDEX devices_account_idx ON devices (store_id, account_id);
 
 CREATE TABLE pairing_tokens (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -66,7 +70,6 @@ CREATE TABLE pairing_tokens (
   label             text CHECK (length(label) BETWEEN 1 AND 40),
   -- 只有 role='family' 的设备能创建（S03 的接口校验）
   created_by_device uuid NOT NULL,
-  created_at        timestamptz NOT NULL DEFAULT now(),
   -- 2 分钟过期，一次性
   expires_at        timestamptz NOT NULL,
   used_at           timestamptz,
@@ -77,16 +80,15 @@ CREATE TABLE pairing_tokens (
   FOREIGN KEY (store_id, used_by_device) REFERENCES devices (store_id, id),
   -- 收银员码必须带称呼（§7）
   CHECK (role <> 'cashier' OR label IS NOT NULL),
-  CHECK ((used_at IS NULL) = (used_by_device IS NULL)),
-  CHECK (expires_at > created_at)
+  CHECK ((used_at IS NULL) = (used_by_device IS NULL))
 );
-CREATE INDEX pairing_tokens_store_idx ON pairing_tokens (store_id, created_at);
+CREATE INDEX pairing_tokens_store_idx ON pairing_tokens (store_id, expires_at);
 
 -- ───────────────────────── 3.2 商品 ─────────────────────────
 
 CREATE TABLE products (
   -- 商品 id 由手机生成
-  id                uuid PRIMARY KEY,
+  id                uuid NOT NULL,
   store_id          uuid NOT NULL REFERENCES stores (id),
   name              text NOT NULL CHECK (length(name) >= 1),
   base_unit         text NOT NULL DEFAULT '个' CHECK (length(base_unit) >= 1),
@@ -110,14 +112,17 @@ CREATE TABLE products (
   needs_review      boolean NOT NULL DEFAULT false,
   image_key         text,
   image_source      text,
-  -- 契约 Product.image_ver（0 = 没图）；§3.2 没列，见 PR 疑问
+  -- image_key 每变一次 +1，0 = 没图（§3.2、§14 S02-1）
   image_ver         integer NOT NULL DEFAULT 0 CHECK (image_ver >= 0),
   archived_at       timestamptz,
   created_by_device uuid,
   rev               bigint NOT NULL CHECK (rev >= 1),
   updated_at        timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (store_id, id),
-  FOREIGN KEY (store_id, created_by_device) REFERENCES devices (store_id, id)
+  PRIMARY KEY (store_id, id),
+  FOREIGN KEY (store_id, created_by_device) REFERENCES devices (store_id, id),
+  -- I3 里不依赖计算的部分由库兜底（§3.3）：进价未知时货值恒为 0；进价已知时一定有最近进价
+  CONSTRAINT products_unknown_cost_zero_value CHECK (cost_known OR stock_value_fen = 0),
+  CONSTRAINT products_known_cost_has_last CHECK (NOT cost_known OR last_cost_fen IS NOT NULL)
 );
 -- 同店 rev 不重复；也是 catalog 流 `rev > cursor` 分页的索引（§4.2）
 CREATE UNIQUE INDEX products_store_rev_key ON products (store_id, rev);
@@ -170,8 +175,8 @@ CREATE TABLE barcode_catalog (
 -- ───────────────────────── 3.3 流水 ─────────────────────────
 
 CREATE TABLE ops (
-  -- 手机生成；幂等键
-  id           uuid PRIMARY KEY,
+  -- 手机生成；幂等键是 (store_id, id)
+  id           uuid NOT NULL,
   store_id     uuid NOT NULL,
   device_id    uuid NOT NULL,
   type         text NOT NULL CHECK (type IN (
@@ -185,17 +190,24 @@ CREATE TABLE ops (
   reject_code  text,
   -- 当初返回给手机的结果（含 remap、拒绝原因），重发时原样返回（§4.2）
   result       jsonb NOT NULL,
+  -- 暂存的 op 被家用手机处理（记上 → applied；不要 → rejected + discarded）的时间和设备（§3.3、§14 S02-3）
+  resolved_at        timestamptz,
+  resolved_by_device uuid,
   flags        jsonb NOT NULL DEFAULT '{}'::jsonb,
-  UNIQUE (store_id, id),
+  PRIMARY KEY (store_id, id),
   FOREIGN KEY (store_id, device_id) REFERENCES devices (store_id, id),
-  CHECK (status <> 'rejected' OR reject_code IS NOT NULL)
+  FOREIGN KEY (store_id, resolved_by_device) REFERENCES devices (store_id, id),
+  CONSTRAINT ops_rejected_has_code CHECK (status <> 'rejected' OR reject_code IS NOT NULL),
+  CONSTRAINT ops_resolved_consistent CHECK ((resolved_at IS NULL) = (resolved_by_device IS NULL)),
+  -- 处理过的就不再是暂存
+  CONSTRAINT ops_resolved_not_held CHECK (resolved_at IS NULL OR status <> 'held')
 );
 CREATE INDEX ops_device_idx ON ops (store_id, device_id, received_at);
 -- 「已登录的手机」里列出被踢设备暂存待确认的账（§4.5）
 CREATE INDEX ops_held_idx ON ops (store_id, device_id) WHERE status = 'held';
 
 CREATE TABLE sale_batches (
-  id             uuid PRIMARY KEY,
+  id             uuid NOT NULL,
   store_id       uuid NOT NULL,
   device_id      uuid NOT NULL,
   list_total_fen bigint NOT NULL CHECK (list_total_fen >= 0),
@@ -204,14 +216,14 @@ CREATE TABLE sale_batches (
   occurred_at    timestamptz NOT NULL,
   received_at    timestamptz NOT NULL DEFAULT now(),
   rev            bigint NOT NULL CHECK (rev >= 1),
-  UNIQUE (store_id, id),
+  PRIMARY KEY (store_id, id),
   FOREIGN KEY (store_id, device_id) REFERENCES devices (store_id, id)
 );
 CREATE UNIQUE INDEX sale_batches_store_rev_key ON sale_batches (store_id, rev);
 CREATE INDEX sale_batches_occurred_idx ON sale_batches (store_id, occurred_at);
 
 CREATE TABLE entries (
-  id                uuid PRIMARY KEY,
+  id                uuid NOT NULL,
   store_id          uuid NOT NULL,
   -- 本店内的应用顺序
   seq               bigint NOT NULL CHECK (seq >= 1),
@@ -244,7 +256,7 @@ CREATE TABLE entries (
   cost_fix_entry_id uuid,
   flags             jsonb NOT NULL DEFAULT '{}'::jsonb,
   rev               bigint NOT NULL CHECK (rev >= 1),
-  UNIQUE (store_id, id),
+  PRIMARY KEY (store_id, id),
   FOREIGN KEY (store_id, op_id) REFERENCES ops (store_id, id),
   FOREIGN KEY (store_id, batch_id) REFERENCES sale_batches (store_id, id),
   FOREIGN KEY (store_id, reverses_entry_id) REFERENCES entries (store_id, id),
@@ -256,18 +268,20 @@ CREATE TABLE entries (
 );
 CREATE UNIQUE INDEX entries_store_seq_key ON entries (store_id, seq);
 CREATE UNIQUE INDEX entries_store_rev_key ON entries (store_id, rev);
--- 一行最多被冲销一次（撤销两次第二次无操作，§4.4）
-CREATE UNIQUE INDEX entries_reverses_key ON entries (reverses_entry_id) WHERE reverses_entry_id IS NOT NULL;
+-- 除 cost_fix 外一行最多被冲销一次（撤销两次第二次无操作，§4.4）。
+-- cost_fix 可以被多次部分冲销：它补记的每一笔卖出被撤销时各冲一条（§3.3、§14 S02-9、cost.json cost-19）
+CREATE UNIQUE INDEX entries_reverses_key ON entries (store_id, reverses_entry_id)
+  WHERE reverses_entry_id IS NOT NULL AND type <> 'cost_fix';
 -- 报表按上海时区的日/月求和
 CREATE INDEX entries_occurred_idx ON entries (store_id, occurred_at);
 CREATE INDEX entries_product_idx ON entries (store_id, product_id, seq);
-CREATE INDEX entries_batch_idx ON entries (batch_id) WHERE batch_id IS NOT NULL;
-CREATE INDEX entries_op_idx ON entries (op_id);
+CREATE INDEX entries_batch_idx ON entries (store_id, batch_id) WHERE batch_id IS NOT NULL;
+CREATE INDEX entries_op_idx ON entries (store_id, op_id);
 -- 收银员只拉本机最近 2 天的卖出（§3.4）
 CREATE INDEX entries_device_idx ON entries (store_id, device_id, occurred_at);
 
 CREATE TABLE stock_lots (
-  id              uuid PRIMARY KEY,
+  id              uuid NOT NULL,
   store_id        uuid NOT NULL,
   product_id      uuid NOT NULL,
   source_entry_id uuid NOT NULL,
@@ -280,34 +294,38 @@ CREATE TABLE stock_lots (
   -- 只在「处理」和「过几天再提醒」时 +1（§5.4）
   handle_ver      integer NOT NULL DEFAULT 0 CHECK (handle_ver >= 0),
   rev             bigint NOT NULL CHECK (rev >= 1),
-  UNIQUE (store_id, id),
+  PRIMARY KEY (store_id, id),
   FOREIGN KEY (store_id, product_id) REFERENCES products (store_id, id),
   FOREIGN KEY (store_id, source_entry_id) REFERENCES entries (store_id, id),
-  CHECK ((closed_at IS NULL) = (closed_reason IS NULL))
+  CONSTRAINT stock_lots_closed_consistent CHECK ((closed_at IS NULL) = (closed_reason IS NULL))
 );
 CREATE UNIQUE INDEX stock_lots_store_rev_key ON stock_lots (store_id, rev);
 -- 扣批次顺序：到期日从早到晚（空日期最后），同日先建的先扣（§5.4、Q11）
 CREATE INDEX stock_lots_open_idx ON stock_lots (store_id, product_id, expiry_date NULLS LAST) WHERE closed_at IS NULL;
-CREATE INDEX stock_lots_source_idx ON stock_lots (source_entry_id);
+CREATE INDEX stock_lots_source_idx ON stock_lots (store_id, source_entry_id);
 
 -- 每笔卖出/损耗/盘点扣了哪个批次，撤销时原样加回
 CREATE TABLE lot_moves (
-  entry_id uuid NOT NULL REFERENCES entries (id),
-  lot_id   uuid NOT NULL REFERENCES stock_lots (id),
+  store_id uuid NOT NULL,
+  entry_id uuid NOT NULL,
+  lot_id   uuid NOT NULL,
   qty      integer NOT NULL CHECK (qty <> 0),
-  PRIMARY KEY (entry_id, lot_id)
+  PRIMARY KEY (store_id, entry_id, lot_id),
+  FOREIGN KEY (store_id, entry_id) REFERENCES entries (store_id, id),
+  FOREIGN KEY (store_id, lot_id) REFERENCES stock_lots (store_id, id)
 );
-CREATE INDEX lot_moves_lot_idx ON lot_moves (lot_id);
+CREATE INDEX lot_moves_lot_idx ON lot_moves (store_id, lot_id);
 
 -- 图片下载队列，失败重试 3 次
 CREATE TABLE image_jobs (
-  product_id  uuid PRIMARY KEY,
+  product_id  uuid NOT NULL,
   store_id    uuid NOT NULL,
   source_url  text NOT NULL,
   attempts    integer NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 3),
   next_try_at timestamptz NOT NULL DEFAULT now(),
   done_at     timestamptz,
   last_error  text,
+  PRIMARY KEY (store_id, product_id),
   FOREIGN KEY (store_id, product_id) REFERENCES products (store_id, id)
 );
 CREATE INDEX image_jobs_pending_idx ON image_jobs (next_try_at) WHERE done_at IS NULL;
