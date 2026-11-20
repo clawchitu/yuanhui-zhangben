@@ -8,7 +8,7 @@
 import { sql, type Kysely } from "kysely";
 import type { Database } from "../db.ts";
 import { shanghaiDay } from "../auth/guard.ts";
-import { barcodeOut, batchOut, entryOut, int, LEDGER_DAYS, lotOut, productOut, removedOut, type Scope } from "./projection.ts";
+import { barcodeOut, batchOut, cashierRemovedVisible, entryOut, int, LEDGER_DAYS, lotOut, productOut, removedOut, type Scope } from "./projection.ts";
 
 /** 每页 500 行（§4.2） */
 export const DEFAULT_PAGE_SIZE = 500;
@@ -98,7 +98,7 @@ export async function pullChanges(db: Kysely<Database>, input: PullInput): Promi
         .limit(limit)
         .execute();
       // 条码现在又挂着（解除后重新挂上）就不再下发它的旧墓碑：那一行会以更大的 rev 下发，手机先处理哪个数组都不会误删
-      const removed = await trx
+      let removedQ = trx
         .selectFrom("removed as r")
         .selectAll("r")
         .where("r.store_id", "=", storeId)
@@ -117,10 +117,10 @@ export async function pullChanges(db: Kysely<Database>, input: PullInput): Promi
               ),
             ),
           ]),
-        )
-        .orderBy("r.rev")
-        .limit(limit)
-        .execute();
+        );
+      // 收银员的墓碑按角色过滤（projection.ts）
+      if (scope === "cashier_projection") removedQ = removedQ.where(cashierRemovedVisible(input.deviceId));
+      const removed = await removedQ.orderBy("r.rev").limit(limit).execute();
       const cat = page(
         [
           products.map((r) => ({ key: "products" as const, rev: int(r.rev), row: productOut(r, scope) })),

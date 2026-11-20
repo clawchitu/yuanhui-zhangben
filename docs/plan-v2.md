@@ -1083,7 +1083,7 @@ S04 的 PR（#10）提了 14 条（S04-1…9 来自计划裁定，S04-10…13 �
 | S04-13 | 请求外壳和 payload 的校验 | 外壳严格校验，不成形整个请求 400。payload 不合 `ops.schema.json` → 这个 op `rejected: invalid` 并留档。权限判在 schema 之前。过了外壳但算不了哈希或存不进库的 op（`\u0000`、不成对的代理项、解析不出的 `occurred_at`；Codex 第二轮补：payload 嵌套超过 16 层或超过 1 万个节点，这项检查不递归）→ `rejected: invalid`，不留档。op 的内容不许导致 500 | §4.2、§4.4、S04 |
 | S04-14 | savepoint 兜底把所有 22xxx 都当成「op 内容有问题」 | S04 只有商品类 op，可以接受。S05 / S06 加入卖出、进货以后，服务器自己算错（除零、数值溢出）也是 22xxx，记账 op 被当成终局的 `invalid`、手机不再重发，等于丢账。S05 接入记账 op 时要重新定：记账类 op 遇到预检查没拦住的 22xxx 应当让整个请求 500（手机会重发），不能单个拒收；兜底触发时一律按 error 级别记日志（op id、类型、SQLSTATE） | §4.2、S05、S06 |
 
-待办（S04 只记录，不实现）：收银员拉取的 `removed` 墓碑要按角色过滤。S04 只写 `barcode` 墓碑，没有泄漏；但 `removed.kind` 还允许 `entry / batch / lot`，S05 / S06 里第一个写这些墓碑的段落要在 `sync/projection.ts` 里按角色过滤（收银员只收本机卖出流水和批次头的墓碑，不收 `lot`），并加进收银员裁剪测试。
+待办（S04 只记录，不实现）：收银员拉取的 `removed` 墓碑要按角色过滤。S04 只写 `barcode` 墓碑，没有泄漏；但 `removed.kind` 还允许 `entry / batch / lot`，S05 / S06 里第一个写这些墓碑的段落要在 `sync/projection.ts` 里按角色过滤（收银员只收本机卖出流水和批次头的墓碑，不收 `lot`），并加进收银员裁剪测试。（已由 S05b 提前实现：`cashierRemovedVisible`，原行找不到的 `entry / batch` 墓碑不发给收银员；测试在 `sync.projection.test.ts`。）
 
 S13 的 PR（#9）提了 4 条，裁定如下：
 

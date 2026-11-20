@@ -3,8 +3,9 @@
 // Product / ProductBarcode / Removed / Entry / SaleBatch / StockLot。
 //
 // 收银员（scope = cashier_projection）拿不到：product_private 的任何字段（库存、货值、进价、low_at、保质期设置、盘点时间），
-// 任何进货 / 盘点 / 损耗流水（只有卖出），别的手机的流水，保质期批次，cogs_fen / value_delta_fen / unit_cost_fen / cost_missing。
-import type { Selectable } from "kysely";
+// 任何进货 / 盘点 / 损耗流水（只有卖出），别的手机的流水，保质期批次，cogs_fen / value_delta_fen / unit_cost_fen / cost_missing，
+// 以及 lot、别机的、非卖出的墓碑（cashierRemovedVisible）。
+import { sql, type Selectable } from "kysely";
 import type { Database } from "../db.ts";
 
 export type Scope = "full_store" | "cashier_projection";
@@ -64,6 +65,26 @@ export function barcodeOut(b: Row<"product_barcodes">) {
     ...(b.pack_price_fen !== null && b.pack_qty > 1 ? { pack_price_fen: int(b.pack_price_fen) } : {}),
     rev: int(b.rev),
   };
+}
+
+/**
+ * 收银员能收哪些墓碑（§14 S04 待办、S05-5）：条码和商品别名（目录本来就全给）、本机卖出流水和本机批次头的；
+ * 不收 lot，不收别机的、非卖出的流水墓碑。原行已经找不到的 entry / batch 墓碑无从判断归属，一律不发（宁可不删也不泄漏）。
+ * 用在 pull.ts 里别名为 `r` 的 removed 查询上。
+ */
+export function cashierRemovedVisible(deviceId: string) {
+  // row_id 是 text，只有 entry / batch 才是 uuid：用 CASE 保证不对条码做 ::uuid 转换
+  return sql<boolean>`(
+    r.kind IN ('barcode', 'product_alias')
+    OR (r.kind = 'entry' AND EXISTS (
+      SELECT 1 FROM entries e
+      WHERE e.store_id = r.store_id AND e.id = (CASE WHEN r.kind = 'entry' THEN r.row_id::uuid END)
+        AND e.type = 'sale' AND e.device_id = ${deviceId}))
+    OR (r.kind = 'batch' AND EXISTS (
+      SELECT 1 FROM sale_batches b
+      WHERE b.store_id = r.store_id AND b.id = (CASE WHEN r.kind = 'batch' THEN r.row_id::uuid END)
+        AND b.device_id = ${deviceId}))
+  )`;
 }
 
 export function removedOut(r: Row<"removed">) {
