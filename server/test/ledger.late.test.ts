@@ -78,6 +78,29 @@ describe("迟到流水补偿（§5.6 第 4 条）", () => {
     await app.close();
   });
 
+  it("被补偿的迟到卖出不扣批次、不写 lot_moves：批次 10 → 盘亏 8 → 迟到卖 2 后仍是 8（PR #16 Fable 2，裁定 S06-10）", async () => {
+    const { shop, app, send } = await setup();
+    const u = upsertFull({ price: 300, extra: { track_expiry: true, expiry_warn_days: 7 } });
+    await send(u);
+    const pid = u.payload.product_id as string;
+    await send(op("stock_in", { entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", pack_qty: 1, pack_count: 10, unit_cost_fen: 100, expiry_date: "2026-12-01" }, { at: T_LATE }));
+    await send(count(pid, 8, await ver(shop.storeId, pid)));
+    const lots = () => tdb.kysely.selectFrom("stock_lots").selectAll().where("store_id", "=", shop.storeId).where("product_id", "=", pid).execute();
+    expect((await lots()).map((l) => l.qty_left)).toEqual([8]);
+    const s = sale(pid, 2, T_LATE);
+    expect(await send(s)).toEqual([{ id: s.id, status: "applied" }]);
+    expect((await product(shop.storeId, pid)).stock_qty).toBe(8);
+    expect((await lots()).map((l) => [l.qty_left, l.handle_ver])).toEqual([[8, 0]]);
+    const saleId = ((s.payload.lines as Array<{ entry_id: string }>)[0]!).entry_id;
+    const moves = await tdb.kysely.selectFrom("lot_moves").selectAll().where("store_id", "=", shop.storeId).where("entry_id", "=", saleId).execute();
+    expect(moves).toEqual([]);
+    // 盘点之后的卖出照常扣批次
+    await send(sale(pid, 1, T_AFTER));
+    expect((await lots()).map((l) => l.qty_left)).toEqual([7]);
+    await assertDbLedger(tdb.kysely, shop.storeId, pid);
+    await app.close();
+  });
+
   it("盘点之后发生的（occurred_at 不早于 last_count_at）不补偿；同一时刻也不补偿", async () => {
     const { shop, app, send, newProduct } = await setup();
     const pid = await newProduct();
