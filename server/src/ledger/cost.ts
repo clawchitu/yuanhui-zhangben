@@ -51,6 +51,32 @@ export class CostError extends Error {
   readonly code = "invalid";
 }
 
+/**
+ * 落库列的取值范围（0001_init.sql）：数量（products.stock_qty、entries.qty_delta）是 integer，
+ * 金额、货值、成本（stock_value_fen、last_cost_fen、amount_fen、list_amount_fen、cogs_fen、value_delta_fen、unit_cost_fen）是 bigint。
+ * BigInt 只保证中间计算精确，结果还得存得进这些列（§14 S05-4 第二层：算出来超出列范围拒 invalid 并留档，在写库之前判）。
+ */
+export const INT32 = { min: -(2n ** 31n), max: 2n ** 31n - 1n } as const;
+export const INT64 = { min: -(2n ** 63n), max: 2n ** 63n - 1n } as const;
+
+function inRange(x: bigint, r: { min: bigint; max: bigint }, what: string) {
+  if (x < r.min || x > r.max) throw new CostError(`${what} = ${x} 超出列范围 [${r.min}, ${r.max}]`);
+}
+
+/** 返回前统一检查新状态和每条流水草稿都存得进库；越界整步拒绝（纯函数，抛出时调用方什么都没改） */
+function storable<S extends Step<unknown>>(step: S): S {
+  const { state: s, entries } = step;
+  inRange(s.q, INT32, "stock_qty");
+  inRange(s.v, INT64, "stock_value_fen");
+  if (s.c !== null) inRange(s.c, INT64, "last_cost_fen");
+  for (const e of entries) {
+    inRange(e.qty_delta, INT32, `${e.type}.qty_delta`);
+    for (const k of ["amount_fen", "list_amount_fen", "cogs_fen", "value_delta_fen"] as const) inRange(e[k], INT64, `${e.type}.${k}`);
+    if (e.unit_cost_fen !== null) inRange(e.unit_cost_fen, INT64, `${e.type}.unit_cost_fen`);
+  }
+  return step;
+}
+
 export interface Step<R> {
   state: CostState;
   entries: Array<Draft | ReversalDraft<R> | CostFixDraft<R>>;
@@ -113,7 +139,7 @@ function nonNegative(x: bigint, what: string) {
 }
 
 /** 进货 n 个基本单位、总价 T（unitCostFen = 录入的每件单价，只存档） */
-export function stockIn<R>(s: CostState, n: bigint, T: bigint, unitCostFen: bigint, missing: MissingSale<R>[]): Step<R> {
+function stockInRaw<R>(s: CostState, n: bigint, T: bigint, unitCostFen: bigint, missing: MissingSale<R>[]): Step<R> {
   if (n <= 0n) throw new CostError(`进货数量必须为正：${n}`);
   nonNegative(T, "进货总价");
   const b = roundDiv(T, n);
@@ -128,7 +154,7 @@ export function stockIn<R>(s: CostState, n: bigint, T: bigint, unitCostFen: bigi
 }
 
 /** 卖出 n 个基本单位，实收 amount（已分摊）、原价 list */
-export function sale<R>(s: CostState, n: bigint, amount: bigint, list: bigint): Step<R> {
+function saleRaw<R>(s: CostState, n: bigint, amount: bigint, list: bigint): Step<R> {
   nonNegative(n, "卖出数量");
   const line: Draft = { ...zero("sale"), qty_delta: -n, amount_fen: amount, list_amount_fen: list };
   if (!s.k) return { state: { ...s, q: s.q - n }, entries: [{ ...line, cost_missing: true }] };
@@ -137,7 +163,7 @@ export function sale<R>(s: CostState, n: bigint, amount: bigint, list: bigint): 
 }
 
 /** 盘点数到 N（§5.2；版本校验在 §5.6，不在这里）。d = 0 也记一条全 0 的 count */
-export function count<R>(s: CostState, N: bigint): Step<R> {
+function countRaw<R>(s: CostState, N: bigint): Step<R> {
   nonNegative(N, "盘点数");
   const d = N - s.q;
   if (d === 0n) return { state: s, entries: [zero("count")] };
@@ -154,10 +180,10 @@ export function count<R>(s: CostState, N: bigint): Step<R> {
  * - 没填且 k 为真：就是一次盘点，流水记 count。
  * - 没填且 k 为假：只把数量设为 N。
  */
-export function opening<R>(s: CostState, N: bigint, b: bigint | null, missing: MissingSale<R>[]): Step<R> {
+function openingRaw<R>(s: CostState, N: bigint, b: bigint | null, missing: MissingSale<R>[]): Step<R> {
   nonNegative(N, "期初数");
   if (b === null) {
-    if (s.k) return count(s, N);
+    if (s.k) return countRaw(s, N);
     return { state: { ...s, q: N }, entries: [{ ...zero("opening"), qty_delta: N - s.q }] };
   }
   nonNegative(b, "期初进价");
@@ -168,7 +194,7 @@ export function opening<R>(s: CostState, N: bigint, b: bigint | null, missing: M
 }
 
 /** 过期扔掉 / 退给供货商 n 个：成本取法与卖出相同；扔掉记损耗，退货不计盈亏；k 为假时金额 0、标 cost_missing */
-export function removeStock<R>(s: CostState, n: bigint, kind: "expire_loss" | "supplier_return"): Step<R> {
+function removeStockRaw<R>(s: CostState, n: bigint, kind: "expire_loss" | "supplier_return"): Step<R> {
   nonNegative(n, "数量");
   const line: Draft = { ...zero(kind), qty_delta: -n };
   if (!s.k) return { state: { ...s, q: s.q - n }, entries: [{ ...line, cost_missing: true }] };
@@ -190,7 +216,7 @@ export const VOIDABLE: ReadonlySet<EntryType> = new Set(["sale", "stock_in", "op
  * 3. k 只增不减：c、k 不回退，已经记的 cost_fix 不冲。
  * 4. 归位：k 为真，且（q ≤ 0 而 v ≠ q × c，或 q > 0 而 v < 0）时，一条 cost_adjust 归位到 v = q × c。
  */
-export function voidEntry<R>(s: CostState, target: Draft & { ref: R }, fixedBy?: { ref: R; b: bigint }): Step<R> {
+function voidEntryRaw<R>(s: CostState, target: Draft & { ref: R }, fixedBy?: { ref: R; b: bigint }): Step<R> {
   if (!VOIDABLE.has(target.type)) throw new CostError(`${target.type} 流水不能直接撤销`);
   const rev: ReversalDraft<R> = {
     type: target.type,
@@ -217,3 +243,11 @@ export function voidEntry<R>(s: CostState, target: Draft & { ref: R }, fixedBy?:
   }
   return { state: st, entries };
 }
+
+// 对外的入口：每一步都过 storable（§14 S05-4）
+export const stockIn = <R>(...a: Parameters<typeof stockInRaw<R>>): Step<R> => storable(stockInRaw<R>(...a));
+export const sale = <R>(...a: Parameters<typeof saleRaw<R>>): Step<R> => storable(saleRaw<R>(...a));
+export const count = <R>(...a: Parameters<typeof countRaw<R>>): Step<R> => storable(countRaw<R>(...a));
+export const opening = <R>(...a: Parameters<typeof openingRaw<R>>): Step<R> => storable(openingRaw<R>(...a));
+export const removeStock = <R>(...a: Parameters<typeof removeStockRaw<R>>): Step<R> => storable(removeStockRaw<R>(...a));
+export const voidEntry = <R>(...a: Parameters<typeof voidEntryRaw<R>>): Step<R> => storable(voidEntryRaw<R>(...a));
