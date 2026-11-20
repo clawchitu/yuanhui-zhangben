@@ -28,9 +28,10 @@ struct PriceText: View {
     }
 }
 
-/// 商品缩略图；没图时显示占位。
+/// 商品缩略图；没图时显示商品名的首字（S16「64pt 小图或首字」），首字也没有才显示占位图标。
 struct Thumb: View {
     var image: Image?
+    var initial: String?
     var size: CGFloat = Tokens.Size.thumb
 
     var body: some View {
@@ -38,6 +39,10 @@ struct Thumb: View {
             RoundedRectangle(cornerRadius: size * 0.2).fill(Tokens.Palette.paper)
             if let image {
                 image.resizable().scaledToFill()
+            } else if let initial, !initial.isEmpty {
+                Text(initial)
+                    .font(.system(size: size * 0.5, weight: .bold))
+                    .foregroundStyle(Tokens.Palette.ink2)
             } else {
                 Image(systemName: "shippingbox.fill")
                     .font(.system(size: size * 0.42))
@@ -65,21 +70,27 @@ struct PriceTag<Footer: View>: View {
     var caption: String
     let unitPriceCents: Int
     var thumb: Image?
+    /// 没图时缩略图上显示的首字；nil = 占位图标
+    var initial: String?
+    /// 下面一栏的上下留白（卖出页 03 的「买几个」栏比陈列页紧一点）
+    var footerVerticalPadding: CGFloat = 12
     let footer: Footer
 
-    init(name: String, caption: String = "刚扫的 · 单价", unitPriceCents: Int, thumb: Image? = nil,
-         @ViewBuilder footer: () -> Footer) {
+    init(name: String, caption: String = "刚扫的 · 单价", unitPriceCents: Int, thumb: Image? = nil, initial: String? = nil,
+         footerVerticalPadding: CGFloat = 12, @ViewBuilder footer: () -> Footer) {
+        self.footerVerticalPadding = footerVerticalPadding
         self.name = name
         self.caption = caption
         self.unitPriceCents = unitPriceCents
         self.thumb = thumb
+        self.initial = initial
         self.footer = footer()
     }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 14) {
-                Thumb(image: thumb)
+                Thumb(image: thumb, initial: initial)
                 VStack(alignment: .leading, spacing: 6) {
                     Text(name)
                         .font(TypeScale.title)
@@ -107,7 +118,7 @@ struct PriceTag<Footer: View>: View {
                     .frame(height: 2)
                 footer
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
+                    .padding(.vertical, footerVerticalPadding)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Tokens.Palette.card)
             }

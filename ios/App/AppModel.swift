@@ -65,6 +65,8 @@ final class AppModel {
     let today: Date
     /// `-uiScrollTo bottom`：首页一打开就滚到底（截最大辅助字号下的整页用）
     let scrollToBottom: Bool
+    /// 卖出页的测试夹具（只在 Debug 下由启动参数填，正式构建永远是空的）
+    var sellFixture = SellFixture.none
 
     let db: LocalDB
     private let defaults: UserDefaults
