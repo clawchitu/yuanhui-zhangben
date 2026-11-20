@@ -38,7 +38,7 @@ extension LocalDB {
         for l in basket.lines { effects.append(StockEffect(productId: l.productId, qtyDelta: -(try l.baseQty()))) }
         try writer.write { db in
             let s = try Self.requireSession(db)
-            try Self.checkCanQueue(op, session: s)
+            try Self.checkCanQueue(db, op, session: s)
             try db.execute(sql: """
                 INSERT INTO sale_batch (id, device_id, list_total_fen, paid_total_fen, occurred_at, op_id) VALUES (?, ?, ?, ?, ?, ?)
                 """, arguments: [batchId.uuidString, s.deviceId.uuidString, alloc.listTotalFen, payload.paidTotalFen.raw, ts,
@@ -64,7 +64,7 @@ extension LocalDB {
         let ts = Op.formatTimestamp(now)
         try writer.write { db in
             let s = try Self.requireSession(db)
-            try Self.checkCanQueue(op, session: s)
+            try Self.checkCanQueue(db, op, session: s)
             try db.execute(sql: """
                 INSERT INTO entry (id, op_id, type, product_id, barcode, name_snapshot, unit_name, pack_qty, pack_count, qty_delta,
                   list_amount_fen, amount_fen, unit_cost_fen, expiry_date, device_id, occurred_at)
@@ -102,11 +102,12 @@ extension LocalDB {
             guard let s = try Self.currentSession(db) else { return 0 }
             let days = s.holdsPrivateData ? Self.familyLedgerDays : Self.cashierLedgerDays
             guard let cutoff = cal.date(byAdding: .day, value: -(days - 1), to: cal.startOfDay(for: now)) else { return 0 }
-            let keepPending = "AND (op_id IS NULL OR op_id NOT IN (SELECT id FROM outbox WHERE status = 'pending'))"
-            try db.execute(sql: "DELETE FROM entry WHERE occurred_at < ? \(keepPending)", arguments: [Op.formatTimestamp(cutoff)])
+            let store = s.storeId.uuidString
+            let keepPending = "AND (op_id IS NULL OR op_id NOT IN (SELECT id FROM outbox WHERE status = 'pending' AND store_id = ?))"
+            try db.execute(sql: "DELETE FROM entry WHERE occurred_at < ? \(keepPending)", arguments: [Op.formatTimestamp(cutoff), store])
             var n = db.changesCount
             if !s.holdsPrivateData {
-                try db.execute(sql: "DELETE FROM entry WHERE device_id <> ? \(keepPending)", arguments: [s.deviceId.uuidString])
+                try db.execute(sql: "DELETE FROM entry WHERE device_id <> ? \(keepPending)", arguments: [s.deviceId.uuidString, store])
                 n += db.changesCount
             }
             try db.execute(sql: "DELETE FROM sale_batch WHERE id NOT IN (SELECT batch_id FROM entry WHERE batch_id IS NOT NULL)")

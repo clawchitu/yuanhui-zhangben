@@ -57,8 +57,8 @@ extension LocalDB {
             """, arguments: [op.id.uuidString, s.storeId.uuidString, s.deviceId.uuidString, s.tokenRef, op.type.rawValue,
                              op.encoded(), Op.formatTimestamp(op.occurredAt)])
         for e in effects where e.qtyDelta != 0 {
-            try db.execute(sql: "INSERT INTO outbox_effect (op_id, product_id, qty_delta) VALUES (?, ?, ?)",
-                           arguments: [op.id.uuidString, e.productId.uuidString, e.qtyDelta])
+            try db.execute(sql: "INSERT INTO outbox_effect (store_id, op_id, product_id, qty_delta) VALUES (?, ?, ?, ?)",
+                           arguments: [s.storeId.uuidString, op.id.uuidString, e.productId.uuidString, e.qtyDelta])
         }
     }
 
@@ -66,17 +66,42 @@ extension LocalDB {
     public func enqueue(_ op: Op, effects: [StockEffect] = []) throws {
         try writer.write { db in
             let s = try Self.requireSession(db)
-            try Self.checkCanQueue(op, session: s)
+            try Self.checkCanQueue(db, op, session: s)
             try Self.enqueue(db, op, session: s, effects: effects)
         }
     }
 
-    static func checkCanQueue(_ op: Op, session s: LocalSession) throws {
+    static func checkCanQueue(_ db: Database, _ op: Op, session s: LocalSession) throws {
         guard !op.type.onlineOnly else { throw invalid("\(op.type.rawValue) 只能联网提交，不进离线队列（§5.6）") }
         let quick = (op.payload as? ProductUpsertPayload)?.quick ?? false
         guard Capabilities(role: s.role).canSend(op.type, quick: quick) else {
             throw invalid("这台手机不能记 \(op.type.rawValue)")
         }
+        if let o = op.payload as? OpeningPayload { try checkOfflineOpening(db, o, store: s.storeId) }
+    }
+
+    /// 期初只有「新商品登记第二步」能离线排队（§5.6 第 1、3 条）：不带 `base_ver`；本店 outbox 里有这个商品的
+    /// 登记（`product_upsert`，没被拒）；本地基线没有过库存变动（`stock_ver` 为 0 或还没有基线）；本店 outbox 里
+    /// 也没有别的、没被拒的库存增减。否则就是已有商品，排空 outbox 后在线提交。
+    static func checkOfflineOpening(_ db: Database, _ o: OpeningPayload, store: UUID) throws {
+        let online = invalid("已有商品的期初只能联网提交，不进离线队列（§5.6）")
+        guard o.baseVer == nil else { throw online }
+        let upserts = try Data.fetchAll(db, sql: """
+            SELECT op_json FROM outbox WHERE store_id = ? AND type = 'product_upsert' AND status <> 'rejected'
+            """, arguments: [store.uuidString])
+        let registered = upserts.contains { data in
+            let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            return ((obj?["payload"] as? [String: Any])?["product_id"] as? String).flatMap(UUID.init(uuidString:)) == o.productId
+        }
+        guard registered else { throw online }
+        let ver = try Int64.fetchOne(db, sql: "SELECT stock_ver FROM product_private WHERE product_id = ?",
+                                     arguments: [o.productId.uuidString])
+        guard (ver ?? 0) == 0 else { throw online }
+        let moved = try Bool.fetchOne(db, sql: """
+            SELECT EXISTS (SELECT 1 FROM outbox_effect e JOIN outbox x ON x.store_id = e.store_id AND x.id = e.op_id
+                           WHERE e.store_id = ? AND e.product_id = ? AND x.status <> 'rejected')
+            """, arguments: [store.uuidString, o.productId.uuidString]) ?? false
+        guard !moved else { throw online }
     }
 
     /// 当前会话待传的 op，按产生顺序（重启后顺序不变）
@@ -132,17 +157,22 @@ extension LocalDB {
     }
 
     /// 记下服务器对每个 op 的结果（applied / rejected / held）。被拒的 op 对库存的临时增减自然消失。
-    /// 只改结果列；归属列由触发器保护。
-    public func recordResults(_ results: [OpResult], at now: Date = Date()) throws {
+    /// 只改结果列；归属列由触发器保护。op id 只在店内唯一，所以结果要带店（发这批 op 的会话的店）。
+    ///
+    /// 当前会话是收银员时，旧会话的 op 一拿到结果就删，不进 14 天保留，删完压缩（§14 S13-1）；
+    /// 上次没压缩完的也在这里补做（被读事务挡住不抛错，标记保留到下次）。
+    public func recordResults(_ results: [OpResult], storeId: UUID, at now: Date = Date()) throws {
         let ts = Op.formatTimestamp(now)
         try writer.write { db in
             for r in results {
                 try db.execute(sql: """
                     UPDATE outbox SET status = ?, reject_code = ?, result_json = ?, confirmed_at = ?
-                    WHERE id = ? AND status = 'pending'
-                    """, arguments: [r.status.rawValue, r.code, r.raw, ts, r.id.uuidString])
+                    WHERE store_id = ? AND id = ? AND status = 'pending'
+                    """, arguments: [r.status.rawValue, r.code, r.raw, ts, storeId.uuidString, r.id.uuidString])
             }
+            if let cur = try Self.currentSession(db) { try Self.deleteConfirmedForeignOps(db, current: cur) }
         }
+        try compactIfPossible()
     }
 
     /// 删掉确认超过 14 天的 op（§4.6）。未确认的永远不删。

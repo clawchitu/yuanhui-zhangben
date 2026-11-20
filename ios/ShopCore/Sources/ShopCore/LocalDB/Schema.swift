@@ -116,7 +116,7 @@ enum LocalSchema {
 
                 CREATE TABLE outbox (
                   seq          INTEGER PRIMARY KEY AUTOINCREMENT,   -- 上传顺序，重启后不变
-                  id           TEXT NOT NULL UNIQUE,               -- op id
+                  id           TEXT NOT NULL,                      -- op id：店内唯一（§14 S02-8），见下面的 UNIQUE
                   store_id     TEXT NOT NULL,
                   device_id    TEXT NOT NULL,
                   token_ref    TEXT NOT NULL,
@@ -128,17 +128,20 @@ enum LocalSchema {
                   reject_code  TEXT,
                   result_json  BLOB,
                   confirmed_at TEXT,
-                  CHECK ((status = 'pending') = (confirmed_at IS NULL))
+                  CHECK ((status = 'pending') = (confirmed_at IS NULL)),
+                  UNIQUE (store_id, id)
                 );
                 CREATE INDEX outbox_device_status ON outbox(device_id, status);
 
                 -- 每条 op 对本地库存的增减（基本单位）。显示库存 = 基线 + 本机未确认 op 的这些增减。
                 CREATE TABLE outbox_effect (
-                  op_id      TEXT NOT NULL REFERENCES outbox(id) ON DELETE CASCADE,
+                  store_id   TEXT NOT NULL,
+                  op_id      TEXT NOT NULL,
                   product_id TEXT NOT NULL,
-                  qty_delta  INTEGER NOT NULL
+                  qty_delta  INTEGER NOT NULL,
+                  FOREIGN KEY (store_id, op_id) REFERENCES outbox(store_id, id) ON DELETE CASCADE
                 );
-                CREATE INDEX outbox_effect_op ON outbox_effect(op_id);
+                CREATE INDEX outbox_effect_op ON outbox_effect(store_id, op_id);
                 CREATE INDEX outbox_effect_product ON outbox_effect(product_id);
 
                 -- 归属不可变：op 的身份和内容一经写入不许改，只有结果可以写。
@@ -180,4 +183,6 @@ public enum MetaKey: String, Sendable {
     case catalogCursor = "cursor.catalog"
     case ledgerCursor = "cursor.ledger"
     case serverEpoch = "server_epoch"
+    /// 清投影 / 删旧进货 op 之后还没压缩完（§14 S13-1）。不属于投影，换身份时不清
+    case compactPending = "compact.pending"
 }

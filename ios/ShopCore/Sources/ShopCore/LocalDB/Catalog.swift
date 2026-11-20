@@ -104,17 +104,29 @@ extension LocalDB {
         }
     }
 
-    public func count(_ table: String) throws -> Int {
+    /// 测试用（表名直接拼进 SQL，不对外）
+    func count(_ table: String) throws -> Int {
         try writer.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM \(table)") ?? 0 }
     }
 
+    static let lookupSQL = """
+        SELECT b.barcode, b.product_id, b.pack_qty, b.unit_name, b.pack_price_fen, p.*
+        FROM barcode b JOIN product p ON p.id = b.product_id WHERE b.barcode = ?
+        """
+    /// 条码是主键：用 [输入, 输入 + U+10FFFF) 的范围走索引，只扫前缀区间；substr 再精确比对一次
+    static let prefixMatchSQL = """
+        SELECT b.barcode, b.product_id, b.pack_qty, b.unit_name, b.pack_price_fen, p.*
+        FROM barcode b JOIN product p ON p.id = b.product_id
+        WHERE b.barcode >= ? AND b.barcode < ? AND substr(b.barcode, 1, ?) = ? AND p.archived = 0
+        ORDER BY b.barcode
+        """
+
     /// 扫到一个码：条码 → 商品和换算（主键查找）。没登记过返回 nil。
+    /// **有意不过滤已停用的商品**（`prefixMatch` / `searchByName` 过滤）：扫到实物上的码总要认出是什么，
+    /// 停用商品扫到后怎么处理由 S16 定，界面看 `product.archived`。
     public func lookup(barcode: String) throws -> PackConversion? {
         try writer.read { db in
-            try Row.fetchOne(db, sql: """
-                SELECT b.barcode, b.product_id, b.pack_qty, b.unit_name, b.pack_price_fen, p.*
-                FROM barcode b JOIN product p ON p.id = b.product_id WHERE b.barcode = ?
-                """, arguments: [barcode]).map(Self.conversionFrom)
+            try Row.fetchOne(db, sql: Self.lookupSQL, arguments: [barcode]).map(Self.conversionFrom)
         }
     }
 
@@ -123,12 +135,7 @@ extension LocalDB {
         guard input.count >= BarcodeMatch.minPrefixLength else { return .notListed }
         let rows = try writer.read { db in
             // 条码是主键：用 [输入, 输入 + U+10FFFF) 的范围走索引，只扫前缀区间；substr 再精确比对一次
-            try Row.fetchAll(db, sql: """
-                SELECT b.barcode, b.product_id, b.pack_qty, b.unit_name, b.pack_price_fen, p.*
-                FROM barcode b JOIN product p ON p.id = b.product_id
-                WHERE b.barcode >= ? AND b.barcode < ? AND substr(b.barcode, 1, ?) = ? AND p.archived = 0
-                ORDER BY b.barcode
-                """, arguments: [input, input + "\u{10FFFF}", input.count, input])
+            try Row.fetchAll(db, sql: Self.prefixMatchSQL, arguments: [input, input + "\u{10FFFF}", input.count, input])
         }
         return try BarcodeMatch.match(input: input, among: rows.map(Self.conversionFrom))
     }
@@ -155,7 +162,8 @@ extension LocalDB {
         return out
     }
 
-    /// 显示用库存：基线（`product_private.stock_qty`，只由拉取更新）+ 当前会话本机未确认 op 的增减。
+    /// 显示用库存：基线（`product_private.stock_qty`，只由拉取更新）+ 当前店在本机的全部未确认 op 的增减
+    /// （包括同店以前的会话留在恢复队列里的；别的店的不算）。
     /// 收银员手机没有基线，返回 nil（界面本来也不显示库存）。
     public func displayStock(_ productId: UUID) throws -> DisplayStock? {
         try writer.read { db in
@@ -164,9 +172,10 @@ extension LocalDB {
                                                 arguments: [productId.uuidString])
             else { return nil }
             let pending = try Int64.fetchOne(db, sql: """
-                SELECT COALESCE(SUM(e.qty_delta), 0) FROM outbox_effect e JOIN outbox o ON o.id = e.op_id
-                WHERE e.product_id = ? AND o.status = 'pending' AND o.device_id = ? AND o.store_id = ?
-                """, arguments: [productId.uuidString, s.deviceId.uuidString, s.storeId.uuidString]) ?? 0
+                SELECT COALESCE(SUM(e.qty_delta), 0) FROM outbox_effect e
+                JOIN outbox o ON o.store_id = e.store_id AND o.id = e.op_id
+                WHERE e.store_id = ? AND e.product_id = ? AND o.status = 'pending'
+                """, arguments: [s.storeId.uuidString, productId.uuidString]) ?? 0
             return DisplayStock(baselineQty: base, pendingDelta: pending)
         }
     }

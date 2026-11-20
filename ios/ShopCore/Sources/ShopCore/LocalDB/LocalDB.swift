@@ -25,7 +25,15 @@ public struct LocalSession: Hashable, Sendable {
 public enum LocalDBFaultPoint: Sendable {
     /// 流水和批次头已写、outbox 还没写
     case afterEntriesBeforeOutbox
+    /// 换身份（清投影、换会话）的事务已提交、压缩还没做
+    case afterIdentitySwitchBeforeCompact
 }
+
+public enum LocalDBError: Error, Equatable, Sendable {
+    /// 压缩（VACUUM + 截断 WAL）被还开着的读事务挡住，重试后仍没做成。「待压缩」标记保留，下次同步或下次打开时再做
+    case compactionBusy
+}
+
 
 /// 手机本地库（§3.4，GRDB）。所有写入都在一个事务里完成；记一笔账 = 写流水 + 写 outbox，同一个事务（§4.1 第 6 条）。
 public final class LocalDB: Sendable {
@@ -46,6 +54,8 @@ public final class LocalDB: Sendable {
         self.writer = writer
         self.faultHook = faultHook
         try LocalSchema.migrator().migrate(writer)
+        // 上次换身份后压缩没做完（进程被杀、被读事务挡住）：先补做。还挡住就留着标记，不拦打开
+        try compactIfPossible()
     }
 
     static func configuration() -> Configuration {
@@ -80,14 +90,16 @@ public final class LocalDB: Sendable {
         return s
     }
 
-    /// 登录、兑码、换角色、换账号：开一个新会话。已有当前会话时，先清空**投影**（商品、条码、私有数据、
-    /// 流水、批次头、保质期批次、游标、epoch），旧会话标为退役；**outbox 一条不动**，旧会话未确认的 op
+    /// 登录、兑码、换角色、换账号：开一个新会话。先清空**投影**（商品、条码、私有数据、流水、批次头、
+    /// 保质期批次、游标、epoch），已有的当前会话标为退役；**未确认的 op 一条不动**，旧会话未确认的 op
     /// 就此成为恢复队列，仍绑定原来的店、设备和令牌（§3.4、§4.5）。
+    ///
+    /// 新会话是收银员时，旧会话**已确认**的 op 立刻删掉，不留 14 天（§14 S13-1）。不论之前有没有当前会话
+    /// （家用退出或被踢之后再扫收银员码时没有）都这样做。清投影的同一个事务里记下「待压缩」，压缩做成才清掉。
     public func beginSession(_ s: LocalSession, at now: Date = Date()) throws {
         let ts = Op.formatTimestamp(now)
-        let hadSession = try writer.write { db -> Bool in
-            let old = try Self.currentSession(db)
-            if let old {
+        try writer.write { db in
+            if let old = try Self.currentSession(db) {
                 guard old.deviceId != s.deviceId else { throw invalid("设备 id 每次登录都要新生成（§3.1）") }
                 try db.execute(sql: "UPDATE session SET is_current = 0, retired_at = ? WHERE device_id = ?",
                                arguments: [ts, old.deviceId.uuidString])
@@ -98,9 +110,10 @@ public final class LocalDB: Sendable {
                 VALUES (?, ?, ?, ?, ?, ?, 1, ?)
                 """, arguments: [s.deviceId.uuidString, s.storeId.uuidString, s.role.rawValue, s.tokenRef,
                                  s.storeName, s.deviceLabel, ts])
-            return old != nil
+            try Self.deleteConfirmedForeignOps(db, current: s)
         }
-        if hadSession { try compact() }
+        try faultHook?(.afterIdentitySwitchBeforeCompact)
+        try compactIfPossible()
     }
 
     /// 退出、被踢（没有新会话）：清投影，当前会话退役，outbox 不动。
@@ -110,20 +123,70 @@ public final class LocalDB: Sendable {
                            arguments: [Op.formatTimestamp(now)])
             try Self.clearProjection(db)
         }
-        try compact()
+        try faultHook?(.afterIdentitySwitchBeforeCompact)
+        try compactIfPossible()
     }
 
+    /// 清投影，并在同一个事务里记下「待压缩」
     static func clearProjection(_ db: Database) throws {
         for t in LocalSchema.projectionTables { try db.execute(sql: "DELETE FROM \(t)") }
         for k in LocalSchema.projectionMetaKeys { try db.execute(sql: "DELETE FROM meta WHERE key = ?", arguments: [k.rawValue]) }
+        try markCompactionPending(db)
     }
 
-    /// 清投影后把 WAL 并回主文件并截断、整理空闲页：换成收银员后，旧的进价不留在库文件的任何角落。
-    func compact() throws {
+    /// 当前会话是收银员时，删掉不属于当前会话的已确认 op（连同 `outbox_effect`）并记下「待压缩」。
+    /// 未确认的不删：它们是恢复队列，传完（拿到结果）才删（§14 S13-1）。
+    static func deleteConfirmedForeignOps(_ db: Database, current s: LocalSession) throws {
+        guard !s.holdsPrivateData else { return }
+        try db.execute(sql: "DELETE FROM outbox WHERE status <> 'pending' AND NOT (device_id = ? AND store_id = ?)",
+                       arguments: [s.deviceId.uuidString, s.storeId.uuidString])
+        if db.changesCount > 0 { try markCompactionPending(db) }
+    }
+
+    static func markCompactionPending(_ db: Database) throws {
+        try db.execute(sql: "INSERT INTO meta (key, value) VALUES (?, '1') ON CONFLICT(key) DO NOTHING",
+                       arguments: [MetaKey.compactPending.rawValue])
+    }
+
+    // MARK: - 压缩：删掉的进价不留在库文件的任何角落
+
+    /// 截断 WAL 被读事务挡住时重试几次（间隔逐次加长，合计约 0.3 秒）
+    static let compactionAttempts = 5
+
+    /// 还有没做完的压缩（「待压缩」标记还在）
+    public func needsCompaction() throws -> Bool { try meta(.compactPending) != nil }
+
+    /// 有「待压缩」标记就补做。同步引擎每次同步时调用；被读事务挡住、重试后仍没做成就抛 `LocalDBError.compactionBusy`，标记保留。
+    public func compactIfNeeded() throws {
+        guard try compactIfPossible() else { throw LocalDBError.compactionBusy }
+    }
+
+    /// 返回 false = 被读事务挡住，标记保留（身份变化本身已提交，不因此报错；下次同步或打开时再做）。
+    @discardableResult
+    func compactIfPossible() throws -> Bool {
+        guard try needsCompaction() else { return true }
+        for attempt in 0..<Self.compactionAttempts {
+            if attempt > 0 { usleep(UInt32(30_000 * attempt)) }
+            if try compactOnce() {
+                // 截断确认做成之后才清标记；在这之前死掉，下次打开会再做一遍（重做无害）
+                try setMeta(.compactPending, nil)
+                return true
+            }
+        }
+        return false
+    }
+
+    /// VACUUM 整理掉空闲页，再把 WAL 并回主文件并截断为 0。GRDB 的 `checkpoint(.truncate)` 在被读者挡住时
+    /// 抛 `SQLITE_BUSY`（`PRAGMA wal_checkpoint` 只在结果行里返回 busy = 1，不报错），这里据此返回 false。
+    func compactOnce() throws -> Bool {
         try writer.writeWithoutTransaction { db in
-            try db.execute(sql: "VACUUM")
-            if db.configuration.readonly == false, (try String.fetchOne(db, sql: "PRAGMA journal_mode")) == "wal" {
-                try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+            do {
+                try db.execute(sql: "VACUUM")
+                guard try String.fetchOne(db, sql: "PRAGMA journal_mode") == "wal" else { return true }
+                let r = try db.checkpoint(.truncate)
+                return r.walFrameCount == 0 || r.walFrameCount == r.checkpointedFrameCount
+            } catch let e as DatabaseError where e.resultCode == .SQLITE_BUSY || e.resultCode == .SQLITE_LOCKED {
+                return false
             }
         }
     }

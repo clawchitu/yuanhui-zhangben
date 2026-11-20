@@ -60,20 +60,24 @@ final class LocalDBTests: XCTestCase {
         XCTAssertEqual(try db.count("product"), 1000)
 
         for c in codes.prefix(20) { _ = try db.lookup(barcode: c) }   // 预热（建读连接、载入页缓存）
+        // 固定的工作负载：固定种子打乱，5 轮 × 1,000 次，2,000 个码每个至少查 2 次
+        var rng = SplitMix64(seed: 0x5313)
+        var workload: [String] = []
+        while workload.count < 5 * 1000 { workload += codes.shuffled(using: &rng) }
         let clock = ContinuousClock()
-        var rng = SystemRandomNumberGenerator()
         let n = 1000
-        // 跑 5 轮，每轮 1,000 次随机查找。CI 的模拟器是刚冷启动的，系统后台任务会让个别轮次抖动，
-        // 所以：每一轮的中位数都要 < 5 ms；最好的一轮平均和 p99 都要 < 5 ms（与 XCTest measure 取多轮的做法相同）
+        // 口径照 §14 S13-3：每一轮的中位数 < 5 ms；最好一轮的平均和 p99 < 5 ms；单次最慢只打印。
+        // 另加一道宽松护栏：5,000 个样本合并的 p99 < 20 ms，挡住大幅退化，不用 5 ms 卡共享 CI 的偶发停顿。
         var rounds: [(avg: Duration, p50: Duration, p99: Duration, worst: Duration)] = []
-        for _ in 0..<5 {
+        var all: [Duration] = []
+        for r in 0..<5 {
             var times: [Duration] = []
-            for _ in 0..<n {
-                let code = codes.randomElement(using: &rng)!
+            for code in workload[(r * n)..<((r + 1) * n)] {
                 var found: PackConversion?
                 times.append(clock.measure { found = try? db.lookup(barcode: code) })
                 XCTAssertEqual(found?.barcode.barcode, code)
             }
+            all += times
             times.sort()
             rounds.append((times.reduce(Duration.zero, +) / n, times[n / 2], times[n * 99 / 100], times[n - 1]))
         }
@@ -85,6 +89,27 @@ final class LocalDBTests: XCTestCase {
         let best = rounds.min { $0.p99 < $1.p99 }!
         XCTAssertLessThan(best.avg, .milliseconds(5))
         XCTAssertLessThan(best.p99, .milliseconds(5))
+        all.sort()
+        let pooledP99 = all[all.count * 99 / 100]
+        print("S13 条码查找 合并 \(all.count) 次：p99 \(pooledP99)，最慢 \(all.last!)")
+        XCTAssertLessThan(pooledP99, .milliseconds(20), "合并 p99 护栏")
+    }
+
+    /// 计时挡不住「丢了索引」：查找和前缀匹配都必须走条码主键（§14 S13-3 的建议）
+    func testLookupAndPrefixMatchUseBarcodeIndex() throws {
+        let db = try open()
+        try db.beginSession(session(.family, device: 1))
+        try DemoSeed.install(into: db)
+        func plan(_ sql: String, _ args: StatementArguments) throws -> [String] {
+            try db.writer.read { try Row.fetchAll($0, sql: "EXPLAIN QUERY PLAN " + sql, arguments: args).map { $0["detail"] as String } }
+        }
+        let l = try plan(LocalDB.lookupSQL, ["6901234500011"])
+        XCTAssertTrue(l.contains { $0.hasPrefix("SEARCH b USING") && $0.contains("(barcode=?)") }, "\(l)")
+        XCTAssertFalse(l.contains { $0.hasPrefix("SCAN") }, "\(l)")
+        let input = "69025143"
+        let p = try plan(LocalDB.prefixMatchSQL, [input, input + "\u{10FFFF}", input.count, input])
+        XCTAssertTrue(p.contains { $0.hasPrefix("SEARCH b USING") && $0.contains("barcode>? AND barcode<?") }, "\(p)")
+        XCTAssertFalse(p.contains { $0.hasPrefix("SCAN") }, "\(p)")
     }
 
     // MARK: - 验收 2：prefix.json 向量（纯函数和本地库两层）
@@ -238,13 +263,14 @@ final class LocalDBTests: XCTestCase {
     }
 
     /// 库文件（含 -wal / -shm）里有没有特征值：十进制文本，以及 SQLite 存整数用的 4 / 6 / 8 字节大端
-    func fileContainsMarker() throws -> Bool {
+    func fileContainsMarker(at path: String? = nil) throws -> Bool {
+        let base = path ?? dbPath
         var needles: [Data] = [Data(String(Self.markerCost).utf8)]
         for width in [4, 6, 8] {
             needles.append(Data((0..<width).reversed().map { UInt8(truncatingIfNeeded: Self.markerCost >> (8 * $0)) }))
         }
         for suffix in ["", "-wal", "-shm", "-journal"] {
-            guard let data = FileManager.default.contents(atPath: dbPath + suffix) else { continue }
+            guard let data = FileManager.default.contents(atPath: base + suffix) else { continue }
             if needles.contains(where: { data.range(of: $0) != nil }) { return true }
         }
         return false
@@ -329,7 +355,7 @@ final class LocalDBTests: XCTestCase {
         }
         try db.recordSale(try cigBasket(), opId: uuid(0xE3))
         try db.recordSale(try cigBasket(), opId: uuid(0xE4))
-        try db.recordResults([try OpResult(id: uuid(0xE4), status: .applied)])
+        try db.recordResults([try OpResult(id: uuid(0xE4), status: .applied)], storeId: Self.familyStore)
         XCTAssertEqual(try db.pendingOps().map(\.id), [uuid(0xE1), uuid(0xE2), uuid(0xE3)])
 
         // 换成另一家店的收银员（新设备 id、新令牌）
@@ -351,7 +377,8 @@ final class LocalDBTests: XCTestCase {
         XCTAssertEqual(rq[0].deviceId, family.deviceId)
         XCTAssertEqual(rq[0].tokenRef, family.tokenRef)
         XCTAssertTrue(rq[0].ops.allSatisfy { $0.storeId == Self.familyStore && $0.deviceId == family.deviceId && $0.tokenRef == "token.1" })
-        XCTAssertEqual(try db.allOutbox().count, 4, "已确认的那条也按 14 天保留")
+        XCTAssertEqual(try db.allOutbox().map(\.id), [uuid(0xE1), uuid(0xE2), uuid(0xE3)],
+                       "换成收银员：旧家用会话已确认的那条立刻删，不留 14 天（§14 S13-1）")
 
         // 归属不可改绑：直接改 SQL 也被触发器拒绝
         for col in ["store_id", "device_id", "token_ref", "op_json", "seq"] {
@@ -366,7 +393,8 @@ final class LocalDBTests: XCTestCase {
         // 恢复队列传完之前不能忘掉旧会话；传完后才能删旧令牌
         XCTAssertTrue(try reopened.retiredSessionsWithoutPendingOps().isEmpty)
         XCTAssertInvalid(try reopened.forgetSession(deviceId: family.deviceId))
-        try reopened.recordResults(try [uuid(0xE1), uuid(0xE2), uuid(0xE3)].map { try OpResult(id: $0, status: .applied) })
+        try reopened.recordResults(try [uuid(0xE1), uuid(0xE2), uuid(0xE3)].map { try OpResult(id: $0, status: .applied) },
+                                  storeId: Self.familyStore)
         XCTAssertEqual(try reopened.recoveryQueue().count, 0)
         XCTAssertEqual(try reopened.retiredSessionsWithoutPendingOps().map(\.tokenRef), ["token.1"])
         try reopened.forgetSession(deviceId: family.deviceId)
@@ -435,11 +463,11 @@ final class LocalDBTests: XCTestCase {
         XCTAssertEqual(try db.displayStock(cig)?.qty, 56)
 
         // 被拒的 op：增减自然消失；基线不被本地写入覆盖
-        try db.recordResults([try OpResult(id: uuid(0xF2), status: .rejected, code: "forbidden")])
+        try db.recordResults([try OpResult(id: uuid(0xF2), status: .rejected, code: "forbidden")], storeId: Self.familyStore)
         XCTAssertEqual(try db.displayStock(beer), DisplayStock(baselineQty: 48, pendingDelta: -4))
         XCTAssertEqual(try db.productPrivate(beer)?.stockQty, 48)
         // 确认后，由拉取带来的新基线接手
-        try db.recordResults([try OpResult(id: uuid(0xF1), status: .applied)])
+        try db.recordResults([try OpResult(id: uuid(0xF1), status: .applied)], storeId: Self.familyStore)
         try db.applyBaseline(CatalogBaseline(privates: [try ProductPrivate(productId: beer, stockQty: 44, stockValueFen: Fen(44 * 420),
                                                                            lastCostFen: Fen(420), costKnown: true, stockVer: 2)]))
         XCTAssertEqual(try db.displayStock(beer), DisplayStock(baselineQty: 44, pendingDelta: 0))
@@ -467,11 +495,270 @@ final class LocalDBTests: XCTestCase {
         }
         try db.recordSale(try one(), opId: uuid(0x41), at: t0)
         try db.recordSale(try one(), opId: uuid(0x42), at: t0)
-        try db.recordResults([try OpResult(id: uuid(0x41), status: .applied)], at: t0)
+        try db.recordResults([try OpResult(id: uuid(0x41), status: .applied)], storeId: Self.familyStore, at: t0)
         let day13 = Calendar(identifier: .gregorian).date(byAdding: .day, value: 13, to: t0)!
         let day15 = Calendar(identifier: .gregorian).date(byAdding: .day, value: 15, to: t0)!
         XCTAssertEqual(try db.purgeConfirmed(now: day13), 0)
         XCTAssertEqual(try db.purgeConfirmed(now: day15), 1)
         XCTAssertEqual(try db.allOutbox().map(\.id), [uuid(0x42)], "未确认的永远不删")
     }
+
+    // MARK: - §14 S13-1：收银员手机上已确认的旧会话 op 不留
+
+    func stockInWithMarker(_ db: LocalDB, opId: UUID) throws {
+        let si = try StockInPayload(entryId: uuid(0x79), productId: uuid(0x601), barcode: "6900000000017", packQty: 1,
+                                    packCount: 1, unitCostFen: Fen(Self.markerCost))
+        try db.recordStockIn(si, name: "特征商品", unitName: "瓶", opId: opId)
+    }
+
+    /// (a) 家用会话一条已确认、带特征值进价的进货 → 换成收银员 → 那条 op 删掉，库开着时文件里也扫不到
+    func testConfirmedFamilyStockInDeletedWhenSwitchingToCashier() throws {
+        let db = try open()
+        try db.beginSession(session(.family, device: 1))
+        try db.applyBaseline(try baselineWithMarker())
+        try stockInWithMarker(db, opId: uuid(0xC1))
+        try db.recordResults([try OpResult(id: uuid(0xC1), status: .applied)], storeId: Self.familyStore)
+        XCTAssertTrue(try fileContainsMarker(), "对照：家用库里扫得到")
+        try db.beginSession(session(.cashier, device: 2))
+        XCTAssertEqual(try db.allOutbox().count, 0)
+        XCTAssertFalse(try db.needsCompaction())
+        XCTAssertFalse(try fileContainsMarker())
+    }
+
+    /// 同上，但走「家用退出或被踢 → 之后再扫收银员码」：beginSession 时没有旧的当前会话
+    func testConfirmedFamilyStockInDeletedWhenCashierCodeScannedAfterLogout() throws {
+        let db = try open()
+        try db.beginSession(session(.family, device: 1))
+        try db.applyBaseline(try baselineWithMarker())
+        try stockInWithMarker(db, opId: uuid(0xC1))
+        try db.recordResults([try OpResult(id: uuid(0xC1), status: .applied)], storeId: Self.familyStore)
+        try db.endSession()
+        XCTAssertEqual(try db.allOutbox().count, 1, "没有当前会话时照旧保留")
+        try db.beginSession(session(.cashier, device: 3))
+        XCTAssertEqual(try db.allOutbox().count, 0)
+        XCTAssertFalse(try fileContainsMarker())
+    }
+
+    /// (b) 未确认的带特征值进货 → 换成收银员 → 仍在恢复队列（写明的例外）→ 拿到结果后立刻删、扫不到；
+    /// 收银员自己的 op 照旧留 14 天
+    func testUnconfirmedFamilyStockInDeletedOnceConfirmedUnderCashier() throws {
+        let db = try open()
+        try db.beginSession(session(.family, device: 1))
+        try db.applyBaseline(try baselineWithMarker())
+        try stockInWithMarker(db, opId: uuid(0xC2))
+        try db.beginSession(session(.cashier, device: 2))
+        XCTAssertEqual(try db.recoveryQueue().first?.ops.map(\.id), [uuid(0xC2)])
+        XCTAssertTrue(try fileContainsMarker(), "写明的例外：未确认的旧 op 传完之前还在")
+
+        let m = try baselineWithMarker()
+        try db.applyBaseline(CatalogBaseline(products: m.products, barcodes: m.barcodes))
+        var b = Basket()
+        try b.add(XCTUnwrap(db.lookup(barcode: "6900000000017")))
+        try db.recordSale(b, opId: uuid(0xC3))
+        try db.recordResults([try OpResult(id: uuid(0xC3), status: .applied)], storeId: Self.familyStore)
+        try db.recordResults([try OpResult(id: uuid(0xC2), status: .applied)], storeId: Self.familyStore)
+        XCTAssertEqual(try db.recoveryQueue().count, 0)
+        XCTAssertEqual(try db.allOutbox().map(\.id), [uuid(0xC3)], "收银员自己的已确认 op 照旧保留")
+        XCTAssertFalse(try db.needsCompaction())
+        XCTAssertFalse(try fileContainsMarker())
+    }
+
+    // MARK: - 换成收银员后压缩没做完：持久的「待压缩」标记
+
+    /// 清投影的事务已提交、压缩还没跑时进程死掉：重开后先补做压缩，库开着时扫不到；恢复队列还在
+    func testCrashAfterSwitchBeforeCompactIsRepairedOnReopen() throws {
+        let crashDir = dir.appendingPathComponent("crash-compact")
+        let copy = crashDir.appendingPathComponent("local.sqlite").path
+        let src = dbPath
+        do {
+            let db = try open()
+            try db.beginSession(session(.family, device: 1))
+            try db.applyBaseline(try baselineWithMarker())
+            var b = Basket()
+            try b.add(XCTUnwrap(db.lookup(barcode: "6900000000017")))
+            try db.recordSale(b, opId: uuid(0xC4))
+        }
+        do {
+            let db = try open { point in
+                guard point == .afterIdentitySwitchBeforeCompact else { return }
+                try FileManager.default.createDirectory(at: crashDir, withIntermediateDirectories: true)
+                for suffix in ["", "-wal", "-shm"] where FileManager.default.fileExists(atPath: src + suffix) {
+                    try FileManager.default.copyItem(atPath: src + suffix, toPath: copy + suffix)
+                }
+            }
+            try db.beginSession(session(.cashier, device: 2))
+        }
+        XCTAssertTrue(try fileContainsMarker(at: copy), "崩溃那一刻的磁盘上还有旧进价（窗口确实存在）")
+        let restarted = try LocalDB(path: copy)
+        XCTAssertEqual(try restarted.currentSession()?.role, .cashier)
+        XCTAssertEqual(try restarted.count("product_private"), 0)
+        XCTAssertFalse(try restarted.needsCompaction())
+        XCTAssertFalse(try fileContainsMarker(at: copy), "重开后补做压缩，库开着时也扫不到")
+        XCTAssertEqual(try restarted.recoveryQueue().first?.ops.map(\.id), [uuid(0xC4)], "恢复队列保留")
+        let m = try baselineWithMarker()
+        try restarted.applyBaseline(CatalogBaseline(products: m.products, barcodes: m.barcodes))
+        XCTAssertNotNil(try restarted.lookup(barcode: "6900000000017"))
+        XCTAssertFalse(try fileContainsMarker(at: copy))
+    }
+
+    /// 换角色时界面开着一个读事务：截断被挡住不能当成功；标记保留，读事务结束后重试成功
+    func testSwitchWithOpenReadTransactionKeepsCompactionPending() throws {
+        let db = try open()
+        try db.beginSession(session(.family, device: 1))
+        try db.applyBaseline(try baselineWithMarker())
+        let pool = try XCTUnwrap(db.writer as? DatabasePool)
+        var snapshot: DatabaseSnapshot? = try pool.makeSnapshot()
+        XCTAssertNotNil(snapshot)
+        try db.beginSession(session(.cashier, device: 2))   // 换角色本身照常完成
+        XCTAssertEqual(try db.currentSession()?.role, .cashier)
+        XCTAssertTrue(try db.needsCompaction(), "截断没做成，标记必须还在")
+        XCTAssertThrowsError(try db.compactIfNeeded()) { XCTAssertEqual($0 as? LocalDBError, .compactionBusy) }
+        XCTAssertTrue(try db.needsCompaction())
+        snapshot = nil
+        try db.compactIfNeeded()
+        XCTAssertFalse(try db.needsCompaction())
+        XCTAssertFalse(try fileContainsMarker())
+    }
+
+    // MARK: - trimLedger：家用 35 天、收银员本机 2 天、绑着未确认 op 的不删
+
+    func ts(_ s: String) throws -> Date {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return try XCTUnwrap(f.date(from: s), s)
+    }
+
+    /// 拉取来的流水（没有 op）
+    func insertPulledEntry(_ db: LocalDB, _ n: Int, device: UUID, at: String, batch: UUID) throws {
+        try db.writer.write { d in
+            try d.execute(sql: """
+                INSERT OR IGNORE INTO sale_batch (id, device_id, list_total_fen, paid_total_fen, occurred_at) VALUES (?, ?, 100, 100, ?)
+                """, arguments: [batch.uuidString, device.uuidString, at])
+            try d.execute(sql: """
+                INSERT INTO entry (id, seq, batch_id, type, product_id, name_snapshot, qty_delta, list_amount_fen, amount_fen,
+                  device_id, occurred_at) VALUES (?, ?, ?, 'sale', ?, '拉取的', -1, 100, 100, ?, ?)
+                """, arguments: [uuid(n).uuidString, n, batch.uuidString, DemoSeed.id(0x201).uuidString, device.uuidString, at])
+        }
+    }
+
+    func oneBottle(_ db: LocalDB) throws -> Basket {
+        var b = Basket()
+        try b.add(XCTUnwrap(db.lookup(barcode: "6901234500011")))
+        return b
+    }
+
+    func testTrimLedgerFamilyKeeps35Days() throws {
+        let db = try open()
+        try db.beginSession(session(.family, device: 1))
+        try DemoSeed.install(into: db)
+        let me = uuid(0xD01), other = uuid(0xD09)
+        let b1 = uuid(0xB1), b2 = uuid(0xB2)
+        try insertPulledEntry(db, 0x7001, device: me, at: "2026-10-17T00:00:00.000+08:00", batch: b1)     // 第 35 天：留
+        try insertPulledEntry(db, 0x7002, device: me, at: "2026-10-16T23:59:59.999+08:00", batch: b1)     // 第 36 天：删
+        try insertPulledEntry(db, 0x7003, device: other, at: "2026-10-01T09:00:00.000+08:00", batch: b2)  // 删，批次头跟着删
+        try insertPulledEntry(db, 0x7004, device: other, at: "2026-11-19T09:00:00.000+08:00", batch: uuid(0xB4)) // 别的设备：家用全店都留
+        try db.recordSale(try oneBottle(db), batchId: uuid(0xB3), opId: uuid(0xC5), at: try ts("2026-10-01T10:00:00.000+08:00"))
+        let now = try ts("2026-11-20T12:00:00.000+08:00")
+
+        XCTAssertEqual(try db.trimLedger(now: now), 2)
+        let left = Set(try db.entries().map(\.id))
+        XCTAssertTrue(left.isSuperset(of: [uuid(0x7001), uuid(0x7004)]))
+        XCTAssertFalse(left.contains(uuid(0x7002)))
+        XCTAssertFalse(left.contains(uuid(0x7003)))
+        XCTAssertEqual(try db.entries().filter { $0.opId == uuid(0xC5) }.count, 1, "绑着未确认 op 的旧流水不删")
+        let batches = try db.writer.read { try String.fetchAll($0, sql: "SELECT id FROM sale_batch ORDER BY id") }
+        XCTAssertEqual(Set(batches), Set([b1, uuid(0xB3), uuid(0xB4)].map(\.uuidString)), "流水删光的批次头跟着删，还有流水的不删")
+
+        try db.recordResults([try OpResult(id: uuid(0xC5), status: .applied)], storeId: Self.familyStore)
+        XCTAssertEqual(try db.trimLedger(now: now), 1, "确认之后照常修剪")
+        XCTAssertEqual(try db.count("sale_batch"), 2)
+    }
+
+    func testTrimLedgerCashierKeepsOwnTwoDays() throws {
+        let db = try open()
+        try db.beginSession(session(.cashier, device: 2))
+        try DemoSeed.install(into: db)
+        let me = uuid(0xD02), other = uuid(0xD09)
+        try insertPulledEntry(db, 0x7101, device: me, at: "2026-11-19T00:00:00.000+08:00", batch: uuid(0xB5))     // 第 2 天：留
+        try insertPulledEntry(db, 0x7102, device: me, at: "2026-11-18T23:59:59.999+08:00", batch: uuid(0xB6))     // 第 3 天：删
+        try insertPulledEntry(db, 0x7103, device: other, at: "2026-11-20T09:00:00.000+08:00", batch: uuid(0xB7))  // 别的设备：删
+        try db.recordSale(try oneBottle(db), batchId: uuid(0xB8), opId: uuid(0xC6), at: try ts("2026-11-15T10:00:00.000+08:00"))
+        XCTAssertEqual(try db.trimLedger(now: try ts("2026-11-20T12:00:00.000+08:00")), 2)
+        let left = try db.entries()
+        XCTAssertEqual(Set(left.map(\.id)).subtracting([uuid(0x7101)]).count, 1)
+        XCTAssertTrue(left.contains { $0.id == uuid(0x7101) })
+        XCTAssertTrue(left.contains { $0.opId == uuid(0xC6) }, "绑着未确认 op 的不删")
+        XCTAssertEqual(try db.count("sale_batch"), 2)
+    }
+
+    // MARK: - Codex 意见
+
+    /// 同店换会话：旧会话（恢复队列）未确认的增减照算；别的店同一个商品 id 不算
+    func testDisplayStockCountsSameStoreOldSessionsOnly() throws {
+        let db = try open()
+        let beer = DemoSeed.id(0x202)
+        try db.beginSession(session(.family, device: 1))
+        try DemoSeed.install(into: db)
+        try db.recordSale(try basket03(db), opId: uuid(0xC7))   // 青岛 −4
+        try db.endSession()
+        try db.beginSession(session(.family, device: 3))
+        try DemoSeed.install(into: db)
+        XCTAssertEqual(try db.displayStock(beer), DisplayStock(baselineQty: 48, pendingDelta: -4))
+        try db.beginSession(session(.family, device: 4, store: Self.otherStore))
+        try DemoSeed.install(into: db)
+        XCTAssertEqual(try db.displayStock(beer), DisplayStock(baselineQty: 48, pendingDelta: 0), "别的店的不算")
+    }
+
+    /// op id 只在店内唯一（§14 S02-8）：两家店同一个 op id 共存，各自确认互不影响
+    func testSameOpIdInTwoStores() throws {
+        let db = try open()
+        let x = uuid(0xAB), beer = DemoSeed.id(0x202)
+        func oneBeer() throws -> Basket {
+            var b = Basket()
+            try b.add(XCTUnwrap(db.lookup(barcode: "6901035600016")))
+            return b
+        }
+        try db.beginSession(session(.family, device: 1))
+        try DemoSeed.install(into: db)
+        try db.recordSale(try oneBeer(), opId: x)
+        try db.beginSession(session(.family, device: 2, store: Self.otherStore))
+        try DemoSeed.install(into: db)
+        try db.recordSale(try oneBeer(), opId: x)
+        func status(_ store: UUID) throws -> OutboxItem.Status? {
+            try db.allOutbox().first { $0.id == x && $0.storeId == store }?.status
+        }
+        XCTAssertEqual(try db.allOutbox().filter { $0.id == x }.count, 2)
+
+        try db.recordResults([try OpResult(id: x, status: .rejected, code: "forbidden")], storeId: Self.otherStore)
+        XCTAssertEqual(try status(Self.otherStore), .rejected)
+        XCTAssertEqual(try status(Self.familyStore), .pending)
+        XCTAssertEqual(try db.displayStock(beer), DisplayStock(baselineQty: 48, pendingDelta: 0))
+        XCTAssertEqual(try db.recoveryQueue().first?.ops.map(\.id), [x])
+
+        try db.recordResults([try OpResult(id: x, status: .applied)], storeId: Self.familyStore)
+        XCTAssertEqual(try status(Self.familyStore), .applied)
+        XCTAssertEqual(try status(Self.otherStore), .rejected)
+    }
+
+    /// 只有新商品登记第二步的、不带版本的期初能离线排队（§5.6 第 1、3 条）
+    func testOpeningQueuesOnlyForNewProductWithoutVersion() throws {
+        let db = try open()
+        try db.beginSession(session(.family, device: 1))
+        try DemoSeed.install(into: db)
+        func opening(_ pid: UUID, _ n: Int, baseVer: Int64? = nil) throws -> Op {
+            Op(payload: try OpeningPayload(entryId: uuid(n), productId: pid, countedQty: 10, baseVer: baseVer, baseQty: baseVer.map { _ in 12 }))
+        }
+        let existing = DemoSeed.id(0x201)
+        XCTAssertInvalid(try db.enqueue(try opening(existing, 0x51)), "已有商品不带版本")
+        XCTAssertInvalid(try db.enqueue(try opening(existing, 0x52, baseVer: 1)), "已有商品带版本：走在线提交")
+        let fresh = uuid(0x5A)
+        XCTAssertInvalid(try db.enqueue(try opening(fresh, 0x53)), "本机没有登记这个商品")
+        try db.enqueue(Op(payload: try ProductUpsertPayload.full(productId: fresh, barcode: "6900000000994", name: "新商品",
+                                                                 priceFen: Fen(500), baseUnit: "个")))
+        XCTAssertInvalid(try db.enqueue(try opening(fresh, 0x54, baseVer: 0)), "带了版本就不是登记第二步")
+        try db.enqueue(try opening(fresh, 0x55), effects: [StockEffect(productId: fresh, qtyDelta: 10)])
+        XCTAssertInvalid(try db.enqueue(try opening(fresh, 0x56)), "已有库存变动，再来一条期初要联网")
+        XCTAssertEqual(try db.pendingOps().map(\.type), [.productUpsert, .opening])
+    }
 }
+
