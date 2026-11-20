@@ -24,19 +24,39 @@ extension View {
 
 /// 取景框：相机允许时是相机画面 + 黄色对角框；还没问过时出「正在打开相机…」并弹系统询问；
 /// 机器上没有相机（模拟器）时出「这台机器没有相机」。被拒时不该用它，用 `NoCameraBand` / `NoCameraCard`。
+///
+/// 相机的启停在这里统一决定（`CameraController`）：取景框看得见（`onAppear` / `onDisappear`，压到下一页也算看不见）、
+/// App 在前台、相机允许、`paused` 为假（页面被面板盖住时设真），才开；回前台先重新读权限。
 struct CameraViewfinder: View {
     let hub: ScanHub
     let permission: CameraPermission
     var includeQR = false
     /// 测试 / 截图时不开真相机（Debug 夹具强制了权限状态时）
     var hasCamera = CameraSession.hasCamera
+    /// 页面让相机暂停（被面板盖住、弹窗中）
+    var paused = false
+
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var camera: CameraBox?
+    @State private var visible = false
+
+    /// 一个取景框一套相机（建在 `onAppear` 里，模拟器上没有会话）
+    @MainActor final class CameraBox {
+        let session: CameraSession?
+        let controller: CameraController
+        init(hasCamera: Bool, includeQR: Bool, permission: CameraPermission, hub: ScanHub) {
+            session = hasCamera ? CameraSession(includeQR: includeQR) : nil
+            controller = CameraController(runner: session, permission: permission)
+            controller.onCode = { [weak hub] in hub?.receive($0, from: .camera) }
+        }
+    }
 
     var body: some View {
         ZStack {
             Color.black
             switch permission.access {
             case .authorized where hasCamera:
-                CameraPreview(hub: hub, includeQR: includeQR)
+                if let session = camera?.session { CameraPreview(camera: session) }
             case .authorized:
                 note("这台机器没有相机")
             case .notDetermined:
@@ -50,8 +70,26 @@ struct CameraViewfinder: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .task { await permission.requestIfNeeded() }
+        .onAppear {
+            if camera == nil {
+                camera = CameraBox(hasCamera: hasCamera, includeQR: includeQR, permission: permission, hub: hub)
+            }
+            visible = true
+            syncCamera()
+        }
+        .onDisappear {
+            visible = false
+            syncCamera()
+        }
+        .onChange(of: scenePhase) { syncCamera() }
+        .onChange(of: permission.access) { syncCamera() }
+        .onChange(of: paused) { syncCamera() }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("scanner.viewfinder")
+    }
+
+    private func syncCamera() {
+        camera?.controller.update(visible: visible, sceneActive: scenePhase == .active, paused: paused)
     }
 
     private func note(_ text: String) -> some View {

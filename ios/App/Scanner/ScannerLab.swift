@@ -41,6 +41,7 @@ struct ScannerLab: View {
         .task {
             if let fake { await fake.run(into: hub) }
         }
+        // 被拒时页面上没有取景框，回前台读权限要页面自己做（有取景框时 CameraController 也会读，重复无害）
         .onChange(of: scenePhase) { _, phase in if phase == .active { permission.refresh() } }
         .alert("手输条码", isPresented: $manualOpen) {
             TextField("条码", text: $manualText).keyboardType(.numberPad).accessibilityIdentifier("scanner.manualField")
@@ -81,7 +82,8 @@ struct ScannerLab: View {
             NoCameraBand(onManual: { manualOpen = true })
         } else {
             HStack(spacing: 12) {
-                CameraViewfinder(hub: hub, permission: permission, hasCamera: permission.forced == nil && CameraSession.hasCamera)
+                CameraViewfinder(hub: hub, permission: permission, hasCamera: permission.forced == nil && CameraSession.hasCamera,
+                                 paused: manualOpen)
                 Button { manualOpen = true } label: {
                     Label("手输条码", systemImage: "keyboard").font(.system(size: 17, weight: .medium))
                 }
@@ -100,7 +102,7 @@ struct ScannerLab: View {
                 NoCameraCard()
             } else {
                 CameraViewfinder(hub: hub, permission: permission, includeQR: true,
-                                 hasCamera: permission.forced == nil && CameraSession.hasCamera)
+                                 hasCamera: permission.forced == nil && CameraSession.hasCamera, paused: manualOpen)
                     .frame(height: 300)
             }
         }
