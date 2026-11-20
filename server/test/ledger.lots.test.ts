@@ -405,3 +405,50 @@ describe("收银员（§4.2 按角色裁剪、§6）", () => {
     await app.close();
   });
 });
+
+describe("撤销加回批次的溢出预检查（PR #16 Codex 2，§14 S05-4）", () => {
+  it("推迟提醒把批次数量改回、卖出、再逐笔撤销：加回后 qty_left 超出 integer 的那次撤销拒 invalid 并留档，整个 op 回滚，重发结果不变", { timeout: 180_000 }, async () => {
+    const { shop, app, send, newProduct } = await setup();
+    const s = S(shop.storeId);
+    const pid = await newProduct();
+    const BIG = 9_999_000;
+    const bigSale = () =>
+      op("sale_batch", {
+        batch_id: randomUUID(),
+        paid_total_fen: 0,
+        lines: [{ entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", name: "x", unit_name: "箱", pack_qty: 9_999, pack_count: 1_000, unit_price_fen: 0 }],
+      }, { at: AT });
+    await send(op("stock_in", { entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", pack_qty: 9_999, pack_count: 1_000, unit_cost_fen: 0 }, { at: AT }));
+    const [lot] = await s.lots(pid);
+    // 每一轮：卖 9,999,000（扣批次到 0）→ 人数了说还有 9,999,999，过几天再提醒（批次数量改成实际数）
+    const N = 214;
+    const sales: string[] = [];
+    const ops: ReturnType<typeof op>[] = [];
+    for (let i = 0; i < N; i++) {
+      const sl = bigSale();
+      sales.push(lineOf(sl));
+      ops.push(sl, snooze(lot!.id, i, 9_999_999, 1));
+    }
+    for (let i = 0; i < ops.length; i += 200) expect((await send(...ops.slice(i, i + 200))).every((r: Any) => r.status === "applied")).toBe(true);
+    expect((await s.lot(lot!.id)).qty_left).toBe(9_999_999);
+    // 前 213 笔撤销：每笔按 lot_moves 加回 9,999,000 → 9,999,999 + 213 × 9,999,000 = 2,139,786,999
+    const voids = sales.map((e) => voidEntry(e));
+    for (let i = 0; i < N - 1; i += 200) expect((await send(...voids.slice(i, Math.min(i + 200, N - 1)))).every((r: Any) => r.status === "applied")).toBe(true);
+    expect((await s.lot(lot!.id)).qty_left).toBe(9_999_999 + (N - 1) * BIG);
+    const before = await s.product(pid);
+    // 第 214 笔：再加回 9,999,000 超出 integer 上界（商品库存本身仍合法）
+    const last = voids[N - 1]!;
+    expect(await send(last)).toEqual([{ id: last.id, status: "rejected", code: "invalid" }]);
+    const after = await s.product(pid);
+    expect([after.stock_qty, after.stock_value_fen, after.stock_ver]).toEqual([before.stock_qty, before.stock_value_fen, before.stock_ver]);
+    expect((await s.entry(sales[N - 1]!)).voided_at).toBeNull();
+    expect((await s.lot(lot!.id)).qty_left).toBe(9_999_999 + (N - 1) * BIG);
+    const reversals = await tdb.kysely.selectFrom("entries").select("id").where("store_id", "=", shop.storeId).where("reverses_entry_id", "=", sales[N - 1]!).execute();
+    expect(reversals).toEqual([]);
+    const archived = await tdb.kysely.selectFrom("ops").select(["status", "reject_code"]).where("store_id", "=", shop.storeId).where("id", "=", last.id).executeTakeFirstOrThrow();
+    expect(archived).toEqual({ status: "rejected", reject_code: "invalid" });
+    expect(await send(last)).toEqual([{ id: last.id, status: "rejected", code: "invalid", replayed: true }]);
+    await assertDbLedger(tdb.kysely, shop.storeId, pid);
+    await app.close();
+  });
+});

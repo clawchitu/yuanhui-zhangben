@@ -9,7 +9,7 @@ import type { StoreTx } from "../sync/lock.ts";
 import { shanghaiDay } from "../auth/guard.ts";
 import { Remap } from "../sync/aliases.ts";
 import type { Outcome } from "../sync/catalog.ts";
-import { raw } from "./cost.ts";
+import { INT32, raw } from "./cost.ts";
 import { bad, entryFree, guarded, loadProduct, stateOf, writeStep, type LedgerContext } from "./apply.ts";
 
 // ── 纯算法 ──
@@ -157,8 +157,10 @@ export async function onVoid(tx: StoreTx, ctx: LedgerContext, e: EntryRow) {
   if (e.type === "sale" || e.type === "count") {
     const moves = await tx.trx.selectFrom("lot_moves").select(["lot_id", "qty"]).where("store_id", "=", tx.storeId).where("entry_id", "=", e.id).execute();
     for (const m of moves) {
-      const lot = await lotsOf(tx).select("closed_at").where("id", "=", m.lot_id).executeTakeFirstOrThrow();
+      const lot = await lotsOf(tx).select(["closed_at", "qty_left"]).where("id", "=", m.lot_id).executeTakeFirstOrThrow();
       if (lot.closed_at !== null) continue;
+      // 写库前预检查（§14 S05-4 第二层）：加回后超出 integer 的拒 invalid，guarded 回滚整个 op 并留档，不让 UPDATE 报 22003 变成 500
+      if (BigInt(lot.qty_left) + BigInt(m.qty) > INT32.max) bad(`批次 ${m.lot_id} 加回 ${m.qty} 后 qty_left 超出 integer 范围`);
       await tx.trx
         .updateTable("stock_lots")
         .set((eb) => ({ qty_left: eb("qty_left", "+", m.qty) }))
