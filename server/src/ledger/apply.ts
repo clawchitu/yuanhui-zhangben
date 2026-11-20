@@ -107,7 +107,7 @@ export interface MainRow {
   expiryDate?: string | null;
 }
 
-/** 补偿行的 flags：op 的标记照抄，处理批次用的 lot_id / qty_left_before 不带（补偿行不是处理，撤它不能重开批次） */
+/** 补偿行的 flags：op 的标记照抄，处理批次用的 lot_id / qty_left_before 不带（补偿行不是处理；onVoid 只在 expire_loss / supplier_return 上读这两个键，这里去掉只为留档干净，不是防线） */
 function lateFlags(f: Record<string, unknown>): Record<string, unknown> {
   const { lot_id: _l, qty_left_before: _q, ...rest } = f;
   return { ...rest, late_before_count: true };
@@ -120,7 +120,7 @@ function isLate(ctx: LedgerContext, prod: ProductRow, counted: boolean): boolean
 
 /**
  * 把 cost.ts 的一步写进 entries（第一条是主流水），再改商品投影。rawStep 可以是未做范围检查的（cost.ts 的 raw），这里统一检查。
- * 迟到的流水（isLate）在这里统一追加补偿行（cost.ts 的 lateCompensate），所以卖出、进货、撤销、扔掉 / 退货都走同一处；
+ * 迟到的流水（isLate）在这里统一追加补偿行（cost.ts 的 settle → lateCompensateRaw），所以卖出、进货、撤销、扔掉 / 退货都走同一处；
  * 补偿行和主流水同一个 op、seq 相邻、occurred_at 相同，flags 多一个 late_before_count。
  * 返回这一步是否按迟到补偿了（卖出据此不扣批次，§14 S06-10）。
  */
