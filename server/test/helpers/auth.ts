@@ -22,7 +22,7 @@ export class TestClock {
 
 export function makeApp(
   tdb: TestDb,
-  o: { clock?: TestClock; config?: Partial<Config>; rateLimits?: AppDeps["rateLimits"] } = {},
+  o: { clock?: TestClock; config?: Partial<Config>; rateLimits?: AppDeps["rateLimits"]; syncPageSize?: number } = {},
 ): FastifyInstance {
   return buildApp({
     config: testConfig(o.config),
@@ -30,6 +30,7 @@ export function makeApp(
     logger: false,
     clock: o.clock?.now,
     rateLimits: o.rateLimits,
+    syncPageSize: o.syncPageSize,
   });
 }
 
