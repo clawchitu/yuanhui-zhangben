@@ -122,3 +122,25 @@ describe("Fable 1：记账 op 写到一半被拒 → 整笔回滚", () => {
     await app.close();
   });
 });
+
+describe("Fable 2：收银员只能撤本机当天的原始卖出行", () => {
+  it("收银员撤自己的卖出成功，再撤自己名下那条冲销行 → forbidden（与不存在的 id 同码）", async () => {
+    const { shop, app, boss, send, sendAs, newProduct } = await setup();
+    const pid = await newProduct();
+    await send(opening(pid, 10, { unit_cost_fen: 100 }));
+    const cashier = await pair(app, boss.token, "cashier", "收银台");
+    const line = saleLine(pid);
+    const s = saleOp([line]);
+    expect(await sendAs(cashier.token, s)).toEqual([{ id: s.id, status: "applied" }]);
+    const v = voidOp({ entry_id: line.entry_id });
+    expect(await sendAs(cashier.token, v)).toEqual([{ id: v.id, status: "applied" }]);
+    const rev = (await entriesOf(shop.storeId, pid)).find((e) => e.reverses_entry_id === line.entry_id)!;
+    expect(rev.device_id).toBe(cashier.deviceId);
+    const before = await snapshot(shop.storeId);
+    const v2 = voidOp({ entry_id: rev.id });
+    const missing = voidOp({ entry_id: randomUUID() });
+    expect(await sendAs(cashier.token, v2, missing)).toEqual([v2, missing].map((o) => ({ id: o.id, status: "rejected", code: "forbidden" })));
+    expect(await snapshot(shop.storeId)).toEqual(before);
+    await app.close();
+  });
+});
