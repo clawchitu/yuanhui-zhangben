@@ -8,7 +8,7 @@ describe("S00 占位", () => {
 
   it("GET /v1/health 返回 ok", async () => {
     const res = await app.inject({ method: "GET", url: "/v1/health" });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(201);
     expect(res.json()).toEqual({ ok: true });
   });
 
