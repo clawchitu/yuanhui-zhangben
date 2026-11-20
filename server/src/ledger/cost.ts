@@ -251,6 +251,35 @@ function voidEntryRaw<R>(s: CostState, target: Draft & { ref: R }, fixedBy?: { r
   return { state: st, entries };
 }
 
+/** 迟到补偿产生的流水（§5.6 第 4 条），写库时 flags 加 late_before_count */
+export type LateDraft = Draft & { late: true };
+
+/**
+ * 迟到流水补偿（§5.6 第 4 条）：op 的 occurred_at 早于这个商品的 last_count_at，盘点时这些货已经算进数到的数里了。
+ * 原流水照记（step 不改），再追加一条 count 补偿行，数量和货值正好抵消这一步全部流水（含 cost_adjust）对库存的影响：
+ * qty_delta = −Σ qty_delta，value_delta = −Σ value_delta，按盘点的记法 cogs = −value_delta；k 为假且数量有变化时标 cost_missing。
+ * 库存回到这一步之前的 q、v；c、k 用这一步之后的（k 只增不减，c 是最近一次的进价）。
+ * 之后若违反 I3，按撤销的归位规则补一条 cost_adjust 到 v = q × c（同样标 late）。这一步对库存没有净影响时原样返回。
+ */
+function lateCompensateRaw<R>(before: CostState, step: Step<R>): Step<R> {
+  const dq = step.entries.reduce((x, e) => x + e.qty_delta, 0n);
+  const dv = step.entries.reduce((x, e) => x + e.value_delta_fen, 0n);
+  if (dq === 0n && dv === 0n) return step;
+  const after = step.state;
+  const comp: LateDraft = { ...zero("count"), qty_delta: -dq, value_delta_fen: -dv, cogs_fen: dv, cost_missing: !after.k && dq !== 0n, late: true };
+  const entries: Array<Draft | ReversalDraft<R> | CostFixDraft<R>> = [...step.entries, comp];
+  let st: CostState = { ...after, q: before.q, v: before.v };
+  if (st.k) {
+    const c = known(st);
+    if ((st.q <= 0n && st.v !== st.q * c) || (st.q > 0n && st.v < 0n)) {
+      const adj: Draft[] = [];
+      st = adjust(adj, st, st.q * c);
+      entries.push(...adj.map((a) => ({ ...a, late: true as const })));
+    }
+  }
+  return { state: st, entries };
+}
+
 // 对外的入口：每一步都过 storable（§14 S05-4）
 export const stockIn = <R>(...a: Parameters<typeof stockInRaw<R>>): Step<R> => storable(stockInRaw<R>(...a));
 export const sale = <R>(...a: Parameters<typeof saleRaw<R>>): Step<R> => storable(saleRaw<R>(...a));
@@ -258,3 +287,4 @@ export const count = <R>(...a: Parameters<typeof countRaw<R>>): Step<R> => stora
 export const opening = <R>(...a: Parameters<typeof openingRaw<R>>): Step<R> => storable(openingRaw<R>(...a));
 export const removeStock = <R>(...a: Parameters<typeof removeStockRaw<R>>): Step<R> => storable(removeStockRaw<R>(...a));
 export const voidEntry = <R>(...a: Parameters<typeof voidEntryRaw<R>>): Step<R> => storable(voidEntryRaw<R>(...a));
+export const lateCompensate = <R>(...a: Parameters<typeof lateCompensateRaw<R>>): Step<R> => storable(lateCompensateRaw<R>(...a));

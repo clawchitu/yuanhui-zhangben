@@ -11,7 +11,7 @@ import type { StoreTx } from "../sync/lock.ts";
 import { Remap, resolveProductId } from "../sync/aliases.ts";
 import { DEFAULT_BASE_UNIT, type ApplyContext, type Outcome } from "../sync/catalog.ts";
 import { allocate, AllocationError, LIMITS } from "./allocation.ts";
-import { CostError, opening, sale, stockIn, type CostState, type MissingSale, type Step } from "./cost.ts";
+import { CostError, lateCompensate, opening, sale, stockIn, type CostState, type MissingSale, type Step } from "./cost.ts";
 import { createLot, deductLots } from "./lots.ts";
 
 export interface LedgerContext extends ApplyContext {
@@ -107,8 +107,24 @@ export interface MainRow {
   expiryDate?: string | null;
 }
 
-/** 把 cost.ts 的一步写进 entries（第一条是主流水），再改商品投影 */
-export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRow, main: MainRow, step: Step<string>, o: { counted?: boolean } = {}) {
+/** 补偿行的 flags：op 的标记照抄，处理批次用的 lot_id / qty_left_before 不带（补偿行不是处理，撤它不能重开批次） */
+function lateFlags(f: Record<string, unknown>): Record<string, unknown> {
+  const { lot_id: _l, qty_left_before: _q, ...rest } = f;
+  return { ...rest, late_before_count: true };
+}
+
+/** 迟到（§5.6 第 4 条）：不是盘点 / 期初本身，且 occurred_at 早于这个商品最近一次盘点 / 期初 */
+function isLate(ctx: LedgerContext, prod: ProductRow, counted: boolean): boolean {
+  return !counted && prod.last_count_at !== null && ctx.occurredAt.getTime() < new Date(prod.last_count_at).getTime();
+}
+
+/**
+ * 把 cost.ts 的一步写进 entries（第一条是主流水），再改商品投影。
+ * 迟到的流水（isLate）在这里统一追加补偿行（cost.ts 的 lateCompensate），所以卖出、进货、撤销、扔掉 / 退货都走同一处；
+ * 补偿行和主流水同一个 op、seq 相邻、occurred_at 相同，flags 多一个 late_before_count。
+ */
+export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRow, main: MainRow, rawStep: Step<string>, o: { counted?: boolean } = {}) {
+  const step = isLate(ctx, prod, o.counted === true) ? lateCompensate(stateOf(prod), rawStep) : rawStep;
   let seq = await nextSeq(tx);
   for (const [i, d] of step.entries.entries()) {
     const id = i === 0 && main.id !== undefined ? main.id.toLowerCase() : randomUUID();
@@ -139,7 +155,7 @@ export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRo
         device_id: ctx.deviceId,
         occurred_at: ctx.occurredAt,
         received_at: ctx.now,
-        flags: JSON.stringify(ctx.flags),
+        flags: JSON.stringify("late" in d ? lateFlags(ctx.flags) : ctx.flags),
         rev: await tx.nextRev(),
       } as never)
       .execute();
@@ -163,7 +179,8 @@ export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRo
       last_cost_fen: s.c === null ? null : String(s.c),
       cost_known: s.k,
       stock_ver: sql`stock_ver + 1`,
-      ...(o.counted ? { last_count_at: ctx.occurredAt } : {}),
+      // last_count_at 只往后走：occurred_at 更早的期初 / 盘点（版本对得上才会进来）不把它拉回去
+      ...(o.counted ? { last_count_at: sql`GREATEST(last_count_at, ${ctx.occurredAt})` } : {}),
       rev: await tx.nextRev(),
       updated_at: ctx.now,
     } as never)
