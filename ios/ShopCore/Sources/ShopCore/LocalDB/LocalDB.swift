@@ -17,8 +17,8 @@ public struct LocalSession: Hashable, Sendable {
         self.storeName = storeName; self.deviceLabel = deviceLabel
     }
 
-    /// 收银员手机：不存进价、库存、批次
-    public var holdsPrivateData: Bool { role != .cashier }
+    /// 收银员手机：不存进价、库存、批次。与界面显示同一个来源：`sync:pull` 的 scope（§14 S12-3）
+    public var holdsPrivateData: Bool { DataVisibility.seesCost(role) && DataVisibility.seesStock(role) }
 }
 
 /// 本地库测试用的崩溃注入点（S13 验收「记账的原子性」）。
@@ -118,6 +118,23 @@ public final class LocalDB: Sendable {
         }
         try faultHook?(.afterIdentitySwitchBeforeCompact)
         try compactIfPossible()
+    }
+
+    /// 改这台手机的名字（16 起名、21a「这台手机的名字」）。只改本机记录；报给服务器（`PATCH /v1/devices/me`）在 S21 接。
+    /// 收银员的称呼由家里人定（§6.1），这里拒绝。
+    /// 契约 `DeviceLabel` 的 maxLength（openapi.yaml）
+    public static let deviceLabelMaxLength = 40
+
+    public func renameCurrentDevice(_ label: String) throws {
+        let name = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw invalid("手机名字不能为空") }
+        guard name.unicodeScalars.count <= Self.deviceLabelMaxLength else { throw invalid("手机名字太长") }
+        try writer.write { db in
+            let s = try Self.requireSession(db)
+            guard Capabilities(role: s.role).has(.renameDevice) else { throw invalid("收银员手机的名字由家里人定") }
+            try db.execute(sql: "UPDATE session SET device_label = ? WHERE device_id = ? AND is_current = 1",
+                           arguments: [name, s.deviceId.uuidString])
+        }
     }
 
     /// 退出、被踢（没有新会话）：清投影，当前会话退役，outbox 不动。

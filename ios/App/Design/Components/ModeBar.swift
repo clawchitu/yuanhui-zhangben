@@ -1,6 +1,7 @@
 import SwiftUI
 
 /// 顶栏：卖出 = 朱红底白字，进货 = 靛青底白字，中性 = 米纸底墨字。
+/// 待传状态：nil = 不显示；0 = 「✓ 已同步」；N = 「↑ N 笔待传」。
 /// 返回钮、标题、待传状态在同一个布局里；一行放不下（辅助字号）时，待传状态挪到第二行，标题可换行，不重叠、不截断。
 struct ModeBar: View {
     let title: String
@@ -10,7 +11,7 @@ struct ModeBar: View {
 
     private var background: Color { mode == .neutral ? Tokens.Palette.paper : mode.color }
     private var foreground: Color { mode == .neutral ? Tokens.Palette.ink : .white }
-    private var showsPending: Bool { (pendingCount ?? 0) > 0 }
+    private var showsPending: Bool { pendingCount != nil }
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -73,14 +74,27 @@ struct ModeBar: View {
     }
 
     @ViewBuilder private var pending: some View {
-        if let pendingCount, pendingCount > 0 {
-            Label("\(pendingCount) 笔待传", systemImage: "arrow.up.to.line")
+        if let pendingCount {
+            Label(pendingCount > 0 ? "\(pendingCount) 笔待传" : "已同步",
+                  systemImage: pendingCount > 0 ? "arrow.up.to.line" : "checkmark")
                 .font(TypeScale.secondary)
+                .labelStyle(TightLabelStyle())
                 .lineLimit(1)
                 .fixedSize()
                 .padding(.trailing, 6)
+                .accessibilityIdentifier("syncStatus")
         } else {
             Color.clear.frame(width: 1, height: 1)
+        }
+    }
+}
+
+/// 图标和文字挨得近一点（稿子里「✓ 已同步」之间只有 6pt）
+private struct TightLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon.fontWeight(.semibold)
+            configuration.title
         }
     }
 }

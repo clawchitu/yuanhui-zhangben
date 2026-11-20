@@ -51,6 +51,17 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cn.yuanhuishop.zhangben.tests
         GENERATE_INFOPLIST_FILE: YES
+  YuanhuiZhangbenUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: YuanhuiZhangben
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cn.yuanhuishop.zhangben.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: YuanhuiZhangben
 schemes:
   YuanhuiZhangben:
     build:
@@ -63,6 +74,7 @@ schemes:
       config: Debug
       targets:
         - YuanhuiZhangbenTests
+        - YuanhuiZhangbenUITests
         - package: ShopCore/ShopCoreTests
     archive:
       config: Release

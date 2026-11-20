@@ -858,4 +858,21 @@ final class LocalDBTests: XCTestCase {
         XCTAssertFalse(try db.needsCompaction())
         XCTAssertFalse(try fileContainsMarker(), "B 的压缩请求没被 A 清掉")
     }
+
+    /// 16 起名、21a 改名：只改当前会话的手机名；收银员不能改；空名、超长被拒
+    func testRenameCurrentDevice() throws {
+        let db = try LocalDB.inMemory()
+        XCTAssertInvalid(try db.renameCurrentDevice("柜台手机"), "没登录不能改")
+        try db.beginSession(try LocalSession(deviceId: uuid(0x71), storeId: uuid(0x72), role: .family, tokenRef: "t1",
+                                             storeName: "元辉烟酒店", deviceLabel: "新手机"))
+        try db.renameCurrentDevice("  爸爸的手机 ")
+        XCTAssertEqual(try db.currentSession()?.deviceLabel, "爸爸的手机")
+        XCTAssertInvalid(try db.renameCurrentDevice("   "))
+        XCTAssertInvalid(try db.renameCurrentDevice(String(repeating: "机", count: LocalDB.deviceLabelMaxLength + 1)))
+        try db.renameCurrentDevice(String(repeating: "机", count: LocalDB.deviceLabelMaxLength))
+        try db.beginSession(try LocalSession(deviceId: uuid(0x73), storeId: uuid(0x72), role: .cashier, tokenRef: "t2",
+                                             storeName: "元辉烟酒店", deviceLabel: "小王的手机"))
+        XCTAssertInvalid(try db.renameCurrentDevice("别的名字"), "收银员的称呼由家里人定")
+        XCTAssertEqual(try db.currentSession()?.deviceLabel, "小王的手机")
+    }
 }

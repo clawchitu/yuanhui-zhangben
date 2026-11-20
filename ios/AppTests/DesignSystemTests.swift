@@ -25,11 +25,16 @@ final class TypeScaleTests: XCTestCase {
         XCTAssertEqual(TypeScale.effectiveSize(system: .accessibility5, largeMode: true), .accessibility2)
     }
 
-    func testStandardModeFollowsSystem() {
+    /// 标准模式跟随系统，但上限同样封在 accessibility2（§14 S11-1）
+    func testStandardModeFollowsSystemUpToAccessibility2() {
         for system in DynamicTypeSize.allCases {
-            XCTAssertEqual(TypeScale.effectiveSize(system: system, largeMode: false), system)
+            let expected = system > .accessibility2 ? DynamicTypeSize.accessibility2 : system
+            XCTAssertEqual(TypeScale.effectiveSize(system: system, largeMode: false), expected, "\(system)")
         }
         XCTAssertEqual(TypeScale.pointSize(.body, system: .large, largeMode: false), 17)
+        XCTAssertEqual(TypeScale.pointSize(.body, system: .accessibility5, largeMode: false),
+                       TypeScale.pointSize(.body, system: .accessibility2, largeMode: false))
+        XCTAssertEqual(TypeScale.standardRange, DynamicTypeSize.xSmall ... .accessibility2)
     }
 
     func testNumberFontIsDINAlternateBold() {
@@ -93,7 +98,10 @@ final class TypeScaleRenderingTests: XCTestCase {
         XCTAssertEqual(environmentSize(system: .large, largeMode: true), .xxxLarge)
         XCTAssertEqual(environmentSize(system: .accessibility5, largeMode: true), .accessibility2)
         XCTAssertEqual(environmentSize(system: .xSmall, largeMode: false), .xSmall)
-        XCTAssertEqual(environmentSize(system: .accessibility5, largeMode: false), .accessibility5)
+        XCTAssertEqual(environmentSize(system: .large, largeMode: false), .large)
+        XCTAssertEqual(environmentSize(system: .accessibility2, largeMode: false), .accessibility2)
+        XCTAssertEqual(environmentSize(system: .accessibility3, largeMode: false), .accessibility2, "标准模式也封顶（S11-1）")
+        XCTAssertEqual(environmentSize(system: .accessibility5, largeMode: false), .accessibility2, "标准模式也封顶（S11-1）")
     }
 
     /// 验收：大字模式下正文实际渲染 ≥ 22pt、次要 ≥ 18pt（系统最小 / 默认 / 最大都测）。
@@ -105,13 +113,26 @@ final class TypeScaleRenderingTests: XCTestCase {
         }
     }
 
-    /// 大字模式封顶：系统最大时与 accessibility2 渲染一样大，比关掉大字模式时小。
+    /// 系统最大字号、不套外壳时的渲染高度（没有封顶时会有多大）
+    private func uncappedHeight(_ font: Font) -> CGFloat {
+        fittedSize(Text(sample).font(font).lineLimit(1).fixedSize().environment(\.dynamicTypeSize, .accessibility5), width: 2000).height
+    }
+
+    /// 大字模式封顶：系统最大时与 accessibility2 渲染一样大，比不封顶时小。
     func testLargeModeCapsAtAccessibility2() {
         let capped = renderedHeight(TypeScale.body, system: .accessibility5, largeMode: true)
         let ax2 = renderedHeight(TypeScale.body, system: .accessibility2, largeMode: false)
-        let uncapped = renderedHeight(TypeScale.body, system: .accessibility5, largeMode: false)
         XCTAssertEqual(capped, ax2, accuracy: 0.5)
-        XCTAssertLessThan(capped, uncapped)
+        XCTAssertLessThan(capped, uncappedHeight(TypeScale.body))
+    }
+
+    /// 验收（S15，§14 S11-1）：标准模式下系统字号调到最大，实际渲染也封顶在 accessibility2。
+    func testStandardModeCapsAtAccessibility2WhenRendered() {
+        for font in [TypeScale.body, TypeScale.secondary, TypeScale.title, TypeScale.nav] {
+            let capped = renderedHeight(font, system: .accessibility5, largeMode: false)
+            XCTAssertEqual(capped, renderedHeight(font, system: .accessibility2, largeMode: false), accuracy: 0.5)
+            XCTAssertLessThan(capped, uncappedHeight(font))
+        }
     }
 
     /// 关掉大字模式 = 跟随系统：系统默认时正文渲染等于 17pt，系统最小时比 22pt 小。
@@ -189,8 +210,30 @@ final class ComponentTests: XCTestCase {
         XCTAssertEqual(Money.yuanString(100_000), "1000.00")
     }
 
+    /// 验收（S15，§14 S11-4）：小号步进器圆钮外观 46pt，点按区域不小于 56pt；圆钮和数字的位置不变。
+    func testCompactStepperHitAreaAtLeast56() {
+        XCTAssertEqual(QuantityStepper.diameter(compact: true), 46)
+        XCTAssertGreaterThanOrEqual(QuantityStepper.hitSize(compact: true), 56)
+        XCTAssertGreaterThanOrEqual(QuantityStepper.hitSize(compact: false), 56)
+        for type in [DynamicTypeSize.large, .accessibility2] {
+            let size = fittedSize(QuantityStepper(value: .constant(4), compact: true).environment(\.dynamicTypeSize, type))
+            XCTAssertGreaterThanOrEqual(size.height, 56, "整个步进器（即点按框）高度 @\(type)")
+            // 宽 = 两个 56 点按框 + 数字最小宽 44 + 两处间距 5（外观上圆钮边到数字仍是 10）
+            XCTAssertEqual(size.width, 56 + 5 + 44 + 5 + 56, accuracy: 0.5)
+        }
+    }
+
     func testUIFixtureParsing() {
         XCTAssertEqual(UIFixture.screen(from: ["app", "-uiFixture", "gallery"]), .gallery(page: nil))
+        XCTAssertEqual(UIFixture.screen(from: ["app", "-uiFixture", "home"]), .home(unsynced: false))
+        XCTAssertEqual(UIFixture.screen(from: ["app", "-uiFixture", "home-unsynced"]), .home(unsynced: true))
+        XCTAssertEqual(UIFixture.screen(from: ["app", "-uiFixture", "onboarding"]), .onboarding)
+        XCTAssertEqual(UIFixture.screen(from: ["app", "-uiFixture", "settings"]), .settings)
+        XCTAssertEqual(UIFixture.role(from: ["-uiFixture", "home"]), .family)
+        XCTAssertEqual(UIFixture.role(from: ["-uiRole", "cashier"]), .cashier)
+        XCTAssertNil(UIFixture.role(from: ["-uiRole", "revoked"]))
+        XCTAssertNil(UIFixture.role(from: ["-uiFixture", "gallery-2"]))
+        XCTAssertNil(UIFixture.role(from: []))
         XCTAssertEqual(UIFixture.screen(from: ["app", "-uiFixture", "gallery-5"]), .gallery(page: 5))
         XCTAssertNil(UIFixture.screen(from: ["app"]))
         XCTAssertNil(UIFixture.screen(from: ["app", "-uiFixture"]))

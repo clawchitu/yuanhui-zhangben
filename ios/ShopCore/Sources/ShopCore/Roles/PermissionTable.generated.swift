@@ -53,15 +53,15 @@ extension PermissionTable {
             .revoked: PermissionCell(.allow, conditions: [])
         ]),
         PermissionRule(id: "sync:pull", kind: "sync_pull", cells: [
-            .family: PermissionCell(.allow, conditions: []),
-            .cashier: PermissionCell(.allow, conditions: []),
-            .review: PermissionCell(.allow, conditions: []),
+            .family: PermissionCell(.allow, conditions: [], scope: "full_store"),
+            .cashier: PermissionCell(.allow, conditions: [], scope: "cashier_projection"),
+            .review: PermissionCell(.allow, conditions: [], scope: "full_store"),
             .revoked: PermissionCell(.deny, conditions: [])
         ]),
         PermissionRule(id: "GET /v1/barcode-lookup/{barcode}", kind: "http", cells: [
             .family: PermissionCell(.allow, conditions: []),
-            .cashier: PermissionCell(.allow, conditions: []),
-            .review: PermissionCell(.allow, conditions: []),
+            .cashier: PermissionCell(.allow, conditions: [], scope: "name_spec_has_image"),
+            .review: PermissionCell(.allow, conditions: [], scope: "demo_fake_data"),
             .revoked: PermissionCell(.deny, conditions: [])
         ]),
         PermissionRule(id: "GET /v1/images/{product_id}", kind: "http", cells: [

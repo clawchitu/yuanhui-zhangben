@@ -30,8 +30,9 @@ for r in data["rules"]:
     for role in ROLES:
         c = r[role]
         conds = c.get("conditions", [])
-        cells.append("            .%s: PermissionCell(%s, conditions: [%s])" % (
-            role, DECISION[c["decision"]], ", ".join(s(x) for x in conds)))
+        scope = (", scope: %s" % s(c["scope"])) if "scope" in c else ""
+        cells.append("            .%s: PermissionCell(%s, conditions: [%s]%s)" % (
+            role, DECISION[c["decision"]], ", ".join(s(x) for x in conds), scope))
     out.append("        PermissionRule(id: %s, kind: %s, cells: [" % (s(r["id"]), s(r["kind"])))
     out.append(",\n".join(cells))
     out.append("        ]),")
