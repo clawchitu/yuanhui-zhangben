@@ -48,7 +48,7 @@ type Gen =
   | { kind: "sale"; dev: number; lines: Array<{ p: number; packQty: number; count: number; price: number }>; discount: number; atH: number }
   | { kind: "stock_in"; dev: number; p: number; packQty: number; count: number; unit: number; expiry?: string; atH: number }
   | { kind: "opening"; dev: number; p: number; counted: number; cost: number | null; base: "none" | "current" | number; expiry?: string; atH: number }
-  | { kind: "void"; dev: number; target: number; line: number | null; atH: number }
+  | { kind: "void"; dev: number; target: number; line: number | null; recent: boolean; atH: number }
   | { kind: "count"; dev: number; p: number; counted: number; base: "current" | number; atH: number }
   | { kind: "review"; dev: number; p: number; counted: number; cost: number; base: "current" | number; track: boolean | null; atH: number }
   | { kind: "dispose"; dev: number; p: number; lot: number; actual: number; action: "sold_out" | "discard" | "return"; hv: "current" | number; atH: number }
@@ -116,6 +116,8 @@ const genArb: fc.Arbitrary<Gen> = fc.oneof(
       dev: devArb,
       target: fc.nat(40),
       line: fc.option(fc.nat(3), { nil: null }),
+      // 一半撤最近的几笔（撤刚扔掉的、刚盘的），否则扔掉 / 退货的冲销太少见
+      recent: fc.boolean(),
       atH: atArb,
     }),
   },
@@ -296,7 +298,8 @@ class Materializer {
         let target: Record<string, string>;
         if (cands.length === 0) target = { entry_id: randomUUID() };
         else {
-          const j = cands[g.target % cands.length]!;
+          const pool = g.recent ? cands.slice(-3) : cands;
+          const j = pool[g.target % pool.length]!;
           const r = this.refs[j]!;
           target = r.batch !== undefined && g.line === null ? { batch_id: r.batch } : { entry_id: r.entries[(g.line ?? 0) % r.entries.length]! };
         }
@@ -555,6 +558,30 @@ async function runScenario(s: Scenario) {
   return first;
 }
 
+/**
+ * 固定带上的一组（fast-check 的 examples，每次都跑）：随机生成里扔掉 / 退货再被撤销、处理后来源又被撤销都不常见，
+ * 这一组保证每次都覆盖到：两批进货 → 扔掉、退货 → 撤销来源进货 → 撤销扔掉、撤销退货（一个重开、一个因来源已撤销而记 voided），
+ * 外加盘点之后才到的更早的卖出（迟到补偿）和它的重发。
+ */
+const LOT_EXAMPLE: Scenario = {
+  gens: [
+    { kind: "stock_in", dev: 0, p: 0, packQty: 1, count: 5, unit: 100, expiry: "2026-11-25", atH: 50 },
+    { kind: "stock_in", dev: 0, p: 0, packQty: 1, count: 5, unit: 120, expiry: "2026-12-01", atH: 49 },
+    { kind: "dispose", dev: 0, p: 0, lot: 0, actual: 2, action: "discard", hv: "current", atH: 40 },
+    { kind: "dispose", dev: 1, p: 0, lot: 1, actual: 1, action: "return", hv: "current", atH: 40 },
+    { kind: "void", dev: 0, target: 1, line: null, recent: false, atH: 30 },
+    { kind: "void", dev: 0, target: 2, line: null, recent: false, atH: 20 },
+    { kind: "void", dev: 1, target: 3, line: null, recent: false, atH: 20 },
+    { kind: "count", dev: 0, p: 0, counted: 4, base: "current", atH: 10 },
+    { kind: "sale", dev: 2, lines: [{ p: 0, packQty: 1, count: 2, price: 300 }], discount: 0, atH: 15 },
+    { kind: "snooze", dev: 0, p: 0, lot: 0, actual: 3, days: 2, hv: "current", atH: 5 },
+  ],
+  delays: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  replays: [{ pos: 9, which: 8 }],
+  chunk: 1,
+  page: 0,
+};
+
 describe("数据库层性质测试（I1–I8，§3.3）", () => {
   it(`随机多设备 op 序列 ${RUNS} 组，乱序到达、中途与最后重发：I1–I8 成立`, { timeout: 1_200_000 }, async () => {
     let applied = 0;
@@ -569,7 +596,7 @@ describe("数据库层性质测试（I1–I8，§3.3）", () => {
           else rejected += 1;
         }
       }),
-      { numRuns: RUNS },
+      { numRuns: RUNS, examples: [[LOT_EXAMPLE]] },
     );
     console.log(`性质测试：${runs} 组，op 第一次结果 applied ${applied} / 其余 ${rejected}；流水 ${JSON.stringify(Object.fromEntries(coverage))}`);
     const must = ["sale冲销", "stock_in冲销", "opening冲销", "cost_fix", "cost_fix冲销", "cost_adjust", "count", "count冲销", "expire_loss", "expire_loss冲销", "supplier_return", "supplier_return冲销", "被补记的卖出", "时钟校正", "迟到补偿", "批次", "批次disposed", "批次voided", "批次处理后重开或推迟", "lot_moves", "count:applied", "count:stale", "product_review_complete:applied", "product_review_complete:stale", "expiry_dispose:applied", "expiry_dispose:stale", "lot_snooze:applied", "lot_snooze:stale"];
