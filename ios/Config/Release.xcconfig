@@ -1,0 +1,4 @@
+// 正式上架包。
+YH_ENV = release
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited)
+SWIFT_OPTIMIZATION_LEVEL = -O

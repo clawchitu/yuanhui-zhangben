@@ -1,0 +1,128 @@
+import SwiftUI
+
+/// 金额一律整数分；这里只负责显示。
+enum Money {
+    static func yuanString(_ cents: Int) -> String {
+        let sign = cents < 0 ? "-" : ""
+        let a = cents.magnitude
+        return sign + String(a / 100) + "." + String(format: "%02d", Int(a % 100))
+    }
+}
+
+/// ¥ + 金额，DIN Alternate Bold，固定字号。
+struct PriceText: View {
+    let cents: Int
+    var size: CGFloat = Tokens.FixedFontSize.price
+    var color: Color = Tokens.Palette.ink
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 2) {
+            Text("¥").font(TypeScale.number(size * 0.6))
+            Text(Money.yuanString(cents)).font(TypeScale.number(size))
+        }
+        .foregroundStyle(color)
+        .lineLimit(1)
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(Money.yuanString(cents)) 元")
+    }
+}
+
+/// 商品缩略图；没图时显示占位。
+struct Thumb: View {
+    var image: Image?
+    var size: CGFloat = Tokens.Size.thumb
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.2).fill(Tokens.Palette.paper)
+            if let image {
+                image.resizable().scaledToFill()
+            } else {
+                Image(systemName: "shippingbox.fill")
+                    .font(.system(size: size * 0.42))
+                    .foregroundStyle(Tokens.Palette.mute)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.2))
+        .accessibilityHidden(true)
+    }
+}
+
+private struct DashedLine: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            p.move(to: CGPoint(x: rect.minX, y: rect.midY))
+            p.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        }
+    }
+}
+
+/// 价签：刚扫到的商品，价签黄底；下面可接一栏（比如「买几个」步进器）。
+struct PriceTag<Footer: View>: View {
+    let name: String
+    var caption: String
+    let unitPriceCents: Int
+    var thumb: Image?
+    let footer: Footer
+
+    init(name: String, caption: String = "刚扫的 · 单价", unitPriceCents: Int, thumb: Image? = nil,
+         @ViewBuilder footer: () -> Footer) {
+        self.name = name
+        self.caption = caption
+        self.unitPriceCents = unitPriceCents
+        self.thumb = thumb
+        self.footer = footer()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 14) {
+                Thumb(image: thumb)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(name)
+                        .font(TypeScale.title)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .lastTextBaseline) {
+                            captionText
+                            Spacer(minLength: 8)
+                            PriceText(cents: unitPriceCents)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            captionText
+                            PriceText(cents: unitPriceCents)
+                        }
+                    }
+                }
+            }
+            .foregroundStyle(Tokens.Palette.ink)
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Tokens.Palette.tag)
+            if Footer.self != EmptyView.self {
+                DashedLine()
+                    .stroke(Tokens.Palette.ink, style: StrokeStyle(lineWidth: 2, dash: [6, 5]))
+                    .frame(height: 2)
+                footer
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Tokens.Palette.card)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.card))
+        .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(Tokens.Palette.ink, lineWidth: 2.5))
+    }
+
+    private var captionText: some View {
+        Text(caption).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
+    }
+}
+
+extension PriceTag where Footer == EmptyView {
+    init(name: String, caption: String = "刚扫的 · 单价", unitPriceCents: Int, thumb: Image? = nil) {
+        self.init(name: name, caption: caption, unitPriceCents: unitPriceCents, thumb: thumb) { EmptyView() }
+    }
+}
