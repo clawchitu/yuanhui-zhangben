@@ -1,0 +1,53 @@
+name: ios
+# 只在 ios/ 或本工作流改动时触发（偏差说明见 docs/process-deviations.md）。
+# 没触发时 scripts/merge-pr.sh 把它当作「不需要」，不会卡合并。
+on:
+  pull_request:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+permissions:
+  contents: read
+concurrency:
+  # 本机只有一台自托管 runner，排队跑，不并发
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ios-ci:
+    name: ios-ci
+    runs-on: [self-hosted, macOS, yuanhui]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+      - name: xcodegen
+        run: xcodegen generate
+      - name: 建本次专用模拟器
+        id: sim
+        run: |
+          udid=$(scripts/sim-create.sh "yuanhui-ci-${{ github.run_id }}-${{ github.run_attempt }}")
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          echo "DERIVED=$RUNNER_TEMP/yuanhui-dd-${{ github.run_id }}" >> "$GITHUB_ENV"
+      - name: xcodebuild test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project YuanhuiZhangben.xcodeproj \
+            -scheme YuanhuiZhangben \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath "$DERIVED" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee "$RUNNER_TEMP/xcodebuild.log" | grep -E "error:|warning: |Test Case|Executed|\*\* TEST" || true
+          grep -q "\*\* TEST SUCCEEDED \*\*" "$RUNNER_TEMP/xcodebuild.log"
+      - name: 清理自己建的模拟器
+        if: always()
+        run: |
+          scripts/sim-destroy.sh "${{ steps.sim.outputs.udid }}"
+          [ -n "${DERIVED:-}" ] && rm -rf "$DERIVED" || true

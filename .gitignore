@@ -1,0 +1,41 @@
+# ---- 密钥：任何密钥都不许进仓库 ----
+.env
+.env.*
+!.env.example
+!deploy/.env.example
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+*.cer
+*.certSigningRequest
+*.keystore
+AuthKey_*
+secrets/
+signing/
+
+# ---- macOS / 编辑器 ----
+.DS_Store
+.idea/
+.vscode/
+
+# ---- 服务器 ----
+node_modules/
+server/dist/
+coverage/
+*.log
+
+# ---- iOS：工程由 XcodeGen 生成，不进仓库 ----
+ios/*.xcodeproj/
+ios/*.xcworkspace/
+xcuserdata/
+DerivedData/
+build/
+*.xcresult
+.swiftpm/
+.build/
+ios/fastlane/report.xml
+ios/fastlane/Preview.html
+ios/fastlane/screenshots/
+ios/fastlane/test_output/
