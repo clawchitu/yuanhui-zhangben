@@ -11,7 +11,8 @@ import type { StoreTx } from "../sync/lock.ts";
 import { Remap, resolveProductId } from "../sync/aliases.ts";
 import { DEFAULT_BASE_UNIT, type ApplyContext, type Outcome } from "../sync/catalog.ts";
 import { allocate, AllocationError, LIMITS } from "./allocation.ts";
-import { CostError, opening, sale, stockIn, type CostState, type MissingSale, type Step } from "./cost.ts";
+import { CostError, opening, raw, settle, type CostState, type MissingSale, type Step } from "./cost.ts";
+import { createLot, deductLots } from "./lots.ts";
 
 export interface LedgerContext extends ApplyContext {
   opId: string;
@@ -52,6 +53,11 @@ export async function loadProduct(tx: StoreTx, id: string) {
   return tx.trx.selectFrom("products").selectAll().where("store_id", "=", tx.storeId).where("id", "=", id).executeTakeFirst();
 }
 
+/** 版本不一致（§5.6 第 2 条）：rejected stale，current 带回最新账面数和版本 */
+export function staleOf(prod: ProductRow, remap: Remap): Outcome {
+  return { status: "rejected", code: "stale", current: { stock_qty: prod.stock_qty, stock_ver: Number(prod.stock_ver) }, ...withRemap(remap) };
+}
+
 export function stateOf(p: ProductRow): CostState {
   return { q: BigInt(p.stock_qty), v: BigInt(p.stock_value_fen), c: p.last_cost_fen === null ? null : BigInt(p.last_cost_fen), k: p.cost_known };
 }
@@ -73,13 +79,13 @@ export async function missingSales(tx: StoreTx, pid: string): Promise<MissingSal
   return rows.map((r) => ({ ref: r.id, qty: -BigInt(r.qty_delta), amount_fen: BigInt(r.amount_fen) }));
 }
 
-async function entryFree(tx: StoreTx, id: string) {
+export async function entryFree(tx: StoreTx, id: string) {
   const e = await tx.trx.selectFrom("entries").select("id").where("store_id", "=", tx.storeId).where("id", "=", id.toLowerCase()).executeTakeFirst();
   if (e) bad(`entry_id ${id} 已被占用`);
 }
 
 /** 年份 0000：Postgres 的 date 存不下；op 本身存得下，按 payload 格式不对留档（§14 S05-4） */
-function checkExpiry(d: string | undefined) {
+export function checkExpiry(d: string | undefined) {
   if (d !== undefined && d.startsWith("0000")) bad("expiry_date 年份 0000");
 }
 
@@ -101,8 +107,27 @@ export interface MainRow {
   expiryDate?: string | null;
 }
 
-/** 把 cost.ts 的一步写进 entries（第一条是主流水），再改商品投影 */
-export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRow, main: MainRow, step: Step<string>, o: { counted?: boolean } = {}) {
+/** 补偿行的 flags：op 的标记照抄，处理批次用的 lot_id / qty_left_before 不带（补偿行不是处理；onVoid 只在 expire_loss / supplier_return 上读这两个键，这里去掉只为留档干净，不是防线） */
+function lateFlags(f: Record<string, unknown>): Record<string, unknown> {
+  const { lot_id: _l, qty_left_before: _q, ...rest } = f;
+  return { ...rest, late_before_count: true };
+}
+
+/** 迟到（§5.6 第 4 条）：不是盘点 / 期初本身，且 occurred_at 早于这个商品最近一次盘点 / 期初 */
+function isLate(ctx: LedgerContext, prod: ProductRow, counted: boolean): boolean {
+  return !counted && prod.last_count_at !== null && ctx.occurredAt.getTime() < new Date(prod.last_count_at).getTime();
+}
+
+/**
+ * 把 cost.ts 的一步写进 entries（第一条是主流水），再改商品投影。rawStep 可以是未做范围检查的（cost.ts 的 raw），这里统一检查。
+ * 迟到的流水（isLate）在这里统一追加补偿行（cost.ts 的 settle → lateCompensateRaw），所以卖出、进货、撤销、扔掉 / 退货都走同一处；
+ * 补偿行和主流水同一个 op、seq 相邻、occurred_at 相同，flags 多一个 late_before_count。
+ * 返回这一步是否按迟到补偿了（卖出据此不扣批次，§14 S06-10）。
+ */
+export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRow, main: MainRow, rawStep: Step<string>, o: { counted?: boolean } = {}): Promise<{ late: boolean }> {
+  const late = isLate(ctx, prod, o.counted === true);
+  // 范围检查在组合补偿之后（cost.ts 的 settle）：检查的是补偿后的最终状态和全部流水；越界抛 CostError → guarded 回滚并拒 invalid
+  const step = settle(stateOf(prod), rawStep, late);
   let seq = await nextSeq(tx);
   for (const [i, d] of step.entries.entries()) {
     const id = i === 0 && main.id !== undefined ? main.id.toLowerCase() : randomUUID();
@@ -133,7 +158,7 @@ export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRo
         device_id: ctx.deviceId,
         occurred_at: ctx.occurredAt,
         received_at: ctx.now,
-        flags: JSON.stringify(ctx.flags),
+        flags: JSON.stringify("late" in d ? lateFlags(ctx.flags) : ctx.flags),
         rev: await tx.nextRev(),
       } as never)
       .execute();
@@ -157,13 +182,15 @@ export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRo
       last_cost_fen: s.c === null ? null : String(s.c),
       cost_known: s.k,
       stock_ver: sql`stock_ver + 1`,
-      ...(o.counted ? { last_count_at: ctx.occurredAt } : {}),
+      // last_count_at 只往后走：occurred_at 更早的期初 / 盘点（版本对得上才会进来）不把它拉回去
+      ...(o.counted ? { last_count_at: sql`GREATEST(last_count_at, ${ctx.occurredAt})` } : {}),
       rev: await tx.nextRev(),
       updated_at: ctx.now,
     } as never)
     .where("store_id", "=", tx.storeId)
     .where("id", "=", prod.id)
     .execute();
+  return { late };
 }
 
 async function unitNameOf(tx: StoreTx, prod: ProductRow, barcode: string): Promise<string> {
@@ -203,7 +230,7 @@ export async function applyStockIn(tx: StoreTx, ctx: LedgerContext, p: StockInPa
     if (T > LIMITS.maxLineAmountFen) bad("进货总价超上限");
     const prod = (await loadProduct(tx, await resolveProductId(tx, p.product_id, remap))) ?? bad("商品不存在");
     await entryFree(tx, p.entry_id);
-    const step = stockIn(stateOf(prod), n, T, unit, await missingSales(tx, prod.id));
+    const step = raw.stockIn(stateOf(prod), n, T, unit, await missingSales(tx, prod.id));
     await writeStep(tx, ctx, prod, {
       id: p.entry_id,
       barcode: p.barcode,
@@ -212,6 +239,7 @@ export async function applyStockIn(tx: StoreTx, ctx: LedgerContext, p: StockInPa
       packCount: p.pack_count,
       expiryDate: p.expiry_date ?? null,
     }, step);
+    await createLot(tx, prod, p.entry_id, Number(n), p.expiry_date ?? null);
   });
 }
 
@@ -236,12 +264,14 @@ export async function applyOpening(tx: StoreTx, ctx: LedgerContext, p: OpeningPa
     const prod = (await loadProduct(tx, await resolveProductId(tx, p.product_id, remap))) ?? bad("商品不存在");
     const ver = BigInt(prod.stock_ver);
     if (p.base_ver !== undefined ? ver !== BigInt(p.base_ver) : ver !== 0n) {
-      return { status: "rejected", code: "stale", current: { stock_qty: prod.stock_qty, stock_ver: Number(ver) }, ...withRemap(remap) };
+      return staleOf(prod, remap);
     }
     await entryFree(tx, p.entry_id);
     const b = p.unit_cost_fen === undefined ? null : BigInt(p.unit_cost_fen);
     const step = opening(stateOf(prod), BigInt(p.counted_qty), b, await missingSales(tx, prod.id));
     await writeStep(tx, ctx, prod, { id: p.entry_id, unitName: prod.base_unit, expiryDate: p.expiry_date ?? null }, step, { counted: true });
+    // 期初生成一个批次（数量 = 数到的数），不扣已有批次（§5.4；批次之和不强求等于库存）
+    await createLot(tx, prod, p.entry_id, p.counted_qty, p.expiry_date ?? null);
   });
 }
 
@@ -311,8 +341,8 @@ export async function applySaleBatch(tx: StoreTx, ctx: LedgerContext, p: SaleBat
           .execute();
         prod = (await loadProduct(tx, pid))!;
       }
-      const step = sale(stateOf(prod), BigInt(l.pack_qty) * BigInt(l.pack_count), alloc.amountFen[i]!, alloc.listFen[i]!);
-      await writeStep(tx, ctx, prod, {
+      const step = raw.sale(stateOf(prod), BigInt(l.pack_qty) * BigInt(l.pack_count), alloc.amountFen[i]!, alloc.listFen[i]!);
+      const { late } = await writeStep(tx, ctx, prod, {
         id: l.entry_id,
         batchId,
         barcode: l.barcode,
@@ -321,6 +351,8 @@ export async function applySaleBatch(tx: StoreTx, ctx: LedgerContext, p: SaleBat
         packQty: l.pack_qty,
         packCount: l.pack_count,
       }, step);
+      // 被补偿的迟到卖出不扣批次、不写 lot_moves：盘点的盘亏已经扣过一次，再扣会让提醒提前消失（§5.4、§14 S06-10）
+      if (!late) await deductLots(tx, prod.id, l.entry_id, l.pack_qty * l.pack_count);
     }
   });
 }
