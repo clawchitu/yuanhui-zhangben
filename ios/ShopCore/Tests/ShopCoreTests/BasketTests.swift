@@ -57,6 +57,43 @@ final class BasketTests: XCTestCase {
         XCTAssertEqual(try b.listTotal(), Fen(900))
     }
 
+    /// Codex P1 / §14 S12-2 回归：同商品、同换算（24 个装）、不同整件价（¥65 和 ¥60）的两个整件码各扫一次
+    /// = 两行，各收各的价，合计 ¥125.00，不能并成一行按第一个码的价收 ¥130.00。
+    func testSamePackQtyDifferentPackPriceAreTwoLines() throws {
+        let cola = PackConversionTests.cola
+        let a = try BarcodeRecord(barcode: "16928804011118", productId: cola.id, packQty: 24, unitName: "箱", packPriceFen: Fen(6500))
+        let b2 = try BarcodeRecord(barcode: "16928804011125", productId: cola.id, packQty: 24, unitName: "箱", packPriceFen: Fen(6000))
+        var b = Basket()
+        try b.add(try PackConversion(product: cola, barcode: a))
+        try b.add(try PackConversion(product: cola, barcode: b2))
+        XCTAssertEqual(b.lines.count, 2)
+        XCTAssertEqual(try b.lines.map { try $0.unitPrice() }, [Fen(6500), Fen(6000)])
+        XCTAssertEqual(b.lines.map(\.barcode), ["16928804011118", "16928804011125"])
+        XCTAssertEqual(try b.listTotal(), Fen(12500))
+        // 再扫一次第二个码：并进第二行
+        try b.add(try PackConversion(product: cola, barcode: b2))
+        XCTAssertEqual(b.lines.map(\.packCount), [1, 2])
+        XCTAssertEqual(try b.listTotal(), Fen(18500))
+        let sale = try b.makeSaleBatch()
+        XCTAssertEqual(sale.lines.map(\.unitPriceFen), [Fen(6500), Fen(6000)])
+    }
+
+    /// 同换算同价但单位名不同（「箱」和「件」）也分两行；一个带价 ¥72、一个不带价按 ¥3 × 24 = ¥72，价相同、名相同则合并。
+    func testMergeKeyIncludesUnitNameAndEffectivePrice() throws {
+        let cola = PackConversionTests.cola
+        let box = try BarcodeRecord(barcode: "1", productId: cola.id, packQty: 24, unitName: "箱", packPriceFen: Fen(7200))
+        let jian = try BarcodeRecord(barcode: "2", productId: cola.id, packQty: 24, unitName: "件", packPriceFen: Fen(7200))
+        let boxNoPrice = try BarcodeRecord(barcode: "3", productId: cola.id, packQty: 24, unitName: "箱")
+        var b = Basket()
+        try b.add(try PackConversion(product: cola, barcode: box))
+        try b.add(try PackConversion(product: cola, barcode: jian))
+        XCTAssertEqual(b.lines.count, 2)
+        try b.add(try PackConversion(product: cola, barcode: boxNoPrice))
+        XCTAssertEqual(b.lines.count, 2)
+        XCTAssertEqual(b.lines.map(\.packCount), [2, 1])
+        XCTAssertEqual(try b.listTotal(), Fen(21600))
+    }
+
     func testZeroPriceBasketCannotChangePaid() throws {
         let gift = try Product(id: uuid(0x299), name: "赠品袋", priceFen: .zero)
         var b = Basket()
@@ -163,9 +200,9 @@ final class PackConversionTests: XCTestCase {
 
     func testUnitCostDisplay() throws {
         // 6 包货值 242.80，再进 5 条 × 400 → 56 包、货值 2242.80，平均 40.05（§5.2 必过向量的显示部分）
-        let pp = ProductPrivate(productId: uuid(1), stockQty: 56, stockValueFen: Fen(224_280), lastCostFen: Fen(4000), costKnown: true)
+        let pp = try ProductPrivate(productId: uuid(1), stockQty: 56, stockValueFen: Fen(224_280), lastCostFen: Fen(4000), costKnown: true)
         XCTAssertEqual(try pp.unitCost(), Fen(4005))
-        let unknown = ProductPrivate(productId: uuid(1), stockQty: 10)
+        let unknown = try ProductPrivate(productId: uuid(1), stockQty: 10)
         XCTAssertNil(try unknown.unitCost())
     }
 }

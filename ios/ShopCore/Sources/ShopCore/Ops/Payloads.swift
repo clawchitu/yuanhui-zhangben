@@ -162,14 +162,14 @@ public enum Patch<T: Hashable & Sendable>: Hashable, Sendable {
 public struct ProductEditPayload: OpPayload, Hashable {
     public static let opType = OpType.productEdit
     public let productId: UUID
-    public var name: Patch<String> = .unchanged
-    public var priceFen: Patch<Fen> = .unchanged
-    public var baseUnit: Patch<String> = .unchanged
-    public var lowAt: Patch<Int64?> = .unchanged
-    public var trackExpiry: Patch<Bool> = .unchanged
-    public var expiryWarnDays: Patch<Int64> = .unchanged
-    public var shelfLifeMonths: Patch<Int64?> = .unchanged
-    public var archived: Patch<Bool> = .unchanged
+    public let name: Patch<String>
+    public let priceFen: Patch<Fen>
+    public let baseUnit: Patch<String>
+    public let lowAt: Patch<Int64?>
+    public let trackExpiry: Patch<Bool>
+    public let expiryWarnDays: Patch<Int64>
+    public let shelfLifeMonths: Patch<Int64?>
+    public let archived: Patch<Bool>
 
     /// 只带要改的字段，逐字段后写者赢；一个都不改就拒。
     public init(productId: UUID, name: Patch<String> = .unchanged, priceFen: Patch<Fen> = .unchanged,
@@ -211,9 +211,9 @@ public struct BarcodeLinkPayload: OpPayload, Hashable {
     public static let opType = OpType.barcodeLink
     public let record: BarcodeRecord
 
-    /// 按 `ops.schema.json`：单件码（`pack_qty = 1`）不带价；整件码必须带自己的价。
-    public init(_ record: BarcodeRecord) throws {
-        if record.isPack, record.packPriceFen == nil { throw invalid("整件码要带整件价（ops.schema.json）") }
+    /// 按 `ops.schema.json`：单件码（`pack_qty = 1`）不带价；整件码可以带自己的价，也可以不带
+    /// （读价时按「单件卖价 × 换算数量」，§14 S02-5 / S12-1）。这些都由 `BarcodeRecord` 的构造器保证。
+    public init(_ record: BarcodeRecord) {
         self.record = record
     }
 

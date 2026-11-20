@@ -48,8 +48,9 @@ final class OpsSchemaTests: XCTestCase {
                                                               lowAt: .set(5), trackExpiry: .set(true), expiryWarnDays: .set(10),
                                                               shelfLifeMonths: .set(12), archived: .set(true)))),
             ("product_edit 清空", op(11, try ProductEditPayload(productId: p, lowAt: .set(nil), shelfLifeMonths: .set(nil)))),
-            ("barcode_link 单件", op(12, try BarcodeLinkPayload(single))),
-            ("barcode_link 整箱", op(13, try BarcodeLinkPayload(caseCode))),
+            ("barcode_link 单件", op(12, BarcodeLinkPayload(single))),
+            ("barcode_link 整箱", op(13, BarcodeLinkPayload(caseCode))),
+            ("barcode_link 整件不带价", op(26, BarcodeLinkPayload(try BarcodeRecord(barcode: "26928804011115", productId: p, packQty: 6, unitName: "提")))),
             ("barcode_unlink", op(14, try BarcodeUnlinkPayload(barcode: "16928804011118", productId: p))),
             ("stock_in", op(15, try StockInPayload(entryId: uuid(0x105), conversion: try PackConversion(product: PackConversionTests.cola, barcode: PackConversionTests.colaCase),
                                                    packCount: 5, unitCostFen: Fen(4800)))),
@@ -110,9 +111,17 @@ final class OpsSchemaTests: XCTestCase {
         XCTAssertEqual(kv.map(\.0), ["product_id", "barcode", "name", "price_fen", "quick"])
     }
 
-    func testPackLinkWithoutPriceRejectedPerSchema() throws {
-        let rec = try BarcodeRecord(barcode: "1", productId: uuid(1), packQty: 24, unitName: "箱")
-        XCTAssertInvalid(try BarcodeLinkPayload(rec))
+    /// §14 S02-5 / S12-1：整件码可以不带价，编码出的 op 没有 pack_price_fen 这个键且通过 schema；
+    /// 读价按「单件卖价 × 换算数量」兜底。单件码带价在构造时就拒。
+    func testPackLinkWithoutPriceAllowed() throws {
+        let rec = try BarcodeRecord(barcode: "26928804011115", productId: PackConversionTests.cola.id, packQty: 6, unitName: "提")
+        let payload = BarcodeLinkPayload(rec)
+        guard case .object(let kv) = payload.json else { return XCTFail() }
+        XCTAssertEqual(kv.map(\.0), ["barcode", "product_id", "pack_qty", "unit_name"])
+        let op = Op(id: uuid(1), occurredAt: Date(timeIntervalSince1970: 1_795_000_000), payload: payload)
+        XCTAssertEqual(Self.validator.validate(try JV.parse(op.encoded())), [])
+        XCTAssertEqual(try PackConversion(product: PackConversionTests.cola, barcode: rec).unitPrice(), Fen(1800))   // ¥3.00 × 6
+        XCTAssertInvalid(try BarcodeRecord(barcode: "1", productId: uuid(1), packQty: 1, unitName: "瓶", packPriceFen: Fen(200)))
     }
 
     func testOnlineOnlyOps() {

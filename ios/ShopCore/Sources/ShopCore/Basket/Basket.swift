@@ -35,12 +35,14 @@ public struct Basket: Hashable, Sendable {
 
     public var isEmpty: Bool { lines.isEmpty }
 
-    /// 扫到一个码：同一商品同一换算（同码，或同一商品的另一个单件码）已在篮里就 +1 件，否则新加一行。
+    /// 扫到一个码：合并键「商品 + 换算数量 + 这一件的卖价 + 单位名」全部相同（同码，或同一商品的另一个单件码）
+    /// 就在那一行 +件数，否则新加一行（§14 S12-2）。同换算但价钱或叫法不同的两个整件码是两行、各收各的价。
     /// 返回这一行的下标。加完后超出 §5.0 上限就拒，篮子不变。
     @discardableResult
     public mutating func add(_ conv: PackConversion, packCount: Int64 = 1, lineId: UUID = UUID()) throws -> Int {
         guard packCount >= 1 else { throw invalid("件数至少为 1") }
-        if let i = lines.firstIndex(where: { $0.productId == conv.product.id && $0.packQty == conv.packQty }) {
+        let key = try MergeKey(conv)
+        if let i = try lines.firstIndex(where: { try MergeKey($0.conversion) == key }) {
             try setCount(at: i, try Checked.add(lines[i].packCount, packCount))
             return i
         }
@@ -64,6 +66,17 @@ public struct Basket: Hashable, Sendable {
     public mutating func remove(at index: Int) { if lines.indices.contains(index) { lines.remove(at: index) } }
 
     public mutating func clear() { lines.removeAll(); paidOverrideFen = nil }
+
+    /// 购物篮合并键（§14 S12-2；§5.5 的候选去重用同一个键）
+    struct MergeKey: Hashable {
+        let productId: UUID
+        let packQty: Int64
+        let unitPriceFen: Fen
+        let unitName: String
+        init(_ c: PackConversion) throws {
+            productId = c.product.id; packQty = c.packQty; unitPriceFen = try c.unitPrice(); unitName = c.barcode.unitName
+        }
+    }
 
     private static func validate(_ l: Line) throws {
         _ = try l.listAmount()

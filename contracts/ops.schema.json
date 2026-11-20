@@ -482,12 +482,7 @@
           ]
         }
       },
-      "else": {
-        "required": [
-          "pack_price_fen"
-        ]
-      },
-      "description": "单件码（pack_qty=1）不带价，卖价读 products.price_fen；整件码必须带自己的价（§3.2）"
+      "description": "单件码（pack_qty=1）不带价，卖价读 products.price_fen；整件码（pack_qty>1）可以带自己的价，也可以不带，不带时整件价 = 单件卖价 × pack_qty（§3.2、§14 S02-5 / S12-1）"
     },
     "payload_barcode_unlink": {
       "type": "object",
