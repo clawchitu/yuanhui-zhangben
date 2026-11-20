@@ -40,31 +40,64 @@ final class HIDKeyCaptureView: UIView {
     }
 
     static func key(for uiKey: UIKey) -> HIDScanParser.Key {
-        if uiKey.keyCode == .keyboardReturnOrEnter || uiKey.keyCode == .keypadEnter { return .enter }
-        // 扫码枪发大写字母时带 Shift，其余修饰键说明是人在按快捷键
-        let modifiers = uiKey.modifierFlags.subtracting([.shift, .alphaShift, .numericPad])
-        guard modifiers.isEmpty, uiKey.characters.count == 1, let c = uiKey.characters.first else { return .other }
+        key(keyCode: uiKey.keyCode, characters: uiKey.characters, modifierFlags: uiKey.modifierFlags)
+    }
+
+    /// 单独按下就只是修饰键的键码：扫码枪打大写字母前会单独发一个 Shift 按下，不能因此清空缓冲
+    static let modifierKeyCodes: Set<UIKeyboardHIDUsage> = [
+        .keyboardLeftShift, .keyboardRightShift, .keyboardLeftControl, .keyboardRightControl,
+        .keyboardLeftAlt, .keyboardRightAlt, .keyboardLeftGUI, .keyboardRightGUI, .keyboardCapsLock,
+    ]
+    /// 带了就说明是人在按快捷键（Shift / Caps Lock / 小键盘标志是扫码枪正常会带的）
+    static let shortcutModifiers: UIKeyModifierFlags = [.control, .command, .alternate]
+
+    /// `UIKey` 的三个字段 → 解析器的按键（纯函数，单元测试直接喂）。
+    /// 顺序：纯修饰键忽略 → **先查修饰键**（带 Control / Command / Option 的任何键、包括回车，都是非法键，让当前整串作废）
+    /// → 再认普通回车和小键盘回车 → 单个字符交给解析器判合不合法。
+    static func key(keyCode: UIKeyboardHIDUsage, characters: String, modifierFlags: UIKeyModifierFlags) -> HIDScanParser.Key {
+        if modifierKeyCodes.contains(keyCode) { return .ignored }
+        if !modifierFlags.isDisjoint(with: shortcutModifiers) { return .other }
+        if keyCode == .keyboardReturnOrEnter || keyCode == .keypadEnter || keyCode == .keyboardReturn { return .enter }
+        guard characters.count == 1, let c = characters.first else { return .other }
         return .character(c)
     }
 
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        let keyed = presses.filter { $0.key != nil }.sorted { $0.timestamp < $1.timestamp }
-        for press in keyed {
-            onKey?(Self.key(for: press.key!), press.timestamp)
+    /// 这个键归不归扫码层（吞掉、不往上传）：条码字符和回车。其余的（Esc、Command 组合、方向键、修饰键）
+    /// 照样交给解析器判，但也往上传给系统和外层
+    static func consumes(_ key: HIDScanParser.Key) -> Bool {
+        switch key {
+        case .character(let c): HIDScanParser.isCodeCharacter(c)
+        case .enter: true
+        case .other, .ignored: false
         }
-        let rest = presses.subtracting(keyed)
+    }
+
+    /// 按下时吞掉的那些按键，抬起 / 取消时同样吞掉（不按抬起时的修饰键重新判，免得上下不配对）
+    private var consumed: Set<ObjectIdentifier> = []
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var rest = Set<UIPress>()
+        for press in presses.sorted(by: { $0.timestamp < $1.timestamp }) {
+            guard let uiKey = press.key else { rest.insert(press); continue }
+            let key = Self.key(for: uiKey)
+            onKey?(key, press.timestamp)
+            if Self.consumes(key) { consumed.insert(ObjectIdentifier(press)) } else { rest.insert(press) }
+        }
         if !rest.isEmpty { super.pressesBegan(rest, with: event) }
     }
 
-    // 按下时接住的键，抬起等事件也接住，不往上传
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        let rest = presses.filter { $0.key == nil }
+        let rest = passThrough(presses)
         if !rest.isEmpty { super.pressesEnded(rest, with: event) }
     }
 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        let rest = presses.filter { $0.key == nil }
+        let rest = passThrough(presses)
         if !rest.isEmpty { super.pressesCancelled(rest, with: event) }
+    }
+
+    private func passThrough(_ presses: Set<UIPress>) -> Set<UIPress> {
+        presses.filter { consumed.remove(ObjectIdentifier($0)) == nil }
     }
 }
 
