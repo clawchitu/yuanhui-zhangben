@@ -37,8 +37,10 @@ function toAction(a: Any, stepRows: number[][]): Action {
 }
 
 describe("cost.json", () => {
-  it("26 组，必过向量 8 组都在", () => {
-    expect(cases.length).toBe(26);
+  it("27 组，必过向量 8 组都在；有 u ≠ c 的盘盈（cost-27，§14 S05-8）", () => {
+    expect(cases.length).toBe(27);
+    const uc = cases.find((c) => c.id === "cost-27")!;
+    expect([uc.initial.u !== uc.initial.c, uc.steps[0].action.type, uc.steps[0].expect.entries[0].value_delta_fen]).toEqual([true, "count", 2 * 4047]);
     expect(cases.filter((c) => c.must_pass).map((c) => c.id)).toEqual(["cost-01", "cost-02", "cost-03", "cost-04", "cost-05", "cost-06", "cost-19", "cost-21"]);
   });
   for (const c of cases) {
@@ -392,7 +394,7 @@ describe("补记 → 改变当前进价 → 撤销（定向生成器）", () => 
   });
 });
 
-// ── 盘盈按当前单位成本 u（不是最近进价 c）。S05-8：cost.json 的 u ≠ c 盘盈向量由 S06 补，这里先用性质测试守住 ──
+// ── 盘盈按当前单位成本 u（不是最近进价 c）。S05-8：cost.json 的 cost-27 是定点向量，这里再用性质测试守住 ──
 describe("盘盈 d × u", () => {
   it("Fable 的例子：库存 6、货值 24280、c = 4000，数到 8 → 盘盈 2 × 4047 = 8094", () => {
     const l = new MemLedger({ q: 6n, v: 24_280n, c: 4_000n, k: true });
