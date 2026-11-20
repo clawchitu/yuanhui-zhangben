@@ -49,6 +49,7 @@ const INDEXES: Record<string, string> = {
   sale_batches_store_rev_key: "UNIQUE INDEX sale_batches_store_rev_key ON sale_batches USING btree (store_id, rev)",
   sale_batches_occurred_idx: "(store_id, occurred_at)",
   entries_pkey: "(store_id, id)",
+  entries_store_id_id_type_key: "UNIQUE INDEX entries_store_id_id_type_key ON entries USING btree (store_id, id, type)",
   entries_store_seq_key: "UNIQUE INDEX entries_store_seq_key ON entries USING btree (store_id, seq)",
   entries_store_rev_key: "UNIQUE INDEX entries_store_rev_key ON entries USING btree (store_id, rev)",
   entries_reverses_key: "UNIQUE INDEX entries_reverses_key ON entries USING btree (store_id, reverses_entry_id) WHERE ((reverses_entry_id IS NOT NULL) AND (type <> 'cost_fix'::text))",
@@ -164,10 +165,10 @@ describe("迁移", () => {
     }
   });
 
-  it("每张业务表都有 store_id（barcode_catalog 全局缓存、lot_moves 挂在流水下除外）", async () => {
+  it("每张业务表都有 store_id（stores 本身、barcode_catalog 全局缓存除外）", async () => {
     const cols = await columns(t);
     for (const table of Object.keys(SPEC)) {
-      if (["stores", "barcode_catalog", "lot_moves"].includes(table)) continue;
+      if (["stores", "barcode_catalog"].includes(table)) continue;
       expect(cols[table], table).toHaveProperty("store_id");
     }
   });

@@ -259,7 +259,10 @@ CREATE TABLE entries (
   PRIMARY KEY (store_id, id),
   FOREIGN KEY (store_id, op_id) REFERENCES ops (store_id, id),
   FOREIGN KEY (store_id, batch_id) REFERENCES sale_batches (store_id, id),
-  FOREIGN KEY (store_id, reverses_entry_id) REFERENCES entries (store_id, id),
+  -- 冲销行与原行同类型（§3.3「type 与原行相同」）：复合外键带上 type，
+  -- 否则 cost_fix 类型的行能指向普通流水，绕过下面「普通流水最多冲销一次」的部分唯一索引
+  UNIQUE (store_id, id, type),
+  CONSTRAINT entries_reverses_fkey FOREIGN KEY (store_id, reverses_entry_id, type) REFERENCES entries (store_id, id, type),
   FOREIGN KEY (store_id, product_id) REFERENCES products (store_id, id),
   FOREIGN KEY (store_id, device_id) REFERENCES devices (store_id, id),
   FOREIGN KEY (store_id, voided_by_device) REFERENCES devices (store_id, id),
@@ -268,7 +271,8 @@ CREATE TABLE entries (
 );
 CREATE UNIQUE INDEX entries_store_seq_key ON entries (store_id, seq);
 CREATE UNIQUE INDEX entries_store_rev_key ON entries (store_id, rev);
--- 除 cost_fix 外一行最多被冲销一次（撤销两次第二次无操作，§4.4）。
+-- 除 cost_fix 外一行最多被冲销一次（撤销两次第二次无操作，§4.4）。冲销行的 type 由上面的外键保证等于原行的 type，
+-- 所以按冲销行的 type 判断就等于按原行的 type 判断。
 -- cost_fix 可以被多次部分冲销：它补记的每一笔卖出被撤销时各冲一条（§3.3、§14 S02-9、cost.json cost-19）
 CREATE UNIQUE INDEX entries_reverses_key ON entries (store_id, reverses_entry_id)
   WHERE reverses_entry_id IS NOT NULL AND type <> 'cost_fix';

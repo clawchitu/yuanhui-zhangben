@@ -409,8 +409,56 @@ describe("其他约束", () => {
     await expectPgError(
       makeEntry(t.kysely, { storeId: b.store.id, deviceId: b.device.id, productId: pb.id, opId: opb.id }, { reverses: sale.id }),
       FK,
-      "entries_store_id_reverses_entry_id_fkey",
+      "entries_reverses_fkey",
     );
+  });
+
+  it("冲销行与原行必须同类型（§3.3）：cost_fix 行不能冲销普通流水，借此绕过「最多冲销一次」也不行（插入和更新都拦）", async () => {
+    const a = await makeShop(t.kysely);
+    const p = await makeProduct(t.kysely, a.store.id);
+    const op = await makeOp(t.kysely, a.store.id, a.device.id);
+    const s = { storeId: a.store.id, deviceId: a.device.id, productId: p.id, opId: op.id };
+
+    // 插入：类型不一致失败（Codex 指出的绕过：多条 cost_fix 行指向同一条 sale）
+    const sale = await makeEntry(t.kysely, s, { type: "sale" });
+    await expectPgError(makeEntry(t.kysely, s, { type: "cost_fix", reverses: sale.id }), FK, "entries_reverses_fkey");
+    await expectPgError(makeEntry(t.kysely, s, { type: "stock_in", reverses: sale.id }), FK, "entries_reverses_fkey");
+    const fix = await makeEntry(t.kysely, s, { type: "cost_fix" });
+    await expectPgError(makeEntry(t.kysely, s, { type: "sale", reverses: fix.id }), FK, "entries_reverses_fkey");
+
+    // 普通流水正常冲销一次后，再用 cost_fix 类型冲销同一行也失败
+    const rev = await makeEntry(t.kysely, s, { type: "sale", reverses: sale.id });
+    await expectPgError(makeEntry(t.kysely, s, { type: "cost_fix", reverses: sale.id }), FK, "entries_reverses_fkey");
+
+    // 更新：把冲销行的 type 改掉失败；把冲销行改指向别的类型的行失败；改原行的 type 也失败（被引用着）
+    await expectPgError(
+      t.kysely.updateTable("entries").set({ type: "cost_fix" }).where("store_id", "=", a.store.id).where("id", "=", rev.id).execute(),
+      FK,
+      "entries_reverses_fkey",
+    );
+    await expectPgError(
+      t.kysely.updateTable("entries").set({ reverses_entry_id: fix.id }).where("store_id", "=", a.store.id).where("id", "=", rev.id).execute(),
+      FK,
+      "entries_reverses_fkey",
+    );
+    await expectPgError(
+      t.kysely.updateTable("entries").set({ type: "cost_fix" }).where("store_id", "=", a.store.id).where("id", "=", sale.id).execute(),
+      FK,
+      "entries_reverses_fkey",
+    );
+    // 一条 cost_fix 冲销行改成指向另一条普通流水（类型不同）也失败
+    const fixRev = await makeEntry(t.kysely, s, { type: "cost_fix", reverses: fix.id });
+    const sale2 = await makeEntry(t.kysely, s, { type: "sale" });
+    await expectPgError(
+      t.kysely.updateTable("entries").set({ reverses_entry_id: sale2.id }).where("store_id", "=", a.store.id).where("id", "=", fixRev.id).execute(),
+      FK,
+      "entries_reverses_fkey",
+    );
+
+    // 同类型的仍然可以：cost_fix 多次部分冲销
+    await expect(makeEntry(t.kysely, s, { type: "cost_fix", reverses: fix.id })).resolves.toBeTruthy();
+    // 普通流水重复冲销仍被部分唯一索引拦住
+    await expectPgError(makeEntry(t.kysely, s, { type: "sale", reverses: sale.id }), UNIQUE, "entries_reverses_key");
   });
 
   it("lot_moves：同店可以挂；把 A 店的流水挂到 B 店的批次上失败（插入和更新都拦，§14 S02-8）", async () => {
