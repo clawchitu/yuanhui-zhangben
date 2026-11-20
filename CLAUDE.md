@@ -31,5 +31,5 @@
 
 ## CI
 
-- `server-ci`：每个 PR 都跑。`ios-ci`：只在改 `ios/**` 或 `.github/workflows/ios.yml` 时跑（本机自托管 runner，`~/actions-runner-yuanhui/`）。
+- `server-ci`：每个 PR 都跑。`ios-ci`：只在改 `ios/**`、`contracts/**` 或 `.github/workflows/ios.yml` 时跑（本机自托管 runner，`~/actions-runner-yuanhui/`）。
 - 验收里的每一条都要有自动化测试或截图作证据。

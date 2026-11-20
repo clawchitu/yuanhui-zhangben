@@ -1,15 +1,17 @@
 name: ios
-# 只在 ios/ 或本工作流改动时触发（偏差说明见 docs/process-deviations.md）。
+# 只在 ios/、contracts/（ShopCore 的测试读契约和向量）或本工作流改动时触发（偏差说明见 docs/process-deviations.md）。
 # 没触发时 scripts/merge-pr.sh 把它当作「不需要」，不会卡合并。
 on:
   pull_request:
     paths:
       - "ios/**"
+      - "contracts/**"
       - ".github/workflows/ios.yml"
   push:
     branches: [main]
     paths:
       - "ios/**"
+      - "contracts/**"
       - ".github/workflows/ios.yml"
   workflow_dispatch: {}
 permissions:
