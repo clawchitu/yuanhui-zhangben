@@ -49,8 +49,11 @@ struct ScanTone: Equatable, Sendable {
 ///
 /// 音频会话用 `.playback`：店里手机常开着静音开关，`.ambient` / `.soloAmbient` 会被静音开关压掉，`.playback` 不会。
 /// 加 `.mixWithOthers`：店里放着的音乐不被打断。两种音事先生成好放在内存里，扫到时立刻播，打断上一声。
+/// 引擎在建好时就预启动，第一声不慢。全 App 共用 `shared` 一个（一个音频引擎，§14 S14-3 ⑪），各页的 `ScanHub` 都用它。
 @MainActor
 final class ScanFeedback: ScanFeedbackPlaying {
+    static let shared = ScanFeedback()
+
     static let category: AVAudioSession.Category = .playback
     static let options: AVAudioSession.CategoryOptions = [.mixWithOthers]
 
@@ -68,7 +71,14 @@ final class ScanFeedback: ScanFeedbackPlaying {
             if let tone = ScanTone.for(outcome) { buffers[outcome] = Self.buffer(tone, format: format) }
         }
         success.prepare()
+        engine.prepare()
+        engineStartedAtInit = (try? engine.start()) != nil
     }
+
+    /// 建好时引擎启动成功没有（测试读）
+    private(set) var engineStartedAtInit = false
+    /// 调了几次 `player.play()`（测试读）
+    private(set) var playCalls = 0
 
     /// 把共享音频会话设成 `.playback`（静音开关下也响）
     @discardableResult
@@ -100,7 +110,9 @@ final class ScanFeedback: ScanFeedbackPlaying {
             do { try engine.start() } catch { return }
         }
         player.scheduleBuffer(buf, at: nil, options: .interrupts)
-        if !player.isPlaying { player.play() }
+        // 打断恢复后 isPlaying 可能不准：每次都 play()（已在播时是空操作）
+        player.play()
+        playCalls += 1
     }
 
     /// 触感：登记过的码是「成功」，没登记过的码是「警告」（和低音一起，手上也能分出来），不收码时没有

@@ -76,4 +76,21 @@ final class ScanFeedbackTests: XCTestCase {
         fb.play(.known)
         XCTAssertEqual(fb.lastHaptic, .success)
     }
+
+    /// Fable 建议：引擎在建好时就预启动（第一声不慢）；每次都调 play()，打断恢复后不靠 isPlaying 判断
+    func testEngineIsStartedAtInitNotAtFirstPlay() {
+        let fb = ScanFeedback()
+        XCTAssertTrue(fb.engineStartedAtInit, "init 里先 prepare 并启动引擎")
+        XCTAssertEqual(fb.playCalls, 0)
+        fb.play(.known)
+        fb.play(.known)
+        XCTAssertEqual(fb.playCalls, 2, "每次扫码都调 player.play()")
+        fb.play(.ignored)
+        XCTAssertEqual(fb.playCalls, 2)
+    }
+
+    /// 全 App 共用一个 ScanFeedback（一个音频引擎，§14 S14-3 ⑪）
+    func testSharedInstance() {
+        XCTAssertTrue(ScanFeedback.shared === ScanFeedback.shared)
+    }
 }

@@ -12,7 +12,7 @@ struct ScannerLab: View {
     let login: Bool
     @State private var permission: CameraPermission
     @State private var gun = ScannerGunMonitor()
-    @State private var hub = ScanHub(feedback: ScanFeedback())
+    @State private var hub = ScanHub(feedback: ScanFeedback.shared)
     @State private var log: [(scan: Scan, outcome: ScanOutcome)] = []
     @State private var manualOpen = false
     @State private var manualText = ""
