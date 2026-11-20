@@ -7,7 +7,7 @@
 # 合并条件（缺一样就拒绝）：
 #   1. PR 是 open、不是草稿、没有冲突，目标分支是 main。
 #   2. server-ci：对 PR 当前 head 提交必须有一次成功的运行（server 工作流对每个 PR 都触发）。
-#   3. ios-ci：PR 改了 ios/** 或 .github/workflows/ios.yml 时必须成功；
+#   3. ios-ci：PR 改了 ios/**、contracts/** 或 .github/workflows/ios.yml 时必须成功；
 #      没改这些路径、工作流按 paths 过滤没触发时视为「不需要」。
 #      只要 head 上出现过 ios-ci，不管是否需要，都必须是成功。
 #   4. PR 评论里，在当前 head 推上来之后，有以「Codex 审核：通过」开头和以「Fable 审核：通过」开头的评论；
@@ -54,7 +54,7 @@ done
 # ---- 改动路径 ----
 files=$(gh api --paginate "repos/$REPO/pulls/$pr/files" --jq '.[].filename')
 ios_needed=0
-if grep -qE '^(ios/|\.github/workflows/ios\.yml$)' <<<"$files"; then ios_needed=1; fi
+if grep -qE '^(ios/|contracts/|\.github/workflows/ios\.yml$)' <<<"$files"; then ios_needed=1; fi
 
 # ---- CI ----
 runs=$(gh api --paginate "repos/$REPO/commits/$sha/check-runs?per_page=100" --jq '.check_runs[] | {name, status, conclusion, id, started_at}' | jq -s .)
