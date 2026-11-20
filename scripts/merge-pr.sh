@@ -111,7 +111,7 @@ check_review() {
   elif [[ "$last" == "$who 审核：通过"* ]]; then
     ok "$who 审核：通过"
   else
-    bad "$who 最后一条审核评论不是通过：$(head -c 80 <<<"$last" | head -n1)"
+    bad "$who 最后一条审核评论不是通过：$(head -n1 <<<"$last")"
   fi
 }
 check_review Codex
