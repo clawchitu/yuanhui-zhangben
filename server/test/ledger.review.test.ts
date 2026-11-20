@@ -2,6 +2,7 @@
 // - Codex P1：重放缓存结果按当前请求角色裁剪（收银员重发家用的 stale 期初拿不到 stock_qty），库里保留原结果
 // - Codex P2：卖出行存手机传来的名称快照（离线旧名、别名合并），撤销沿用原快照
 // - Fable 1：记账 op 写到一半被拒时整笔回滚（guarded() 的 ROLLBACK TO SAVEPOINT ledger）
+// - S05-12：冲销行带原 batch_id，按 batch_id 取批内行一律排除冲销行；cost_fix 冲销行、cost_adjust 不带 batch_id
 // - Fable 2：收银员撤本机名下的非原始卖出行（冲销行）得 forbidden（voidTargetSale 只认原始卖出行）
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -165,6 +166,46 @@ describe("Fable 2：收银员只能撤本机当天的原始卖出行", () => {
     const missing = voidOp({ entry_id: randomUUID() });
     expect(await sendAs(cashier.token, v2, missing)).toEqual([v2, missing].map((o) => ({ id: o.id, status: "rejected", code: "forbidden" })));
     expect(await snapshot(shop.storeId)).toEqual(before);
+    await app.close();
+  });
+});
+
+describe("S05-12：卖出冲销行带原 batch_id，按批取行排除冲销行", () => {
+  it("补记后撤一行 → 冲销卖出行带 batch_id，cost_fix 冲销行和 cost_adjust 不带；再撤整批只冲剩下的原始行；按批汇总（排除冲销行）= paid_total_fen", async () => {
+    const { shop, app, send, newProduct } = await setup();
+    const pid = await newProduct();
+    const l1 = saleLine(pid, { price: 300 });
+    const l2 = saleLine(pid, { price: 500 });
+    const s = saleOp([l1, l2], 700);
+    const batchId = s.payload.batch_id as string;
+    expect(await send(s)).toEqual([{ id: s.id, status: "applied" }]);
+    const si = op("stock_in", { entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", pack_qty: 1, pack_count: 10, unit_cost_fen: 100 }, { at: AT });
+    expect(await send(si)).toEqual([{ id: si.id, status: "applied" }]);
+    const v1 = voidOp({ entry_id: l1.entry_id });
+    expect(await send(v1)).toEqual([{ id: v1.id, status: "applied" }]);
+    let es = await entriesOf(shop.storeId, pid);
+    const byOp = (id: string) => es.filter((e) => e.op_id === id);
+    expect(byOp(v1.id).map((e) => [e.type, e.batch_id])).toEqual([
+      ["sale", batchId],
+      ["cost_fix", null],
+      ["cost_adjust", null],
+    ]);
+    const vb = voidOp({ batch_id: batchId }, "2026-11-20T01:59:40Z");
+    expect(await send(vb)).toEqual([{ id: vb.id, status: "applied" }]);
+    es = await entriesOf(shop.storeId, pid);
+    const sales = byOp(vb.id).filter((e) => e.type === "sale");
+    expect(sales.map((e) => [e.reverses_entry_id, e.batch_id])).toEqual([[l2.entry_id, batchId]]);
+    // 每条原始行恰好被冲一次，冲销行本身没有被再冲
+    const revs = es.filter((e) => e.type === "sale" && e.reverses_entry_id !== null);
+    expect(revs.map((e) => e.reverses_entry_id).sort()).toEqual([l1.entry_id, l2.entry_id].sort());
+    expect(es.filter((e) => e.batch_id === batchId && e.reverses_entry_id === null).map((e) => e.id).sort()).toEqual([l1.entry_id, l2.entry_id].sort());
+    expect(es.filter((e) => e.batch_id !== null && e.type !== "sale")).toEqual([]);
+    const sum = es.filter((e) => e.batch_id === batchId && e.reverses_entry_id === null).reduce((a, e) => a + Number(e.amount_fen), 0);
+    expect(sum).toBe(700);
+    // 再撤一次整批：无操作
+    const vb2 = voidOp({ batch_id: batchId }, "2026-11-20T01:59:50Z");
+    expect(await send(vb2)).toEqual([{ id: vb2.id, status: "applied" }]);
+    expect((await entriesOf(shop.storeId, pid)).length).toBe(es.length);
     await app.close();
   });
 });
