@@ -103,12 +103,22 @@ final class ScanFeedback: ScanFeedbackPlaying {
         if !player.isPlaying { player.play() }
     }
 
-    private func haptic(_ outcome: ScanOutcome) {
+    /// 触感：登记过的码是「成功」，没登记过的码是「警告」（和低音一起，手上也能分出来），不收码时没有
+    static func haptic(for outcome: ScanOutcome) -> UINotificationFeedbackGenerator.FeedbackType? {
         switch outcome {
-        case .known: success.notificationOccurred(.success)
-        case .unknown: success.notificationOccurred(.warning)
-        case .ignored: return
+        case .known: .success
+        case .unknown: .warning
+        case .ignored: nil
         }
+    }
+
+    /// 最近一次出的触感（测试读）
+    private(set) var lastHaptic: UINotificationFeedbackGenerator.FeedbackType?
+
+    private func haptic(_ outcome: ScanOutcome) {
+        guard let type = Self.haptic(for: outcome) else { return }
+        success.notificationOccurred(type)
+        lastHaptic = type
         success.prepare()
     }
 }

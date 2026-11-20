@@ -61,4 +61,19 @@ final class ScanFeedbackTests: XCTestCase {
         fb.play(.unknown)
         fb.play(.ignored)
     }
+
+    /// 触感：登记过的码「成功」，没登记过的码「警告」，不收码时不震
+    func testHapticsDifferForKnownAndUnknownAndNoneWhenIgnored() {
+        XCTAssertEqual(ScanFeedback.haptic(for: .known), .success)
+        XCTAssertEqual(ScanFeedback.haptic(for: .unknown), .warning)
+        XCTAssertNil(ScanFeedback.haptic(for: .ignored))
+        let fb = ScanFeedback()
+        XCTAssertNil(fb.lastHaptic)
+        fb.play(.unknown)
+        XCTAssertEqual(fb.lastHaptic, .warning)
+        fb.play(.ignored)
+        XCTAssertEqual(fb.lastHaptic, .warning, "不收码时不出新的触感")
+        fb.play(.known)
+        XCTAssertEqual(fb.lastHaptic, .success)
+    }
 }
