@@ -15,7 +15,10 @@ xcodebuild test -project YuanhuiZhangben.xcodeproj -scheme YuanhuiZhangben-Relea
   -only-testing:YuanhuiZhangbenUITests/ReleaseBuildUITests \
   | tee "$log" | grep -E "error:|Test Case|Executed|\*\* TEST" || true
 grep -q "\*\* TEST SUCCEEDED \*\*" "$log" || { echo "Release 构建的 UI 检查没过" >&2; exit 1; }
-grep -q "Executed 2 tests, with 0 failures" "$log" || { echo "ReleaseBuildUITests 没有真正跑（被跳过？）" >&2; exit 1; }
+# 不写死用例数：至少跑了 1 个、0 失败、无跳过（有跳过时汇总行格式不同，匹配不上），且通过的用例数与汇总一致
+ran=$(grep -Eo "Executed [0-9]+ tests?, with 0 failures" "$log" | tail -1 | grep -Eo "[0-9]+" | head -1 || true)
+passed=$(grep -ciE "Test Case .*ReleaseBuildUITests.* passed" "$log" || true)
+{ [ "${ran:-0}" -ge 1 ] && [ "$passed" -eq "$ran" ]; } || { echo "ReleaseBuildUITests 没有真正跑（被跳过？）：汇总 ${ran:-无}，通过 $passed" >&2; exit 1; }
 bin="$dd/Build/Products/Release-iphonesimulator/YuanhuiZhangben.app/YuanhuiZhangben"
 [ -f "$bin" ] || { echo "找不到 Release 构建的二进制 $bin" >&2; exit 1; }
 # 查二进制：只在 Debug 里编译的代码留下的字样（演示策略的分支名进反射元数据；长字符串字面量进常量区）。

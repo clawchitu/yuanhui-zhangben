@@ -389,8 +389,19 @@ final class Walker {
 
     private static let tappableTypes: [XCUIElement.ElementType] = [.button, .link, .switch, .cell]
 
-    private func snapshotKeys(into out: inout [Key], seen: inout Set<Key>) -> [String] {
-        guard let snap = try? app.snapshot() else { return [] }
+    /// 取快照，失败重试几次；仍失败就记进 `uncovered`（不当成「没有入口」或「滚到底了」静默放过）
+    private func snapshot(of el: XCUIElement, _ what: String) -> XCUIElementSnapshot? {
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do { return try el.snapshot() } catch { lastError = error }
+            if attempt < 2 { settle() }
+        }
+        uncovered.append("\(currentPage())：\(what)取快照失败 3 次（\(lastError.map { "\($0)" } ?? "?")）")
+        return nil
+    }
+
+    private func snapshotKeys(into out: inout [Key], seen: inout Set<Key>) -> [String]? {
+        guard let snap = snapshot(of: app, "枚举入口时") else { return nil }
         var signature: [String] = []
         func walk(_ s: XCUIElementSnapshot) {
             if Self.tappableTypes.contains(s.elementType), !s.frame.isEmpty {
@@ -412,7 +423,7 @@ final class Walker {
 
     /// 滚动视图里内容的上下沿（SwiftUI 的 ScrollView 里不是懒加载的，屏外的元素也在树里）
     private func contentExtent(_ scroll: XCUIElement) -> (top: CGFloat, bottom: CGFloat)? {
-        guard let snap = try? scroll.snapshot() else { return nil }
+        guard let snap = snapshot(of: scroll, "判断能否滚动时") else { return nil }
         var top = CGFloat.infinity, bottom = -CGFloat.infinity
         func walk(_ s: XCUIElementSnapshot) {
             if !s.frame.isEmpty { top = min(top, s.frame.minY); bottom = max(bottom, s.frame.maxY) }
@@ -444,13 +455,14 @@ final class Walker {
         var keys: [Key] = [], seen = Set<Key>()
         scrollToTop()
         let page = currentPage()
-        var sig = snapshotKeys(into: &keys, seen: &seen)
+        // 取不到快照已记进 uncovered；不再往下滚，免得把失败当成到底
+        guard var sig = snapshotKeys(into: &keys, seen: &seen) else { return [] }
         // 内容比可视区高：一段一段滚到底，每段都收集一遍
         if let s = scrollView, canScrollDown(s) {
             for _ in 0..<12 {
                 s.edgeDrag(showMoreBelow: true)
                 if currentPage() != page { uncovered.append("\(page)：滚动时误点进了 \(currentPage())"); break }
-                let next = snapshotKeys(into: &keys, seen: &seen)
+                guard let next = snapshotKeys(into: &keys, seen: &seen) else { break }
                 if next == sig || !canScrollDown(s) { break }  // 到底了
                 sig = next
             }
