@@ -282,15 +282,43 @@ describe("注销期间", () => {
   });
 });
 
-describe("本段还没实现的 op 类型", () => {
-  it("count 等（S06）：rejected invalid 且不留档，之后的版本重发时能正常处理（S05b 起 sale_batch / stock_in / opening 已实现）", async () => {
+describe("本段还没实现的 op 类型（§14 S04-1、S05-6 ⑩）", () => {
+  it("过渡分支只对 S05b 的四种记账 op 去掉：sale_batch / stock_in / opening / void 正常入账并留档；count 等 S06 的四种仍 rejected invalid、不留档", async () => {
     const shop = await makeLoginShop(tdb);
     const app = makeApp(tdb);
     const boss = await login(app, shop.username);
-    const c = op("count", { entry_id: randomUUID(), product_id: randomUUID(), counted_qty: 1, base_qty: 0, base_ver: 0 });
-    const r = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [c] });
+    const u = upsertFull();
+    const pid = u.payload.product_id as string;
+    await syncOk(app, boss.token, { epoch: shop.epoch, ops: [u], pull: false });
+    const eid = randomUUID();
+    const ledger = [
+      op("opening", { entry_id: randomUUID(), product_id: pid, counted_qty: 5 }),
+      op("stock_in", { entry_id: eid, product_id: pid, barcode: "6900000000001", pack_qty: 1, pack_count: 2, unit_cost_fen: 100 }),
+      op("sale_batch", {
+        batch_id: randomUUID(),
+        paid_total_fen: 300,
+        lines: [{ entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", name: "x", unit_name: "个", pack_qty: 1, pack_count: 1, unit_price_fen: 300 }],
+      }),
+      op("void", { target: { entry_id: eid } }),
+    ];
+    // 都按 ops.schema.json 写成格式正确的 payload，排除「格式不对才拒」
+    const lot = randomUUID();
+    const s06 = [
+      op("count", { entry_id: randomUUID(), product_id: pid, counted_qty: 1, base_qty: 0, base_ver: 0 }),
+      op("product_review_complete", { entry_id: randomUUID(), product_id: pid, unit_cost_fen: 100, counted_qty: 1, base_ver: 0 }),
+      op("expiry_dispose", { lot_id: lot, handle_ver: 0, actual_qty: 1, action: "discard", entry_id: randomUUID() }),
+      op("lot_snooze", { lot_id: lot, handle_ver: 0, actual_qty: 1, days: 3 }),
+    ];
+    const r = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [...ledger, ...s06], pull: false });
     await app.close();
-    expect(r.results).toEqual([{ id: c.id, status: "rejected", code: "invalid" }]);
-    expect(await opsOf(shop.storeId)).toEqual([]);
+    expect(r.results).toEqual([
+      ...ledger.map((o) => ({ id: o.id, status: "applied" })),
+      ...s06.map((o) => ({ id: o.id, status: "rejected", code: "invalid" })),
+    ]);
+    const logged = new Set((await opsOf(shop.storeId)).map((o) => o.id));
+    for (const o of ledger) expect(logged.has(o.id)).toBe(true);
+    for (const o of s06) expect(logged.has(o.id)).toBe(false);
+    const types = await tdb.kysely.selectFrom("entries").select("type").where("store_id", "=", shop.storeId).execute();
+    expect(new Set(types.map((t) => t.type))).toEqual(new Set(["opening", "stock_in", "sale", "cost_adjust"]));
   });
 });

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
 import { bearer, login, makeApp, makeLoginShop, pair, TestClock } from "./helpers/auth.ts";
-import { op, syncOk, upsertFull } from "./helpers/sync.ts";
+import { allKeys, op, pullAll, syncOk, upsertFull } from "./helpers/sync.ts";
 import { assertLedger, type Row } from "../src/ledger/invariants.ts";
 import type { EntryType } from "../src/ledger/cost.ts";
 
@@ -216,5 +216,57 @@ describe("收银员撤销与被踢设备（§6、⑧）", () => {
     ]);
     await assertDbLedger(shop.storeId, pid);
     await app.close();
+  });
+});
+
+describe("收银员拉到真实流水（⑨）", () => {
+  /** 与 sync.projection.test.ts 同一份：收银员响应里不许出现的键（§3.4、§4.2） */
+  const FORBIDDEN_KEY = /cost|value|stock|low_at|private|cogs|expiry_warn|shelf_life|last_count|qty_left|qty_in|handle_ver|snooze|lot_id/i;
+
+  it("经 /v1/sync 写出期初、进货、补记、撤销后：收银员响应逐页递归没有成本键，只收到本机的卖出（含本机撤销的冲销行）", async () => {
+    const { shop, clock, app, boss, send, sendAs, newProduct } = await setup();
+    const cashier = await pair(app, boss.token, "cashier", "收银台");
+    const pid = await newProduct();
+    await send(opening(pid, 10));
+    const s1 = saleOf(300, [{ pid, price: 300 }]);
+    const s2 = saleOf(600, [{ pid, price: 300, count: 2 }]);
+    await sendAs(cashier.token, s1, s2);
+    await send(stockIn(pid, 1, 200)); // 进价变已知 → cost_fix 补记收银员的两笔卖出
+    const v1 = voidOp({ entry_id: lineIds(s1)[0]! });
+    const v2 = voidOp({ batch_id: batchId(s2) });
+    expect(await sendAs(cashier.token, v1)).toEqual([{ id: v1.id, status: "applied" }]);
+    expect(await send(v2)).toEqual([{ id: v2.id, status: "applied" }]);
+    const { es } = await assertDbLedger(shop.storeId, pid);
+    // 前提：库里确实有这几种行，且有的是收银员这台设备写的
+    expect(new Set(es.map((e) => e.type))).toEqual(new Set(["opening", "stock_in", "sale", "cost_fix", "cost_adjust"]));
+    expect(es.some((e) => e.device_id === cashier.deviceId && e.type !== "sale")).toBe(true);
+
+    // 页大小 1，逐页收集收银员的整个响应
+    const small = makeApp(tdb, { clock: new TestClock(clock.now().getTime()), syncPageSize: 1 });
+    const bodies: unknown[] = [];
+    const seen: Array<{ id: string; type: string; device_id: string }> = [];
+    let cursors = { catalog: 0, ledger: 0 };
+    for (;;) {
+      const b = await syncOk(small, cashier.token, { epoch: shop.epoch, cursors });
+      bodies.push(b);
+      seen.push(...(b.changes.entries as typeof seen));
+      cursors = b.cursors;
+      if (!b.has_more.catalog && !b.has_more.ledger) break;
+    }
+    await small.close();
+    const keys = new Set<string>();
+    for (const b of bodies) allKeys(b, keys);
+    expect([...keys].filter((k) => FORBIDDEN_KEY.test(k))).toEqual([]);
+
+    const mineSale = es.filter((e) => e.type === "sale" && e.device_id === cashier.deviceId).map((e) => e.id).sort();
+    expect(mineSale.length).toBe(3); // s1、s2 各一行，加收银员撤 s1 的冲销行；家用撤 s2 的冲销行不是本机的
+    expect(seen.map((e) => e.id).sort()).toEqual(mineSale);
+    expect(seen.every((e) => e.type === "sale" && e.device_id === cashier.deviceId)).toBe(true);
+    for (const t of ["stock_in", "opening", "cost_adjust", "cost_fix"]) expect(seen.some((e) => e.type === t)).toBe(false);
+
+    // 对照：家用拿得到全部这些行和成本键
+    const family = await pullAll(app, boss.token, shop.epoch);
+    await app.close();
+    expect(new Set(family.snapshot().entries.map((e: { type: string }) => e.type))).toEqual(new Set(["opening", "stock_in", "sale", "cost_fix", "cost_adjust"]));
   });
 });
