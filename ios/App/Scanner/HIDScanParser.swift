@@ -5,7 +5,11 @@ import Foundation
 /// 规则：
 /// - 相邻两个按键（包括最后的回车）间隔都不超过 `maxGap`，并且回车前攒够 `minLength` 个字符，才算**一次**扫码；
 /// - 任意两键间隔超过 `maxGap` 就从这个键重新攒（慢速逐个按键永远攒不够，不算扫码）；
-/// - 不认识的键（空格、方向键、带修饰键的组合等）清空正在攒的内容；
+/// - 收的字符只有数字和 ASCII 字母（EAN / UPC / ITF 全是数字，Code128 里的大小写字母完整保留）；
+/// - 非法的键（空格、Tab、「-」等其他符号、非 ASCII、方向键、带 Control / Command / Option 的组合）让**当前整串作废**，
+///   一直丢到回车或停顿（超过 `maxGap`）为止，之后才重新收——不能丢掉前缀把后半截当成另一个有效码交出去
+///   （`ABC-6921168509256` 不能变成 `6921168509256`）；
+/// - 单独按下的修饰键（Shift、Caps Lock 等，扫码枪打大写字母时会发）是 `.ignored`：不攒、不作废、也不算进按键间隔；
 /// - 不去重：扫码枪每扣一次扳机都算一次（同一个码连扫两次 = 两次）。相机的去重见 `CameraDeduper`。
 ///
 /// 纯逻辑、时间由调用方传入（UIPress.timestamp），单元测试直接喂时间。
@@ -14,7 +18,10 @@ struct HIDScanParser: Sendable {
     enum Key: Equatable, Sendable {
         case character(Character)
         case enter
+        /// 非法键：让当前整串作废
         case other
+        /// 单独按下的修饰键：当作没按
+        case ignored
     }
 
     struct Config: Equatable, Sendable {
@@ -30,8 +37,8 @@ struct HIDScanParser: Sendable {
     let config: Config
     private(set) var buffer = ""
     private var lastTime: TimeInterval?
-    /// 这一串已经超长：一直丢到回车或停顿为止
-    private var overflowed = false
+    /// 这一串已经作废（出现过非法键或超长）：一直丢到回车或停顿为止
+    private(set) var voided = false
 
     init(config: Config = Config()) {
         self.config = config
@@ -39,33 +46,38 @@ struct HIDScanParser: Sendable {
 
     /// 喂一个按键；凑成一次完整扫码时返回条码，否则 nil。
     mutating func feed(_ key: Key, at time: TimeInterval) -> String? {
+        if key == .ignored { return nil }
         if let last = lastTime, time - last > config.maxGap || time < last {
-            buffer = ""   // 停顿太久（或时间倒流）：之前攒的作废，从这个键重新开始
-            overflowed = false
+            buffer = ""   // 停顿太久（或时间倒流）：之前攒的（或作废的）都丢掉，从这个键重新开始
+            voided = false
         }
         lastTime = time
         switch key {
         case .character(let c) where Self.isCodeCharacter(c):
-            guard !overflowed else { return nil }
+            guard !voided else { return nil }
             buffer.append(c)
-            if buffer.count > config.maxLength {
-                buffer = ""
-                overflowed = true
-            }
+            if buffer.count > config.maxLength { void() }
             return nil
         case .character, .other:
-            reset()
+            void()   // 不清时间：紧跟着的按键仍属于这一串，一起丢掉
             return nil
         case .enter:
             defer { reset() }
-            return buffer.count >= config.minLength ? buffer : nil
+            return !voided && buffer.count >= config.minLength ? buffer : nil
+        case .ignored:
+            return nil
         }
+    }
+
+    private mutating func void() {
+        buffer = ""
+        voided = true
     }
 
     mutating func reset() {
         buffer = ""
         lastTime = nil
-        overflowed = false
+        voided = false
     }
 
     /// 条码里可能出现的字符：数字（EAN / UPC / ITF），以及 Code128 里的 ASCII 字母

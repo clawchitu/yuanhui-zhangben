@@ -69,15 +69,54 @@ final class HIDScanParserTests: XCTestCase {
         XCTAssertEqual(type("", into: &p, from: 300).scans, [], "只按回车")
     }
 
-    func testUnknownKeyClearsTheBuffer() {
+    /// 非法键（空格、方向键、带修饰键的组合、非 ASCII）让当前整串作废，直到回车或停顿后才重新收
+    func testInvalidKeyVoidsTheWholeStringUntilEnterOrPause() {
         var p = HIDScanParser()
         _ = type("692116", into: &p, enter: false)
         XCTAssertNil(p.feed(.other, at: 100.07))
-        XCTAssertEqual(type("850", into: &p, from: 100.08).scans, [])
+        XCTAssertEqual(type("8509256", into: &p, from: 100.08).scans, [], "非法键之后紧跟的够长的数字也不算")
         XCTAssertNil(p.feed(.character(" "), at: 200))
         XCTAssertEqual(p.buffer, "")
-        XCTAssertNil(p.feed(.character("号"), at: 200.01))
-        XCTAssertEqual(p.buffer, "")
+        XCTAssertEqual(type("6921168509256", into: &p, from: 200.01).scans, [], "空格之后整串作废")
+        XCTAssertEqual(type("6921168509256", into: &p, from: 300).scans, ["6921168509256"], "回车之后重新收")
+        XCTAssertNil(p.feed(.character("号"), at: 400))
+        XCTAssertEqual(type("6921168509256", into: &p, from: 400.5).scans, ["6921168509256"], "停顿之后重新收")
+    }
+
+    /// Codex：ABC-6921168509256 不能丢掉前缀交出 6921168509256（「-」不是本 App 收的条码字符）
+    func testInvalidCharacterFollowedByALongValidCodeIsNotAScan() {
+        var p = HIDScanParser()
+        XCTAssertEqual(type("ABC-6921168509256", into: &p).scans, [])
+        XCTAssertEqual(type("6921168509256#", into: &p, from: 200).scans, [], "非法字符在末尾")
+        XCTAssertEqual(type("692116 8509256", into: &p, from: 300).scans, [], "中间夹空格")
+        XCTAssertEqual(type("\t6921168509256", into: &p, from: 400).scans, [], "Tab 开头")
+    }
+
+    func testCapitalLettersAreKeptWhole() {
+        var p = HIDScanParser()
+        XCTAssertEqual(type("AB12345678", into: &p).scans, ["AB12345678"])
+        XCTAssertEqual(type("Ab12cD34", into: &p, from: 200).scans, ["Ab12cD34"])
+    }
+
+    /// 被忽略的键（单独按下的 Shift 等）夹在字符之间，仍是完整的一次扫码；也不算进相邻两键的间隔
+    func testIgnoredKeysBetweenCharactersDoNotBreakTheScan() {
+        var p = HIDScanParser()
+        var t: TimeInterval = 100
+        var out: [String] = []
+        for c in "AB12345678" {
+            XCTAssertNil(p.feed(.ignored, at: t))
+            t += 0.005
+            if let s = p.feed(.character(c), at: t) { out.append(s) }
+            t += 0.005
+        }
+        XCTAssertNil(p.feed(.ignored, at: t + 5), "很久之后的被忽略键不清空，也不更新时间")
+        if let s = p.feed(.enter, at: t) { out.append(s) }
+        XCTAssertEqual(out, ["AB12345678"])
+    }
+
+    func testOverlongInputStaysVoidUntilEnter() {
+        var p = HIDScanParser()
+        XCTAssertEqual(type(String(repeating: "1", count: 49) + "6921168509256", into: &p).scans, [])
     }
 
     /// 扫码枪不去重：同一个码连扣两次扳机 = 两次扫码
