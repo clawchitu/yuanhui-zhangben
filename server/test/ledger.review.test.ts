@@ -53,3 +53,31 @@ describe("Codex P1：重放结果按当前角色裁剪", () => {
     await app.close();
   });
 });
+
+const entriesOf = (storeId: string, pid: string) =>
+  tdb.kysely.selectFrom("entries").selectAll().where("store_id", "=", storeId).where("product_id", "=", pid).orderBy("seq").execute();
+const saleLine = (pid: string, o: { name?: string; price?: number; count?: number } = {}) =>
+  ({ entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", name: o.name ?? "x", unit_name: "个", pack_qty: 1, pack_count: o.count ?? 1, unit_price_fen: o.price ?? 100 });
+const saleOp = (lines: ReturnType<typeof saleLine>[], paid?: number, at = AT) =>
+  op("sale_batch", { batch_id: randomUUID(), paid_total_fen: paid ?? lines.reduce((a, l) => a + l.unit_price_fen * l.pack_count * l.pack_qty, 0), lines }, { at });
+const voidOp = (target: Record<string, string>, at = "2026-11-20T01:59:30Z") => op("void", { target }, { at });
+
+describe("Codex P2：卖出名称快照", () => {
+  it("离线旧名卖出、商品已改名后补传 → 流水存旧名；撤销的冲销行保留原快照", async () => {
+    const { shop, app, send, newProduct } = await setup();
+    const pid = await newProduct("旧名称");
+    await send(opening(pid, 10, { unit_cost_fen: 100 }));
+    await send(op("product_edit", { product_id: pid, name: "新名称" }));
+    const line = saleLine(pid, { name: "旧名称" });
+    const s = saleOp([line]);
+    expect(await send(s)).toEqual([{ id: s.id, status: "applied" }]);
+    let es = await entriesOf(shop.storeId, pid);
+    expect(es.find((e) => e.id === line.entry_id)!.name_snapshot).toBe("旧名称");
+    const v = voidOp({ entry_id: line.entry_id });
+    expect(await send(v)).toEqual([{ id: v.id, status: "applied" }]);
+    es = await entriesOf(shop.storeId, pid);
+    const rev = es.find((e) => e.reverses_entry_id === line.entry_id)!;
+    expect(rev.name_snapshot).toBe("旧名称");
+    await app.close();
+  });
+});

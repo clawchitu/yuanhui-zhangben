@@ -316,6 +316,7 @@ export async function applySaleBatch(tx: StoreTx, ctx: LedgerContext, p: SaleBat
         id: l.entry_id,
         batchId,
         barcode: l.barcode,
+        nameSnapshot: l.name,
         unitName: l.unit_name,
         packQty: l.pack_qty,
         packCount: l.pack_count,
