@@ -14,29 +14,14 @@ extension Color {
 
 /// 设计令牌。值来自设计稿 base.css，改这里之前先改设计稿。
 enum Tokens {
-    struct NamedColor: Identifiable, Sendable {
+    /// 陈列页和测试用的命名列表。颜色只有一个来源：下面 `Palette` 里的静态属性。
+    struct NamedColor: Identifiable {
         let id: String
         let label: String
-        let hex: UInt32
-        var color: Color { Color(hex: hex) }
+        let color: Color
     }
 
     enum Palette {
-        static let all: [NamedColor] = [
-            .init(id: "paper", label: "米纸", hex: 0xF3EFE3),
-            .init(id: "card", label: "白卡", hex: 0xFFFDF8),
-            .init(id: "ink", label: "墨", hex: 0x1F1A17),
-            .init(id: "ink2", label: "淡墨", hex: 0x5A5048),
-            .init(id: "line", label: "线", hex: 0xDDD5C3),
-            .init(id: "mute", label: "灰", hex: 0xCFC6B4),
-            .init(id: "sell", label: "朱红·卖出", hex: 0xC4321C),
-            .init(id: "sellTint", label: "朱红浅", hex: 0xF7E2DA),
-            .init(id: "stock", label: "靛青·进货", hex: 0x1E5A7A),
-            .init(id: "stockTint", label: "靛青浅", hex: 0xDAE7EE),
-            .init(id: "tag", label: "价签黄", hex: 0xF5C83A),
-            .init(id: "tagTint", label: "价签黄浅", hex: 0xFCEFC2),
-        ]
-
         static let paper = Color(hex: 0xF3EFE3)
         static let card = Color(hex: 0xFFFDF8)
         static let ink = Color(hex: 0x1F1A17)
@@ -52,13 +37,30 @@ enum Tokens {
         /// 刚扫到、提醒
         static let tag = Color(hex: 0xF5C83A)
         static let tagTint = Color(hex: 0xFCEFC2)
+
+        static var all: [NamedColor] {
+            [
+                .init(id: "paper", label: "米纸", color: paper),
+                .init(id: "card", label: "白卡", color: card),
+                .init(id: "ink", label: "墨", color: ink),
+                .init(id: "ink2", label: "淡墨", color: ink2),
+                .init(id: "line", label: "线", color: line),
+                .init(id: "mute", label: "灰", color: mute),
+                .init(id: "sell", label: "朱红·卖出", color: sell),
+                .init(id: "sellTint", label: "朱红浅", color: sellTint),
+                .init(id: "stock", label: "靛青·进货", color: stock),
+                .init(id: "stockTint", label: "靛青浅", color: stockTint),
+                .init(id: "tag", label: "价签黄", color: tag),
+                .init(id: "tagTint", label: "价签黄浅", color: tagTint),
+            ]
+        }
     }
 
     /// 固定尺寸（不随动态字号变化）。
     enum Size {
         static let primaryButton: CGFloat = 72
         static let primaryButtonMedium: CGFloat = 64
-        static let buttonSmall: CGFloat = 56
+        static let buttonSmall: CGFloat = 60
         static let key: CGFloat = 56
         static let stepper: CGFloat = 56
         static let stepperCompact: CGFloat = 46

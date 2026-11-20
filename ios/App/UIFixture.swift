@@ -1,7 +1,7 @@
 import Foundation
 
 /// `-uiFixture` 机制：用启动参数直接打开某个界面（截图、UI 测试用），不走登录和同步。
-///   -uiFixture gallery | gallery-1 | gallery-2   组件陈列页（全部 / 第 1 页 / 第 2 页）
+///   -uiFixture gallery | gallery-1 … gallery-5   组件陈列页（全部 / 第 n 页）
 ///   -uiLargeText on | off                        覆盖「大字模式」设置
 enum UIFixture {
     enum Screen: Equatable {

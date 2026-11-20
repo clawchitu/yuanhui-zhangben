@@ -28,7 +28,8 @@ shoot() {
   xcrun simctl io "$udid" screenshot "$out/$1-p$4.png" >/dev/null 2>&1
   echo "截图 $out/$1-p$4.png" >&2
 }
-for p in 1 2; do
+rm -f "$out"/*.png
+for p in 1 2 3 4 5; do
   shoot large-mode        large                                 on  "$p"   # 大字模式（默认开），系统默认字号
   shoot standard          large                                 off "$p"   # 标准：大字模式关，跟随系统默认字号
   shoot ax-max-large-mode accessibility-extra-extra-extra-large on  "$p"   # 系统最大辅助字号 + 大字模式（封顶 accessibility2）

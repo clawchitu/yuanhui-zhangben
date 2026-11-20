@@ -1,7 +1,10 @@
 import SwiftUI
 
-/// 组件陈列页：所有共用组件在当前字号下的样子。用 `-uiFixture gallery[-1|-2]` 直接打开。
+/// 组件陈列页：所有共用组件在当前字号下的样子。用 `-uiFixture gallery[-1…-5]` 直接打开。
+/// 分 5 页，保证最大辅助字号下每页内容也能在 iPhone 13 一屏里截全。
 struct ComponentGallery: View {
+    static let pageCount = 5
+
     var page: Int?
     var onBack: (() -> Void)?
 
@@ -15,8 +18,11 @@ struct ComponentGallery: View {
             ModeBar(title: pageTitle, mode: .neutral, onBack: onBack)
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    if page == nil || page == 1 { pageOne }
-                    if page == nil || page == 2 { pageTwo }
+                    if show(1) { pageType }
+                    if show(2) { pageBarsAndButtons }
+                    if show(3) { pagePriceTag }
+                    if show(4) { pageKeypadAndBanners }
+                    if show(5) { pageSheet }
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
@@ -25,15 +31,17 @@ struct ComponentGallery: View {
         .background(Tokens.Palette.paper.ignoresSafeArea())
     }
 
+    private func show(_ n: Int) -> Bool { page == nil || page == n }
+
     private var pageTitle: String {
-        page.map { "组件陈列 \($0)/2" } ?? "组件陈列"
+        page.map { "组件陈列 \($0)/\(Self.pageCount)" } ?? "组件陈列"
     }
 
     private func pt(_ role: TypeRole) -> Int {
         Int(TypeScale.pointSize(role, system: typeSize, largeMode: false).rounded())
     }
 
-    @ViewBuilder private var pageOne: some View {
+    @ViewBuilder private var pageType: some View {
         section("字号（当前 \(String(describing: typeSize))）") {
             VStack(alignment: .leading, spacing: 6) {
                 Text("标题 \(pt(.title))pt").font(TypeScale.title)
@@ -47,13 +55,16 @@ struct ComponentGallery: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)], spacing: 10) {
                 ForEach(Tokens.Palette.all) { c in
                     VStack(alignment: .leading, spacing: 2) {
-                        RoundedRectangle(cornerRadius: 10).fill(c.color).frame(height: 36)
+                        RoundedRectangle(cornerRadius: 10).fill(c.color).frame(height: 30)
                             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Tokens.Palette.line))
                         Text(c.label).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink)
                     }
                 }
             }
         }
+    }
+
+    @ViewBuilder private var pageBarsAndButtons: some View {
         section("顶栏") {
             VStack(spacing: 8) {
                 ModeBar(title: "卖出", mode: .sell, pendingCount: 2, onBack: {})
@@ -69,6 +80,9 @@ struct ComponentGallery: View {
                 PrimaryButton("抹零 / 改总价", style: .ghost, size: .medium) {}
             }
         }
+    }
+
+    @ViewBuilder private var pagePriceTag: some View {
         section("价签 + 步进器") {
             PriceTag(name: "康师傅红烧牛肉面", unitPriceCents: 450) {
                 HStack {
@@ -78,9 +92,20 @@ struct ComponentGallery: View {
                 }
             }
         }
-    }
-
-    @ViewBuilder private var pageTwo: some View {
+        section("小步进器") {
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text("青岛啤酒 500ml").font(TypeScale.body)
+                    Spacer()
+                    QuantityStepper(value: $qtySmall, compact: true)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("青岛啤酒 500ml").font(TypeScale.body)
+                    QuantityStepper(value: $qtySmall, compact: true)
+                }
+            }
+            .foregroundStyle(Tokens.Palette.ink)
+        }
         section("总价（固定字号）") {
             HStack(alignment: .lastTextBaseline) {
                 Text("要收").font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
@@ -88,15 +113,11 @@ struct ComponentGallery: View {
                 PriceText(cents: 5350, size: Tokens.FixedFontSize.total)
             }
         }
-        section("小步进器") {
-            HStack {
-                Text("青岛啤酒 500ml").font(TypeScale.body).foregroundStyle(Tokens.Palette.ink)
-                Spacer()
-                QuantityStepper(value: $qtySmall, compact: true)
-            }
-        }
+    }
+
+    @ViewBuilder private var pageKeypadAndBanners: some View {
         section("数字键盘") {
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
                 Text(typed.isEmpty ? " " : typed)
                     .font(TypeScale.number(32))
                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -121,6 +142,9 @@ struct ComponentGallery: View {
                 Banner(kind: .expired, text: "这批已过期，别再卖了", systemImage: "exclamationmark.triangle.fill")
             }
         }
+    }
+
+    @ViewBuilder private var pageSheet: some View {
         section("底部抽屉 + 确认面板") {
             BottomSheet {
                 ConfirmPanel(

@@ -18,6 +18,23 @@ enum AppSettings {
     static let largeTextModeKey = "largeTextMode"
 }
 
+/// 所有界面的根外壳：读「大字模式」设置并套上字号范围、浅色外观。
+/// AppRoot 用它包住全部内容；字号测试也直接测它，保证测的就是实际生效链路。
+struct AppShell<Content: View>: View {
+    @AppStorage(AppSettings.largeTextModeKey) private var largeTextMode = true
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .largeTextMode(largeTextMode)
+            .preferredColorScheme(.light)
+    }
+}
+
 struct AppRoot: View {
     static let title = "元辉账本"
 
@@ -25,9 +42,7 @@ struct AppRoot: View {
     private let screen = UIFixture.screen(from: ProcessInfo.processInfo.arguments)
 
     var body: some View {
-        content
-            .largeTextMode(largeTextMode)
-            .preferredColorScheme(.light)
+        AppShell { content }
     }
 
     @ViewBuilder private var content: some View {

@@ -6,10 +6,10 @@ struct PressDimStyle: ButtonStyle {
     }
 }
 
-/// 主按钮（BigButton）。高度、字号固定，不随动态字号变。
+/// 主按钮（BigButton）。高度、字号固定，不随动态字号变；所有规格都 ≥ 60pt。
 struct PrimaryButton: View {
     enum Style { case filled, dark, ghost }
-    enum Size {
+    enum Size: CaseIterable {
         case regular, medium, small
         var height: CGFloat {
             switch self {
