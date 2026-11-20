@@ -7,6 +7,8 @@ import { configRoutes } from "./routes/config.ts";
 import { authRoutes } from "./routes/auth.ts";
 import { deviceRoutes } from "./routes/devices.ts";
 import { accountRoutes } from "./routes/account.ts";
+import { syncRoutes } from "./routes/sync.ts";
+import { DEFAULT_PAGE_SIZE } from "./sync/pull.ts";
 import { Guard } from "./auth/guard.ts";
 import { installGuard } from "./auth/plugin.ts";
 import { DEFAULT_RATE_LIMITS, type RateLimits } from "./auth/ratelimit.ts";
@@ -28,6 +30,8 @@ export interface AppDeps {
    * 生产不传，默认无操作；只能在 buildApp 时由代码传入，没有任何请求能触发或改它。
    */
   afterDeviceLabelLock?: () => Promise<void>;
+  /** 同步每条流每页多少行（§4.2 默认 500；测试里调小测分页） */
+  syncPageSize?: number;
 }
 
 export interface ResolvedDeps extends AppDeps {
@@ -35,6 +39,7 @@ export interface ResolvedDeps extends AppDeps {
   rateLimits: RateLimits;
   verifyPassword: typeof verifyPassword;
   afterDeviceLabelLock: () => Promise<void>;
+  syncPageSize: number;
 }
 
 declare module "fastify" {
@@ -50,7 +55,9 @@ export function buildApp(input: AppDeps): FastifyInstance {
     rateLimits: { ...DEFAULT_RATE_LIMITS, ...input.rateLimits },
     verifyPassword: input.verifyPassword ?? verifyPassword,
     afterDeviceLabelLock: input.afterDeviceLabelLock ?? (async () => {}),
+    syncPageSize: input.syncPageSize ?? DEFAULT_PAGE_SIZE,
   };
+  if (!Number.isInteger(deps.syncPageSize) || deps.syncPageSize < 1) throw new Error("syncPageSize 必须是正整数");
   const app = Fastify({
     // 前面有 Caddy 反代时打开，按 X-Forwarded-For 取客户端 IP（按 IP 限速要用）
     trustProxy: deps.config.trustProxy,
@@ -90,5 +97,6 @@ export function buildApp(input: AppDeps): FastifyInstance {
   app.register(authRoutes);
   app.register(deviceRoutes);
   app.register(accountRoutes);
+  app.register(syncRoutes);
   return app;
 }
