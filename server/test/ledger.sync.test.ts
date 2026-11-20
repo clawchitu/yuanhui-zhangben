@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
 import { login, makeApp, makeLoginShop } from "./helpers/auth.ts";
-import { op, syncOk, upsertFull } from "./helpers/sync.ts";
+import { expectContract, op, syncOk, upsertFull } from "./helpers/sync.ts";
 
 let tdb: TestDb;
 beforeAll(async () => {
@@ -143,5 +143,18 @@ describe("期初的版本校验（S05-2）", () => {
     const p = await product(shop.storeId, pid);
     expect([p.stock_qty, Number(p.stock_ver), p.last_count_at !== null]).toEqual([7, 2, true]);
     await app.close();
+  });
+
+  it("账上库存为负时期初被拒：stale 的 current.stock_qty 是负数，响应符合 openapi（Qty 允许负数）", async () => {
+    const { shop, app, boss, send, newProduct } = await setup();
+    const pid = await newProduct();
+    await send(saleOf(900, [{ pid, price: 300, count: 3 }]));
+    expect((await product(shop.storeId, pid)).stock_qty).toBe(-3);
+    const o = opening(pid, 4);
+    const body = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [o], pull: false });
+    await app.close();
+    expect(body.results).toEqual([{ id: o.id, status: "rejected", code: "stale", current: { stock_qty: -3, stock_ver: 1 } }]);
+    await expectContract("SyncResponse", body);
+    await expectContract("OpResult", body.results[0]);
   });
 });
