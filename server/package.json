@@ -9,10 +9,14 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "contracts:check": "node scripts/validate-contracts.ts"
+    "contracts:check": "node scripts/validate-contracts.ts",
+    "start": "node src/server.ts",
+    "migrate": "node scripts/migrate.ts"
   },
   "dependencies": {
+    "argon2": "^0.45.2",
     "fastify": "^5.12.8",
+    "kysely": "^0.29.9",
     "pg": "^8.23.1"
   },
   "devDependencies": {

@@ -26,7 +26,6 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       DATABASE_URL: postgres://yuanhui:ci-only-not-secret@localhost:5432/yuanhui_test
-      REQUIRE_DB: "1"
     defaults:
       run:
         working-directory: server
@@ -42,3 +41,20 @@ jobs:
       - name: 校验 contracts（openapi、JSON Schema 语法，向量文件格式）
         run: npm run contracts:check
       - run: npm test
+      - name: 构建镜像（server/Dockerfile）
+        working-directory: .
+        run: docker build -f server/Dockerfile -t yuanhui-api:ci .
+      - name: 镜像冒烟：迁移 → 启动 → /healthz 200 → 停库后 503
+        working-directory: .
+        run: |
+          docker run --rm --network host -e DATABASE_URL="$DATABASE_URL" yuanhui-api:ci node scripts/migrate.ts
+          docker run --rm --network host -e DATABASE_URL="$DATABASE_URL" yuanhui-api:ci node scripts/migrate.ts | grep -q "没有新的迁移"
+          docker run -d --name api --network host -e DATABASE_URL="$DATABASE_URL" -e PORT=3999 yuanhui-api:ci
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:3999/healthz && break; sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3999/healthz)" = 200
+          curl -fsS http://127.0.0.1:3999/v1/config
+          docker stop "$(docker ps -q --filter ancestor=postgres:16)"
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:3999/healthz)
+          echo "停库后 /healthz → $code"
+          test "$code" = 503
+          docker rm -f api
