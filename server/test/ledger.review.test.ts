@@ -81,3 +81,44 @@ describe("Codex P2：卖出名称快照", () => {
     await app.close();
   });
 });
+
+const snapshot = async (storeId: string) => ({
+  products: await tdb.kysely.selectFrom("products").selectAll().where("store_id", "=", storeId).orderBy("id").execute(),
+  entries: await tdb.kysely.selectFrom("entries").selectAll().where("store_id", "=", storeId).orderBy("seq").execute(),
+  batches: await tdb.kysely.selectFrom("sale_batches").selectAll().where("store_id", "=", storeId).orderBy("id").execute(),
+  lots: await tdb.kysely.selectFrom("stock_lots").selectAll().where("store_id", "=", storeId).orderBy("id").execute(),
+});
+const setStock = (storeId: string, pid: string, qty: number) =>
+  tdb.kysely.updateTable("products").set({ stock_qty: qty } as never).where("store_id", "=", storeId).where("id", "=", pid).execute();
+
+describe("Fable 1：记账 op 写到一半被拒 → 整笔回滚", () => {
+  it("三行卖出：第一行正常、第二行自动建商品、第三行库存溢出 → invalid，批次头 / 流水 / 商品 / 投影都不变；重发同样结果", async () => {
+    const { shop, app, send, newProduct } = await setup();
+    const [a, c] = [await newProduct(), await newProduct()];
+    await send(opening(a, 10, { unit_cost_fen: 100 }));
+    await setStock(shop.storeId, c, -2147483647);
+    const before = await snapshot(shop.storeId);
+    const s = saleOp([saleLine(a), saleLine(randomUUID(), { name: "新商品" }), saleLine(c, { count: 10 })]);
+    expect(await send(s)).toEqual([{ id: s.id, status: "rejected", code: "invalid" }]);
+    expect(await snapshot(shop.storeId)).toEqual(before);
+    expect(await send(s)).toEqual([{ id: s.id, status: "rejected", code: "invalid", replayed: true }]);
+    expect(await snapshot(shop.storeId)).toEqual(before);
+    await app.close();
+  });
+
+  it("整批撤销：第一行冲销已写、第二行冲销库存溢出 → invalid，原行 voided_at、cost_fix_entry_id、流水、商品都不变", async () => {
+    const { shop, app, send, newProduct } = await setup();
+    const [a, b] = [await newProduct(), await newProduct()];
+    await send(opening(a, 10, { unit_cost_fen: 100 }), opening(b, 10, { unit_cost_fen: 100 }));
+    const s = saleOp([saleLine(a), saleLine(b, { count: 2 })]);
+    expect(await send(s)).toEqual([{ id: s.id, status: "applied" }]);
+    await setStock(shop.storeId, b, 2147483647);
+    const before = await snapshot(shop.storeId);
+    const v = voidOp({ batch_id: s.payload.batch_id as string });
+    expect(await send(v)).toEqual([{ id: v.id, status: "rejected", code: "invalid" }]);
+    const after = await snapshot(shop.storeId);
+    expect(after).toEqual(before);
+    expect(after.entries.every((e) => e.voided_at === null && e.reverses_entry_id === null)).toBe(true);
+    await app.close();
+  });
+});
