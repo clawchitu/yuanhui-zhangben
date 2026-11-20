@@ -1,7 +1,7 @@
 // 数据库层性质测试（§3.3 I1–I8，§8 S05 验收「fast-check 性质测试，随机 op 序列 ≥ 500 组，含乱序重放」，S06「性质测试加入新 op 后 I1–I8 仍成立」）。
 // 随机生成多台设备（两台家用、一台收银）的 sale_batch / stock_in / opening / void，以及 S06 的 count / product_review_complete /
 // expiry_dispose / lot_snooze 序列，打乱到达顺序、随机分包、中途和最后重发，经真实 /v1/sync 写库；每组结束后从库里读流水和投影断言 I1–I8，
-// 再断言批次一致性（assertLots）。occurred_at 随机、盘点 / 期初也随机落在时间轴上，盘点之后才到的更早的流水走迟到补偿（§5.6 第 4 条）。
+// 再断言批次一致性（assertLots）和迟到补偿的成本、批次口径（assertLate，§14 S06-8、S06-10）。occurred_at 随机、盘点 / 期初也随机落在时间轴上，盘点之后才到的更早的流水走迟到补偿（§5.6 第 4 条）。
 // 另有并发测试：多个连接池（相当于多个服务器进程）同时推，断言 seq 不重不漏、rev 不重，
 // 投影与「按 seq 顺序把这些 op 单线程重放到一家新店」的结果一致。
 //
@@ -439,6 +439,45 @@ async function assertStore(w: World, pageApp: FastifyInstance) {
   expect(paged.snapshot()).toEqual(whole.snapshot());
   expect(whole.entries.size).toBe(es.length);
   await assertLots(w.storeId);
+  await assertLate(w.storeId);
+}
+
+/**
+ * 迟到补偿与成本、批次（§5.6 第 4 条，§14 S06-8、S06-10）：
+ * LT1 迟到的进货让进价从没填变已知（这一步之前这个商品没有进价已知的进货 / 期初）：这个 op 结束时货值 = 库存 × 这次的进价，不论库存正负。
+ * LT2 被补偿的迟到卖出（紧跟着同一个 op 的 late_before_count 盘点行）不扣批次、不写 lot_moves。
+ */
+async function assertLate(storeId: string) {
+  const es = await tdb.kysely.selectFrom("entries").selectAll().where("store_id", "=", storeId).orderBy("seq").execute();
+  const moved = new Set((await tdb.kysely.selectFrom("lot_moves").select("entry_id").where("store_id", "=", storeId).execute()).map((m) => m.entry_id));
+  const isLate = (e: (typeof es)[number] | undefined) => e !== undefined && (e.flags as Record<string, unknown>).late_before_count === true;
+  for (const [i, e] of es.entries()) {
+    if (e.reverses_entry_id !== null) continue;
+    const mine = es.filter((x) => x.product_id === e.product_id);
+    const sameOp = mine.filter((x) => x.op_id === e.op_id);
+    if (e.type === "stock_in" && sameOp.some(isLate)) {
+      const knownBefore = mine.some((x) => BigInt(x.seq) < BigInt(e.seq) && x.reverses_entry_id === null && (x.type === "stock_in" || x.type === "opening") && x.unit_cost_fen !== null);
+      if (!knownBefore) {
+        const end = BigInt(sameOp.at(-1)!.seq);
+        const upTo = mine.filter((x) => BigInt(x.seq) <= end);
+        const q = upTo.reduce((x, y) => x + BigInt(y.qty_delta), 0n);
+        const v = upTo.reduce((x, y) => x + BigInt(y.value_delta_fen), 0n);
+        const c = roundDiv(BigInt(e.amount_fen), BigInt(e.qty_delta));
+        expect(v, `LT1：迟到进货 ${e.id} 补上进价后货值应归位到 q × c = ${q} × ${c}`).toBe(q * c);
+        coverage.set("迟到进货补进价", (coverage.get("迟到进货补进价") ?? 0) + 1);
+        if (q > 0n) coverage.set("迟到进货补进价且库存为正", (coverage.get("迟到进货补进价且库存为正") ?? 0) + 1);
+      }
+    }
+    if (e.type === "sale") {
+      const next = es[i + 1];
+      if (isLate(next) && next!.op_id === e.op_id && next!.product_id === e.product_id && next!.type === "count") {
+        expect(moved.has(e.id), `LT2：被补偿的迟到卖出 ${e.id} 扣了批次`).toBe(false);
+        coverage.set("迟到卖出", (coverage.get("迟到卖出") ?? 0) + 1);
+        const p = await tdb.kysely.selectFrom("products").select("track_expiry").where("store_id", "=", storeId).where("id", "=", e.product_id).executeTakeFirstOrThrow();
+        if (p.track_expiry) coverage.set("迟到卖出（管保质期）", (coverage.get("迟到卖出（管保质期）") ?? 0) + 1);
+      }
+    }
+  }
 }
 
 /**
@@ -582,6 +621,25 @@ const LOT_EXAMPLE: Scenario = {
   page: 0,
 };
 
+/**
+ * 固定带上的第二组：迟到补偿与成本、批次（§14 S06-8、S06-10）。
+ * 商品 0：没填进价的期初 5 个之后，更早的进货 5 × 100 才到（进价从没填变已知、库存为正）→ LT1。
+ * 商品 1：进货 10 个（批次 10）→ 盘点到 8（盘亏扣批次到 8）→ 盘点前卖的 2 个才到（被补偿）→ LT2，批次仍是 8（L6）。
+ */
+const LATE_EXAMPLE: Scenario = {
+  gens: [
+    { kind: "opening", dev: 0, p: 0, counted: 5, cost: null, base: "current", atH: 10 },
+    { kind: "stock_in", dev: 0, p: 0, packQty: 1, count: 5, unit: 100, atH: 20 },
+    { kind: "stock_in", dev: 0, p: 1, packQty: 1, count: 10, unit: 100, expiry: "2026-12-01", atH: 30 },
+    { kind: "count", dev: 0, p: 1, counted: 8, base: "current", atH: 10 },
+    { kind: "sale", dev: 2, lines: [{ p: 1, packQty: 1, count: 2, price: 300 }, { p: 0, packQty: 1, count: 1, price: 300 }], discount: 0, atH: 20 },
+  ],
+  delays: [0, 0, 0, 0, 0],
+  replays: [],
+  chunk: 1,
+  page: 1,
+};
+
 describe("数据库层性质测试（I1–I8，§3.3）", () => {
   it(`随机多设备 op 序列 ${RUNS} 组，乱序到达、中途与最后重发：I1–I8 成立`, { timeout: 1_200_000 }, async () => {
     let applied = 0;
@@ -596,10 +654,10 @@ describe("数据库层性质测试（I1–I8，§3.3）", () => {
           else rejected += 1;
         }
       }),
-      { numRuns: RUNS, examples: [[LOT_EXAMPLE]] },
+      { numRuns: RUNS, examples: [[LOT_EXAMPLE], [LATE_EXAMPLE]] },
     );
     console.log(`性质测试：${runs} 组，op 第一次结果 applied ${applied} / 其余 ${rejected}；流水 ${JSON.stringify(Object.fromEntries(coverage))}`);
-    const must = ["sale冲销", "stock_in冲销", "opening冲销", "cost_fix", "cost_fix冲销", "cost_adjust", "count", "count冲销", "expire_loss", "expire_loss冲销", "supplier_return", "supplier_return冲销", "被补记的卖出", "时钟校正", "迟到补偿", "批次", "批次disposed", "批次voided", "批次处理后重开或推迟", "lot_moves", "count:applied", "count:stale", "product_review_complete:applied", "product_review_complete:stale", "expiry_dispose:applied", "expiry_dispose:stale", "lot_snooze:applied", "lot_snooze:stale"];
+    const must = ["sale冲销", "stock_in冲销", "opening冲销", "cost_fix", "cost_fix冲销", "cost_adjust", "count", "count冲销", "expire_loss", "expire_loss冲销", "supplier_return", "supplier_return冲销", "被补记的卖出", "时钟校正", "迟到补偿", "批次", "批次disposed", "批次voided", "批次处理后重开或推迟", "lot_moves", "迟到进货补进价", "迟到进货补进价且库存为正", "迟到卖出", "迟到卖出（管保质期）", "count:applied", "count:stale", "product_review_complete:applied", "product_review_complete:stale", "expiry_dispose:applied", "expiry_dispose:stale", "lot_snooze:applied", "lot_snooze:stale"];
     for (const k of must) expect(coverage.get(k) ?? 0, `生成器没有覆盖到 ${k}`).toBeGreaterThan(0);
     expect(runs).toBeGreaterThanOrEqual(RUNS);
     // 序列不能退化成全被拒：大部分 op 真的写进了库
