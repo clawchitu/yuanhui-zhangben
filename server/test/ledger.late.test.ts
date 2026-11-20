@@ -166,6 +166,30 @@ describe("迟到流水补偿（§5.6 第 4 条）", () => {
     await app.close();
   });
 
+  for (const kind of ["count", "opening"] as const) {
+    it(`last_count_at 只往后走：01:30 盘点之后，版本对、occurred_at 更早（01:00）的${kind === "count" ? "盘点" : "期初"}入账不把它拉回去；之后 01:15 的卖出仍被补偿（PR #16 Fable 3，S06-11）`, async () => {
+      const { shop, app, send, newProduct } = await setup();
+      const pid = await newProduct();
+      await send(stockIn(pid, 10, 100, "2026-11-20T00:30:00Z"));
+      await send(count(pid, 10, await ver(shop.storeId, pid)));
+      const at = new Date(T_COUNT).toISOString();
+      expect((await product(shop.storeId, pid)).last_count_at?.toISOString()).toBe(at);
+      const v = await ver(shop.storeId, pid);
+      const early =
+        kind === "count"
+          ? count(pid, 9, v, T_LATE)
+          : op("opening", { entry_id: randomUUID(), product_id: pid, counted_qty: 9, unit_cost_fen: 100, base_ver: v }, { at: T_LATE });
+      expect(await send(early)).toEqual([{ id: early.id, status: "applied" }]);
+      expect((await product(shop.storeId, pid)).last_count_at?.toISOString()).toBe(at);
+      await send(sale(pid, 1, "2026-11-20T01:15:00Z"));
+      const comp = (await entriesOf(shop.storeId, pid)).at(-1)!;
+      expect([comp.type, late(comp)]).toEqual(["count", true]);
+      expect((await product(shop.storeId, pid)).stock_qty).toBe(9);
+      await assertDbLedger(tdb.kysely, shop.storeId, pid);
+      await app.close();
+    });
+  }
+
   it("进价没填时补偿行只改数量、金额 0、标 cost_missing（同数量有变化的盘点）", async () => {
     const { shop, app, send, newProduct } = await setup();
     const pid = await newProduct();
