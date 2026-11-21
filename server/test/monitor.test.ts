@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { buildMessage, sanitizeDetails, scrub } from "../src/monitor/alert.ts";
 import { Alerter } from "../src/monitor/alerter.ts";
 import { LogTap } from "../src/monitor/logtap.ts";
-import { certVerdict, heartbeatVerdict, noSyncVerdict, parseMetrics, readNewLines, renewalOverdue, shanghaiAt, THRESHOLDS } from "../src/monitor/checks.ts";
+import { certVerdict, heartbeatVerdict, noSyncVerdict, parseMetrics, readNewLines, recordOpsSample, renewalOverdue, shanghaiAt, THRESHOLDS } from "../src/monitor/checks.ts";
 import { CommandSink, MultiSink, OutboxSink, WebhookSink } from "../src/monitor/sinks.ts";
 import { sinkFromConfig } from "../src/monitor/setup.ts";
 import { forwardOutbox, runProbe, type ProbeDeps } from "../scripts/probe.ts";
@@ -207,6 +207,20 @@ describe("阈值", () => {
     expect(heartbeatVerdict(s(sh("2026-11-20T08:01:00")), sh("2026-11-20T10:01:01")).active).toBe(true);
     // 夜里那份也没有：6 小时规则在营业时间照样管（01:00 那份到 8:30 已 7.5 小时）
     expect(heartbeatVerdict(s(sh("2026-11-20T01:00:00")), sh("2026-11-20T08:30:00")).active).toBe(true);
+  });
+  it("ops 表增长样本：按真实频率每分钟采一次，一天后能拿到约 24 小时前的样本（PR #25 Codex 建议）", () => {
+    const samples: Array<[number, number]> = [];
+    const t0 = Date.parse("2026-11-20T00:00:00Z");
+    let dayAgo: [number, number] | undefined;
+    const MB = 1024 * 1024;
+    for (let min = 0; min <= 26 * 60; min++) dayAgo = recordOpsSample(samples, new Date(t0 + min * 60_000), min * 0.1 * MB);
+    expect(dayAgo).toBeDefined();
+    const now = t0 + 26 * 60 * 60_000;
+    expect(now - dayAgo![0]).toBeGreaterThanOrEqual(24 * H - 60_000);
+    expect(now - dayAgo![0]).toBeLessThan(24 * H + 10 * 60_000);
+    expect(26 * 60 * 0.1 * MB - dayAgo![1]).toBeGreaterThan(140 * MB); // 一天约 144 MB 增长能算出来
+    expect(samples.length).toBeLessThanOrEqual(200);
+    expect(recordOpsSample([], new Date(t0), 1)).toBeUndefined();
   });
   it("营业时间无同步：只数 8:00 之后、21:00 之前；超过 3 小时才告警", () => {
     const last = sh("2026-11-19T20:30:00"); // 昨晚最后一次

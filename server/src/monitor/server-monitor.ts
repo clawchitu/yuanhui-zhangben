@@ -10,7 +10,7 @@ import { sql, type Kysely } from "kysely";
 import type { Database } from "../db.ts";
 import type { Alerter } from "./alerter.ts";
 import type { LogTap } from "./logtap.ts";
-import { heartbeatVerdict, noSyncVerdict, parseMetrics, readNewLines, THRESHOLDS } from "./checks.ts";
+import { heartbeatVerdict, noSyncVerdict, parseMetrics, readNewLines, recordOpsSample, THRESHOLDS } from "./checks.ts";
 
 /** 每家店最近一次同步成功（sync 路由回 200 时记；内存里，重启后从启动时刻重新算 3 小时） */
 export class SyncSeen {
@@ -170,11 +170,7 @@ export class ServerMonitor {
     // ops 表体积和 24 小时增长（T3）
     const r = await sql<{ bytes: string }>`SELECT pg_total_relation_size('ops')::text AS bytes`.execute(db);
     const bytes = Number(r.rows[0]?.bytes ?? 0);
-    const samples = (this.cur.opsSamples ??= []);
-    samples.push([now.getTime(), bytes]);
-    while (samples.length > 1 && samples[0]![0] < now.getTime() - 25 * 3600_000) samples.shift();
-    if (samples.length > 200) samples.splice(0, samples.length - 200);
-    const dayAgo = samples.find(([t]) => t <= now.getTime() - 24 * 3600_000 + 60_000) ?? (samples[0]![0] <= now.getTime() - 23 * 3600_000 ? samples[0] : undefined);
+    const dayAgo = recordOpsSample((this.cur.opsSamples ??= []), now, bytes);
     const maxBytes = this.d.limits?.opsTableBytes ?? THRESHOLDS.opsTableBytes;
     const maxGrowth = this.d.limits?.opsGrowthBytesPerDay ?? THRESHOLDS.opsGrowthBytesPerDay;
     await this.d.alerter.condition(bytes > maxBytes, {

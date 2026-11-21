@@ -11,10 +11,10 @@ REPO=$(cd "$HERE/../.." && pwd)
 CONF="${PROBE_ENV_FILE:-$HOME/.config/yuanhui-probe/env}"
 NODE="${PROBE_NODE:-node}"
 
-[ -f "$CONF" ] || { echo "缺配置文件 $CONF（照 deploy/probe/probe.env.example 填）" >&2; exit 2; }
+[ -f "$CONF" ] || { echo "缺配置文件 ${CONF}（照 deploy/probe/probe.env.example 填）" >&2; exit 2; }
 mode=$(stat -c %a "$CONF" 2>/dev/null || stat -f %Lp "$CONF")
 owner=$(stat -c %u "$CONF" 2>/dev/null || stat -f %u "$CONF")
-[ "$mode" = 600 ] || { echo "$CONF 权限是 $mode，要 600（chmod 600 $CONF）" >&2; exit 2; }
+[ "$mode" = 600 ] || { echo "${CONF} 权限是 ${mode}，要 600（chmod 600 ${CONF}）" >&2; exit 2; }
 [ "$owner" = "$(id -u)" ] || { echo "$CONF 的属主不是当前用户" >&2; exit 2; }
 
 # 只认这几个变量，别的行忽略（配置文件不当 shell 脚本 source，里面写什么都不会被执行）

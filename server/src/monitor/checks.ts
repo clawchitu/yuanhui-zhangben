@@ -127,3 +127,18 @@ export function renewalOverdue(c: CertInfo, now: Date): boolean {
   const life = c.notAfter.getTime() - c.notBefore.getTime();
   return life > 0 && c.notAfter.getTime() - now.getTime() < life / 4;
 }
+
+/**
+ * ops 表体积样本（T3 的 24 小时增长）：每 10 分钟最多记一条，留 25 小时（约 150 条）。返回约 24 小时前的那条（没有就 undefined）。
+ * 以前每分钟记一条、只留 200 条，永远凑不到 24 小时前的样本，增长告警不会响（PR #25 Codex 建议）。
+ */
+export function recordOpsSample(samples: Array<[number, number]>, now: Date, bytes: number): [number, number] | undefined {
+  const t = now.getTime();
+  const lastT = samples.length ? samples[samples.length - 1]![0] : -Infinity;
+  if (t - lastT >= 10 * 60_000) samples.push([t, bytes]);
+  while (samples.length > 1 && samples[0]![0] < t - 25 * 3600_000) samples.shift();
+  if (samples.length > 200) samples.splice(0, samples.length - 200);
+  // 24 小时前（容差 1 分钟）以前的最近一条；只差一点点（≥ 23 小时）也算，免得刚好错过
+  for (let i = samples.length - 1; i >= 0; i--) if (samples[i]![0] <= t - 24 * 3600_000 + 60_000) return samples[i];
+  return samples[0] && samples[0][0] <= t - 23 * 3600_000 ? samples[0] : undefined;
+}
