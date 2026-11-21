@@ -71,7 +71,7 @@ struct NewProductView: View {
     private var basic: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text(model.heading)
                         .font(TypeScale.title.weight(.bold))
                         .foregroundStyle(Tokens.Palette.ink)
@@ -108,6 +108,8 @@ struct NewProductView: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollDismissesKeyboard(.interactively)
+            // 放不下时先露出最下面的名称框（标题往上滚），名称和卖价总在首屏
+            .defaultScrollAnchor(.bottom)
             // 卖价框、键盘、按钮钉在底部：任何字号下卖价框都在首屏、不被键盘压住
             VStack(alignment: .leading, spacing: 6) {
                 label(model.priceLabel)
@@ -170,13 +172,13 @@ struct NewProductView: View {
         Button { nameFocused = false } label: {
             HStack(alignment: .firstTextBaseline, spacing: 2) {
                 Text("¥").font(TypeScale.number(28))
-                Text(model.price.text).font(TypeScale.number(48)).lineLimit(1).minimumScaleFactor(0.5)
+                Text(model.price.text).font(TypeScale.number(44)).lineLimit(1).minimumScaleFactor(0.5)
                 Rectangle().fill(model.mode.color).frame(width: 2.5, height: 40).opacity(nameFocused ? 0 : 1)
                 Spacer(minLength: 0)
             }
             .foregroundStyle(Tokens.Palette.ink)
             .padding(.horizontal, 18)
-            .frame(maxWidth: .infinity, minHeight: 76)
+            .frame(maxWidth: .infinity, minHeight: 66)
             .background(Tokens.Palette.card, in: RoundedRectangle(cornerRadius: Tokens.Radius.card))
             .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(model.mode.color, lineWidth: 2.5))
             .background(RoundedRectangle(cornerRadius: Tokens.Radius.card + 4).fill(model.mode.tint).padding(-5))

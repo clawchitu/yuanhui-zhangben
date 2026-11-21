@@ -40,8 +40,6 @@ struct LinkPackView: View {
                         .font(TypeScale.title.weight(.bold))
                         .foregroundStyle(Tokens.Palette.ink)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("条码 \(model.barcode)").font(TypeScale.number(20)).foregroundStyle(Tokens.Palette.ink2)
-                        .lineLimit(1).minimumScaleFactor(0.6)
                     productCard
                     Text("这个码是一整").font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
                     unitChips
@@ -51,6 +49,8 @@ struct LinkPackView: View {
                 .padding(.bottom, 10)
             }
             .scrollBounceBehavior(.basedOnSize)
+            // 放不下时先露出最下面的「箱 / 条 / 提 / 盒」（标题往上滚）
+            .defaultScrollAnchor(.bottom)
             // 两个输入框、换算说明、键盘、按钮钉在底部：输入框不被键盘压住
             VStack(alignment: .leading, spacing: 6) {
                 fields
@@ -95,7 +95,7 @@ struct LinkPackView: View {
     private var productCard: some View {
         HStack(spacing: 14) {
             if let p = model.product {
-                Thumb(initial: ProductNaming.isPlaceholder(p.name) ? nil : p.name.first.map(String.init), size: 64, fill: Tokens.Palette.line.opacity(0.6))
+                Thumb(initial: ProductNaming.isPlaceholder(p.name) ? nil : p.name.first.map(String.init), size: 52, fill: Tokens.Palette.line.opacity(0.6))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(p.name).font(TypeScale.body.weight(.bold)).foregroundStyle(Tokens.Palette.ink)
                         .fixedSize(horizontal: false, vertical: true)
@@ -122,7 +122,7 @@ struct LinkPackView: View {
             .buttonStyle(PressDimStyle())
             .accessibilityIdentifier("linkPack.choose")
         }
-        .padding(14)
+        .padding(10)
         .background(Tokens.Palette.card, in: RoundedRectangle(cornerRadius: Tokens.Radius.card))
         .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(Tokens.Palette.line, lineWidth: 2))
         .accessibilityElement(children: .contain)
@@ -137,7 +137,7 @@ struct LinkPackView: View {
                     Text(u)
                         .font(.system(size: 26, weight: on ? .bold : .medium))
                         .foregroundStyle(on ? .white : Tokens.Palette.ink)
-                        .frame(maxWidth: .infinity, minHeight: 60)
+                        .frame(maxWidth: .infinity, minHeight: 56)
                         .background(on ? Tokens.Palette.ink : Tokens.Palette.card, in: RoundedRectangle(cornerRadius: 14))
                         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(on ? Tokens.Palette.ink : Tokens.Palette.line, lineWidth: 2))
                         .contentShape(Rectangle())
@@ -180,12 +180,12 @@ struct LinkPackView: View {
                 }
                 .foregroundStyle(Tokens.Palette.ink)
                 .padding(.horizontal, 16)
-                .frame(minWidth: 150, maxWidth: .infinity, minHeight: 68, alignment: .leading)
+                .frame(minWidth: 150, maxWidth: .infinity, minHeight: 64, alignment: .leading)
                 .background(Tokens.Palette.card, in: RoundedRectangle(cornerRadius: Tokens.Radius.card))
                 .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card)
                     .strokeBorder(on ? model.mode.color : Tokens.Palette.line, lineWidth: on ? 2.5 : 2))
                 .background(RoundedRectangle(cornerRadius: Tokens.Radius.card + 4).fill(on ? model.mode.tint : .clear).padding(-5))
-                .padding(4)
+                .padding(3)
             }
             .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
