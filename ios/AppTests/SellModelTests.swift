@@ -195,4 +195,47 @@ final class SellModelTests: XCTestCase {
         XCTAssertNil(hub.receive("ABC-" + Self.beer, from: .manual), "S14-5：带符号的码不收")
         XCTAssertEqual(m.focusLine?.packCount, 3)
     }
+    // MARK: 步进器绑定（Codex ①）
+
+    /// 同一个绑定在界面重建前连按两次「+」：两次都要算上（不能都写成「原数 + 1」）
+    func testHeldCountBindingIncrementsTwice() throws {
+        let m = try makeModel()
+        scan(m, Self.beer)
+        let line = try XCTUnwrap(m.focusLine)
+        let b = m.countBinding(for: line)
+        b.wrappedValue += 1
+        b.wrappedValue += 1
+        XCTAssertEqual(m.focusLine?.packCount, 3)
+        XCTAssertEqual(b.wrappedValue, 3, "绑定读的是篮子里现在的数")
+        XCTAssertEqual(m.listTotalFen, 1800)
+    }
+
+    /// 扫码和步进器交错：扫码加了一件之后，旧按钮再按「+」是在新数上加，不把扫进来的那件覆盖掉
+    func testHeldCountBindingAfterAScanAddsOnTopOfTheScan() throws {
+        let m = try makeModel()
+        scan(m, Self.beer)
+        let b = m.countBinding(for: try XCTUnwrap(m.focusLine))
+        scan(m, Self.beer)
+        XCTAssertEqual(m.focusLine?.packCount, 2)
+        b.wrappedValue += 1
+        XCTAssertEqual(m.focusLine?.packCount, 3, "扫进来的那件还在")
+        scan(m, Self.beer)
+        b.wrappedValue -= 1
+        XCTAssertEqual(m.focusLine?.packCount, 3)
+        XCTAssertEqual(m.itemCount, 3)
+        XCTAssertEqual(m.listTotalFen, 1800)
+    }
+
+    /// 那一行被删掉以后，旧绑定读到 0、写不进去
+    func testCountBindingOfARemovedLine() throws {
+        let m = try makeModel()
+        scan(m, Self.beer)
+        scan(m, Self.noodle)
+        let beer = try XCTUnwrap(m.basket.lines.first { $0.barcode == Self.beer })
+        let b = m.countBinding(for: beer)
+        m.setCount(lineId: beer.id, 0)
+        XCTAssertEqual(b.wrappedValue, 0)
+        b.wrappedValue += 1
+        XCTAssertEqual(m.basket.lines.map(\.barcode), [Self.noodle], "删掉的行不会被旧按钮加回来")
+    }
 }

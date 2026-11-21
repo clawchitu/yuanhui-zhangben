@@ -113,6 +113,11 @@ final class SellModel {
         }
     }
 
+    /// 某一行现在的件数；这一行已经删掉时是 0
+    func count(lineId: UUID) -> Int64 {
+        basket.lines.first { $0.id == lineId }?.packCount ?? 0
+    }
+
     /// 改某一行的件数；0 = 删掉这一行
     func setCount(lineId: UUID, _ n: Int) {
         guard let i = basket.lines.firstIndex(where: { $0.id == lineId }) else { return }

@@ -235,10 +235,17 @@ struct BasketLineRow: View {
     }
 }
 
-@MainActor
-private func count(_ line: Basket.Line, _ model: SellModel) -> Binding<Int> {
-    Binding(get: { Int(line.packCount) }, set: { model.setCount(lineId: line.id, $0) })
+extension SellModel {
+    /// 步进器绑的件数：按行 id 每次从篮子里现读（不用界面上那一刻的快照），界面重建前连按两次「+」、
+    /// 扫码和「+」交错都在当前数上加（Codex ①）
+    func countBinding(for line: Basket.Line) -> Binding<Int> {
+        let id = line.id
+        return Binding(get: { Int(self.count(lineId: id)) }, set: { self.setCount(lineId: id, $0) })
+    }
 }
+
+@MainActor
+private func count(_ line: Basket.Line, _ model: SellModel) -> Binding<Int> { model.countBinding(for: line) }
 
 /// 金额按给定的几档字号从大到小试，放得下哪档用哪档：金额再长也不出右边距
 struct FittingPrice: View {
