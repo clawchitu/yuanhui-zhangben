@@ -33,10 +33,12 @@ struct Thumb: View {
     var image: Image?
     var initial: String?
     var size: CGFloat = Tokens.Size.thumb
+    /// 底色：放在白卡、价签上用米纸；直接放在米纸页面上时调深一点，不然看不出框（04a / 05）
+    var fill: Color = Tokens.Palette.paper
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.2).fill(Tokens.Palette.paper)
+            RoundedRectangle(cornerRadius: size * 0.2).fill(fill)
             if let image {
                 image.resizable().scaledToFill()
             } else if let initial, !initial.isEmpty {

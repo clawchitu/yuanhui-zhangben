@@ -25,6 +25,10 @@ struct SellFixture: Equatable, Sendable {
     /// 喂完后推到手输条码页（15 / 15b）
     var openManual = false
     var manual = ManualFixture.none
+    /// 查名称当作没网（25e，`-uiOffline`）
+    var offline = false
+    /// 登记页 / 05 预先填好的内容
+    var newProduct = NewProductFixture.none
 
     static let none = SellFixture()
 }
@@ -69,12 +73,38 @@ extension SellFixture {
         f.manual.input = UIFixture.value(for: "-uiManualInput", in: args)
         f.manual.query = UIFixture.value(for: "-uiManualQuery", in: args)
         f.manual.selectIndex = UIFixture.value(for: "-uiManualSelect", in: args).flatMap(Int.init)
+        // S18：-uiOffline；登记页 -uiNewName / -uiNewPrice 7.5 / -uiNewStep2 / -uiNewCost / -uiNewQty / -uiNewExpiry 2027-05-20|on|unknown
+        //      / -uiNewWarn 15 / -uiNewMode stock；05：-uiNewPack / -uiPackUnit 箱 / -uiPackQty 24 / -uiPackPrice 60
+        f.offline = args.contains("-uiOffline")
+        var n = NewProductFixture()
+        n.name = UIFixture.value(for: "-uiNewName", in: args)
+        n.price = UIFixture.value(for: "-uiNewPrice", in: args)
+        n.step2 = args.contains("-uiNewStep2")
+        n.cost = UIFixture.value(for: "-uiNewCost", in: args)
+        n.qty = UIFixture.value(for: "-uiNewQty", in: args)
+        n.expiry = UIFixture.value(for: "-uiNewExpiry", in: args)
+        n.warnDays = UIFixture.value(for: "-uiNewWarn", in: args).flatMap(Int.init)
+        n.pack = args.contains("-uiNewPack")
+        n.packUnit = UIFixture.value(for: "-uiPackUnit", in: args)
+        n.packQty = UIFixture.value(for: "-uiPackQty", in: args)
+        n.packPrice = UIFixture.value(for: "-uiPackPrice", in: args)
+        if UIFixture.value(for: "-uiNewMode", in: args) == "stock" { n.mode = .stock }
+        f.newProduct = n
         return f
     }
 }
 
 /// 调试探针的内容：本地库里的卖出批次和 outbox，UI 测试按 `key=value` 读。
 enum SellProbe {
+    /// S18：登记、整件码、期初各进了几条 op（`quick` 的单独数）
+    static func registrationCounts(_ db: LocalDB) -> [String] {
+        let all = (try? db.allOutbox()) ?? []
+        let upserts = all.filter { $0.type == .productUpsert }
+        let quick = upserts.filter { String(decoding: $0.opJSON, as: UTF8.self).contains("\"quick\":true") }
+        return ["upserts=\(upserts.count)", "quickUpserts=\(quick.count)",
+                "links=\(all.filter { $0.type == .barcodeLink }.count)", "openings=\(all.filter { $0.type == .opening }.count)"]
+    }
+
     static func describe(db: LocalDB, commits: Int) -> String {
         do {
             let sales = try db.entries().filter { $0.type == .sale }
@@ -88,11 +118,13 @@ enum SellProbe {
             let last = order.last.flatMap { batches[$0] } ?? []
             let ops = try db.allOutbox().filter { $0.type == .saleBatch }
             let qty = last.map { "\($0.name):\($0.packCount ?? 0)" }.joined(separator: "|")
-            return ["batches=\(order.count)", "lastLines=\(last.count)",
+            let base: [String] = ["batches=\(order.count)", "lastLines=\(last.count)",
                     "lastList=\(last.reduce(0) { $0 + $1.listAmountFen.raw })",
                     "lastPaid=\(last.reduce(0) { $0 + $1.amountFen.raw })",
                     "lastAmounts=\(last.map { String($0.amountFen.raw) }.joined(separator: "|"))",
-                    "lastQty=\(qty)", "saleOps=\(ops.count)", "commits=\(commits)"].joined(separator: ";")
+                    "lastQty=\(qty)", "saleOps=\(ops.count)", "commits=\(commits)",
+                    "lastBase=\(last.reduce(Int64(0)) { $0 + $1.qtyDelta })"]
+            return (base + registrationCounts(db)).joined(separator: ";")
         } catch {
             return "error=\(error)"
         }
