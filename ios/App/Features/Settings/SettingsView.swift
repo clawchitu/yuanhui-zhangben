@@ -156,7 +156,7 @@ struct SettingsView: View {
     }
 
     private var scannerRow: some View {
-        SettingsLink(.scanner, title: "扫码枪", value: model.figures.scannerConnected.map { $0 ? "已连上" : "没连" })
+        SettingsLink(.scanner, title: "扫码枪", value: model.scannerConnected ? "已连上" : "没连")
     }
 }
 

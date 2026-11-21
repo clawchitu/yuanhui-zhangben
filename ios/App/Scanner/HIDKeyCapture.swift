@@ -126,12 +126,13 @@ final class ScannerGunMonitor {
     private(set) var connected: Bool
     @ObservationIgnored nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
 
-    init() {
-        connected = GCKeyboard.coalesced != nil
+    /// `probe`：现在连没连（测试注入）；连接 / 断开的通知来了再读一次
+    init(probe: @escaping @MainActor () -> Bool = { GCKeyboard.coalesced != nil }) {
+        connected = probe()
         let center = NotificationCenter.default
         for name in [Notification.Name.GCKeyboardDidConnect, .GCKeyboardDidDisconnect] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.connected = GCKeyboard.coalesced != nil }
+                MainActor.assumeIsolated { self?.connected = probe() }
             })
         }
     }

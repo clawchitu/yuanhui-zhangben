@@ -15,9 +15,12 @@ import ShopCore
 ///   -uiRoute stockIn,settings,…                  开好后把这些路由直接塞进导航栈（测「硬塞路由也进不去」）
 ///   -uiFreshInstall                              当作刚装好：清掉本机的字号选择和「首次进入做完了」
 ///   -uiScrollTo bottom                           首页打开后滚到底（截长页用）
+///   -uiPriorSales N                              先记 N 笔卖出（03 顶栏「2 笔待传」）
+///   -uiLongName                                  多登记一个名字很长、单价很高的商品（码 6900000000017）
 ///   -uiFixture scanner | scanner-login           扫码测试页（27a / 27b 的样子，S14）
-///   -uiCamera denied|authorized|notDetermined    把相机权限当成这个值（S14）
-///   -uiScan / -uiScanSource / -uiScanGap / -uiScanDelay   FakeScanner 喂码，见 `FakeScanner`（S14）
+///   -uiCamera denied|authorized|notDetermined    把相机权限当成这个值（S14；卖出页同样认）
+///   -uiScan / -uiScanSource / -uiScanGap / -uiScanDelay   FakeScanner 喂码，见 `FakeScanner`（S14；卖出页同样认）
+///   卖出页的 -uiPaid / -uiAutoCommit / -uiHoldDone / -uiProbe 见 `SellFixture`
 /// Beta / Release 里这些参数一律不认：没有会话就出「还没登录」页。
 enum UIFixture {
     enum Screen: Equatable {
@@ -113,5 +116,28 @@ extension UIFixture {
 
     /// 稿子上的时间：2026-11-19 星期四 19:48（上海）
     static let designNow = Date(timeIntervalSince1970: 1_795_088_880)
+
+    /// 长名商品的码（S16 验收：商品名很长时换行不截断、金额不出右边距）
+    static let longNameBarcode = "6900000000017"
+    static let longName = "贵州茅台酒（飞天）53%vol 500ml 礼盒装 附赠两只小酒杯 生肖纪念版"
+
+    /// 卖出页要用的额外夹具：长名商品、事先记好的几笔卖出
+    static func installSellExtras(into db: LocalDB, args: [String]) throws {
+        if args.contains("-uiLongName") {
+            let p = try Product(id: UUID(uuidString: "5EED0000-0000-4000-8000-0000000002FF")!, name: longName, baseUnit: "瓶",
+                                priceFen: Fen(999_999))
+            try db.applyBaseline(CatalogBaseline(products: [p], barcodes: [
+                try BarcodeRecord(barcode: longNameBarcode, productId: p.id, packQty: 1, unitName: "瓶", packPriceFen: nil)]))
+        }
+        if let n = value(for: "-uiPriorSales", in: args).flatMap(Int.init), n > 0 {
+            guard let water = try db.lookup(barcode: "6921168509256") else { return }
+            for i in 0..<n {
+                var b = Basket()
+                try b.add(water)
+                try db.recordSale(b, at: designNow.addingTimeInterval(TimeInterval(-600 * (n - i))))
+            }
+        }
+    }
 }
 #endif
+

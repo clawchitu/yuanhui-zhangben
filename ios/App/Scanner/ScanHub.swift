@@ -64,11 +64,11 @@ final class ScanHub {
         self.parser = HIDScanParser(config: gunConfig)
     }
 
-    /// 相机或手输条码交来一个码。被相机去重挡掉、或是空码时返回 nil，否则返回页面的处理结果。
+    /// 相机或手输条码交来一个码。空码、含数字和字母以外字符的码（首尾的空格、Tab、换行也算，不先裁掉）、
+    /// 被相机去重挡掉的码返回 nil（不出声、不交给页面），否则返回页面的处理结果。
     @discardableResult
     func receive(_ code: String, from source: ScanSource) -> ScanOutcome? {
-        let code = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !code.isEmpty else { return nil }
+        guard Self.isAcceptable(code) else { return nil }
         if source == .camera, !deduper.accept(code, at: clock()) { return nil }
         return deliver(Scan(code: code, source: source))
     }
@@ -80,7 +80,14 @@ final class ScanHub {
         return deliver(Scan(code: code, source: .gun))
     }
 
-    private func deliver(_ scan: Scan) -> ScanOutcome {
+    /// 三个入口（相机、扫码枪、手输）同一个字符规则（§14 S14-5）：只收数字和 ASCII 大小写字母，
+    /// 含其他字符整串不收、不截断；大小写原样保留。扫码枪的解析器已经按同一个 `isCodeCharacter` 作废，这里再挡一层
+    static func isAcceptable(_ code: String) -> Bool {
+        !code.isEmpty && code.allSatisfy(HIDScanParser.isCodeCharacter)
+    }
+
+    private func deliver(_ scan: Scan) -> ScanOutcome? {
+        guard Self.isAcceptable(scan.code) else { return nil }
         let outcome = handler?(scan) ?? .ignored
         if outcome != .ignored { feedback?.play(outcome) }
         return outcome

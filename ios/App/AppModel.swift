@@ -4,7 +4,8 @@ import ShopCore
 
 /// 首页和设置页上显示的几个数。S15 只有界面：待传笔数、快过期样数、「刚记的」、设置页右侧的小字
 /// 在 `-uiFixture` 下用稿子上的数；正常启动时只有待传笔数来自本地库，其余在后面的段接真数据
-/// （刚记的 → S20，快过期 → S27，同步状态 → S22a，已登录的手机 / 扫码枪 → S23a / S14）。
+/// （刚记的 → S20，快过期 → S27，同步状态 → S22a，已登录的手机 → S23a）。扫码枪连接状态 S16 起来自
+/// `ScannerGunMonitor`（见 `AppModel.scannerConnected`）。
 struct HomeFigures: Equatable, Sendable {
     struct LastRecord: Equatable, Sendable {
         var time: String          // "19:32"
@@ -23,7 +24,8 @@ struct HomeFigures: Equatable, Sendable {
     /// 21a 右侧小字
     var countSummary: String?       // "11月 数了 86 种"
     var deviceCount: Int?           // 3 台
-    var scannerConnected: Bool?     // 已连上 / 没连
+    /// 扫码枪 已连上 / 没连：只有夹具用稿子上的值；nil = 用真实的连接状态（`ScannerGunMonitor`）
+    var scannerConnected: Bool?
 
     /// 设计稿 01 / 02 / 21a 上的数
     static let design = HomeFigures(pendingCount: 0, staleUnsyncedCount: 0, expiringCount: 3,
@@ -65,6 +67,10 @@ final class AppModel {
     let today: Date
     /// `-uiScrollTo bottom`：首页一打开就滚到底（截最大辅助字号下的整页用）
     let scrollToBottom: Bool
+    /// 卖出页的测试夹具（只在 Debug 下由启动参数填，正式构建永远是空的）
+    var sellFixture = SellFixture.none
+    /// 扫码枪连接状态（§14 S15-1：设置页「扫码枪」右侧的字接真实状态）
+    let gun: ScannerGunMonitor
 
     let db: LocalDB
     private let defaults: UserDefaults
@@ -72,10 +78,13 @@ final class AppModel {
     var role: Role { session.role }
     /// 首页 / 设置页的版式（唯一来源）
     var layout: ShellLayout { ShellLayout(capabilities) }
+    /// 设置页「扫码枪」右侧：夹具用稿子上的值，正常启动用真实的连接状态
+    var scannerConnected: Bool { figures.scannerConnected ?? gun.connected }
 
     init(db: LocalDB, session: LocalSession, figures: HomeFigures, today: Date = Date(),
-         defaults: UserDefaults = .standard, scrollToBottom: Bool = false) {
+         defaults: UserDefaults = .standard, scrollToBottom: Bool = false, gun: ScannerGunMonitor = ScannerGunMonitor()) {
         self.db = db
+        self.gun = gun
         self.session = session
         self.capabilities = Capabilities(role: session.role)
         self.figures = figures

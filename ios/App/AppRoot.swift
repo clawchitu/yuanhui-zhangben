@@ -159,8 +159,12 @@ struct AppRoot: View {
         case .onboarding: defaults.removeObject(forKey: AppSettings.onboardedDeviceKey)
         default: break
         }
-        return AppModel(db: db, session: session, figures: figures, today: UIFixture.designNow, defaults: defaults,
-                        scrollToBottom: UIFixture.value(for: "-uiScrollTo", in: args) == "bottom")
+        try UIFixture.installSellExtras(into: db, args: args)
+        if args.contains("-uiPriorSales") { figures.pendingCount = try db.pendingOps().count }
+        let model = AppModel(db: db, session: session, figures: figures, today: UIFixture.designNow, defaults: defaults,
+                             scrollToBottom: UIFixture.value(for: "-uiScrollTo", in: args) == "bottom")
+        model.sellFixture = SellFixture.from(args)
+        return model
     }
     #endif
 }

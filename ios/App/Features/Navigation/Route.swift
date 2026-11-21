@@ -5,6 +5,8 @@ import SwiftUI
 /// 还没做的页面先放占位页，`plannedIn` 写着哪一段做。
 enum Route: String, Hashable, CaseIterable, Sendable {
     case sell            // 03 系列
+    case manualCode      // 15 / 15b 手输条码（从卖出页进）
+    case discount        // 18 抹零 / 改总价（从卖出页进）
     case stockIn         // 06 系列
     case reports         // 09 / 10 看账
     case products        // 11 商品
@@ -24,7 +26,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
     /// 进这一页需要的能力；nil = 三种身份都能进
     var requiredCapability: Capability? {
         switch self {
-        case .sell: .sell
+        case .sell, .manualCode, .discount: .sell
         case .stockIn: .stockIn
         case .reports: .viewReports
         case .products: .manageProducts
@@ -49,6 +51,8 @@ enum Route: String, Hashable, CaseIterable, Sendable {
     func title(_ layout: ShellLayout) -> String {
         switch self {
         case .sell: "卖出"
+        case .manualCode: "手输条码"
+        case .discount: "抹零 / 改总价"
         case .stockIn: "进货"
         case .reports: "看账"
         case .products: "商品"
@@ -70,7 +74,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
     /// 还没做的页面在哪一段做（占位页上显示）
     var plannedIn: String? {
         switch self {
-        case .sell: "S16"
+        case .manualCode, .discount: "S17"
         case .stockIn: "S19"
         case .reports: "S24"
         case .products: "S25"
@@ -79,17 +83,16 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .count: "S26"
         case .pairing, .devices: "S23a"
         case .account: "S23b"
-        case .scanner: "S14"
         case .privacy: "S21"
         case .logout: "S22b"
-        case .settings, .deviceName: nil
+        case .sell, .settings, .deviceName, .scanner: nil
         }
     }
 
     /// 页面颜色：卖出朱红、进货靛青，其余中性
     var mode: ShopMode {
         switch self {
-        case .sell: .sell
+        case .sell, .manualCode, .discount: .sell
         case .stockIn: .stock
         default: .neutral
         }
@@ -103,14 +106,16 @@ struct RouteView: View {
 
     /// 这条路由在这些能力下出哪种页面（纯函数，单元测试逐个路由 × 身份测）
     enum Content: Equatable {
-        case denied, settings, deviceName, placeholder
+        case denied, sell, settings, deviceName, scanner, placeholder
     }
 
     static func content(for route: Route, capabilities: Capabilities) -> Content {
         guard route.isAllowed(capabilities) else { return .denied }
         switch route {
+        case .sell: return .sell
         case .settings: return .settings
         case .deviceName: return .deviceName
+        case .scanner: return .scanner
         default: return .placeholder
         }
     }
@@ -119,8 +124,10 @@ struct RouteView: View {
         Group {
             switch Self.content(for: route, capabilities: model.capabilities) {
             case .denied: DeniedPage()
+            case .sell: SellView(db: model.db, fixture: model.sellFixture)
             case .settings: SettingsView()
             case .deviceName: DeviceNameView()
+            case .scanner: ScannerStatusView()
             case .placeholder: PlaceholderPage(route: route, layout: model.layout)
             }
         }

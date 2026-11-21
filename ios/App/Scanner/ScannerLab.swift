@@ -16,7 +16,6 @@ struct ScannerLab: View {
     @State private var log: [(scan: Scan, outcome: ScanOutcome)] = []
     @State private var manualOpen = false
     @State private var manualText = ""
-    @Environment(\.scenePhase) private var scenePhase
     private let fake: FakeScanner?
     private let known: Set<String>
 
@@ -41,8 +40,8 @@ struct ScannerLab: View {
         .task {
             if let fake { await fake.run(into: hub) }
         }
-        // 被拒时页面上没有取景框，回前台读权限要页面自己做（有取景框时 CameraController 也会读，重复无害）
-        .onChange(of: scenePhase) { _, phase in if phase == .active { permission.refresh() } }
+        // 被拒时页面上没有取景框，回前台读权限由页面做；有取景框时 CameraController 读（只留一处）
+        .refreshesCameraPermission(permission)
         .alert("手输条码", isPresented: $manualOpen) {
             TextField("条码", text: $manualText).keyboardType(.numberPad).accessibilityIdentifier("scanner.manualField")
             Button("加入") {

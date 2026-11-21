@@ -33,6 +33,11 @@ struct PrimaryButton: View {
     var style: Style = .filled
     var size: Size = .regular
     let action: () -> Void
+    /// 不可用时：实心按钮变灰底白字，描边按钮变灰边灰字（03c 空篮时的记账、抹零按钮）
+    @Environment(\.isEnabled) private var isEnabled
+
+    static let disabledFill = Tokens.Palette.mute
+    static let disabledGhost = Color(hex: 0xB1AEA9)
 
     init(_ title: String, systemImage: String? = nil, mode: ShopMode = .sell,
          style: Style = .filled, size: Size = .regular, action: @escaping () -> Void) {
@@ -45,14 +50,18 @@ struct PrimaryButton: View {
     }
 
     private var background: Color {
+        if !isEnabled { return style == .ghost ? Color.clear : Self.disabledFill }
         switch style {
-        case .filled: mode.color
-        case .dark: Tokens.Palette.ink
-        case .ghost: .clear
+        case .filled: return mode.color
+        case .dark: return Tokens.Palette.ink
+        case .ghost: return .clear
         }
     }
 
-    private var foreground: Color { style == .ghost ? Tokens.Palette.ink : .white }
+    private var foreground: Color {
+        if style == .ghost { return isEnabled ? Tokens.Palette.ink : Self.disabledGhost }
+        return .white
+    }
 
     var body: some View {
         Button(action: action) {
@@ -74,7 +83,7 @@ struct PrimaryButton: View {
             .overlay {
                 if style == .ghost {
                     RoundedRectangle(cornerRadius: Tokens.Radius.button)
-                        .strokeBorder(Tokens.Palette.ink, lineWidth: 2)
+                        .strokeBorder(isEnabled ? Tokens.Palette.ink : Self.disabledGhost, lineWidth: 2)
                 }
             }
             .contentShape(Rectangle())

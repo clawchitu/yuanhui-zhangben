@@ -22,6 +22,25 @@ extension View {
     }
 }
 
+/// 回到前台时重新读相机权限（§14 S14-3 ⑩）。只在页面上没有取景框（被拒，出 27a）时由页面读；
+/// 有取景框时 `CameraController` 回前台会读，这里不再读——两处只留一处（PR #17 Fable 第二轮）。
+struct CameraPermissionRefresh: ViewModifier {
+    let permission: CameraPermission
+    @Environment(\.scenePhase) private var scenePhase
+
+    func body(content: Content) -> some View {
+        content.onChange(of: scenePhase) { _, phase in
+            if phase == .active, permission.access == .denied { permission.refresh() }
+        }
+    }
+}
+
+extension View {
+    func refreshesCameraPermission(_ permission: CameraPermission) -> some View {
+        modifier(CameraPermissionRefresh(permission: permission))
+    }
+}
+
 /// 取景框：相机允许时是相机画面 + 黄色对角框；还没问过时出「正在打开相机…」并弹系统询问；
 /// 机器上没有相机（模拟器）时出「这台机器没有相机」。被拒时不该用它，用 `NoCameraBand` / `NoCameraCard`。
 ///

@@ -77,6 +77,28 @@ final class NavigationTests: XCTestCase {
         return AppModel(db: db, session: s, figures: .design, defaults: defaults)
     }
 
+    /// §14 S15-1（S16 接）：设置页「扫码枪」的字来自真实连接状态；只有夹具用稿子上的值
+    func testScannerConnectedComesFromTheGunMonitor() throws {
+        let db = try LocalDB.inMemory()
+        let s = try LocalSession(deviceId: UUID(), storeId: DemoSeed.storeId, role: .family,
+                                 tokenRef: "t", storeName: "元辉烟酒店", deviceLabel: "新手机")
+        try db.beginSession(s)
+        var live = HomeFigures()
+        XCTAssertNil(live.scannerConnected, "正常启动不带假数")
+        XCTAssertTrue(AppModel(db: db, session: s, figures: live, gun: ScannerGunMonitor(probe: { true })).scannerConnected)
+        XCTAssertFalse(AppModel(db: db, session: s, figures: live, gun: ScannerGunMonitor(probe: { false })).scannerConnected)
+        live.scannerConnected = false
+        XCTAssertFalse(AppModel(db: db, session: s, figures: live, gun: ScannerGunMonitor(probe: { true })).scannerConnected,
+                       "夹具给了稿子上的值就用它")
+    }
+
+    func testScannerRouteIsARealPage() {
+        XCTAssertNil(Route.scanner.plannedIn)
+        for role in [Role.family, .cashier, .review] {
+            XCTAssertEqual(RouteView.content(for: .scanner, capabilities: Capabilities(role: role)), .scanner)
+        }
+    }
+
     /// 16：选择存在本机，同一台手机（同一个设备 id）重开后认得做过了；家用顺带改名，收银员不改名
     func testFinishOnboardingPersists() throws {
         let suite = "s15-tests-\(UUID().uuidString)"
