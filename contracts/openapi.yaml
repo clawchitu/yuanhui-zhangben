@@ -308,6 +308,7 @@ paths:
       tags: [查询]
       operationId: listEntryDays
       summary: 更早的记录，每天一行（07c）
+      description: 只列笔数 > 0 或金额非零的日子，从近到远；笔数 0、金额 0 的日子（只有冲销行且金额相抵，比如只撤销了别天的进货）不列。翻页时下一页的 before = 本页最后一天。
       x-permission: GET /v1/entries/days
       parameters:
         - name: before
@@ -337,8 +338,8 @@ paths:
                       required: [date, count, amount_fen]
                       properties:
                         date: { $ref: "#/components/schemas/Date" }
-                        count: { type: integer, minimum: 0, description: 笔数 }
-                        amount_fen: { $ref: "#/components/schemas/SignedFen" }
+                        count: { type: integer, minimum: 0, description: 笔数，与 ReportToday.count 同一口径（原行的不同 op 个数，不算 cost_adjust） }
+                        amount_fen: { $ref: "#/components/schemas/SignedFen", description: 那天的「卖了」（卖出行含冲销行的 amount 之和，与日报 sold_fen 相同）；只有冲销行的日子金额非零才列出 }
         "403": { $ref: "#/components/responses/Error" }
   /v1/pairing-tokens:
     post:
@@ -991,13 +992,14 @@ components:
     ReportToday:
       type: object
       additionalProperties: false
-      required: [date, sold_fen, profit_fen, discount_fen, cost_missing_count, top_sellers, low_stock, expiring]
+      required: [date, sold_fen, profit_fen, discount_fen, count, cost_missing_count, top_sellers, low_stock, expiring]
       description: 口径见 §5.3
       properties:
         date: { $ref: "#/components/schemas/Date" }
         sold_fen: { $ref: "#/components/schemas/SignedFen", description: 卖了 = Σ 卖出行 amount_fen（cost_fix 行不算） }
         profit_fen: { $ref: "#/components/schemas/SignedFen", description: 赚了 = Σ 进价已知卖出行 (amount − cogs) + Σ cost_fix 行 (amount − cogs) }
-        discount_fen: { $ref: "#/components/schemas/SignedFen", description: 优惠 = Σ (list_amount_fen − amount_fen) }
+        discount_fen: { $ref: "#/components/schemas/SignedFen", description: 优惠 = Σ 卖出行 (list_amount_fen − amount_fen) }
+        count: { type: integer, minimum: 0, description: 记了几笔（设计稿 09「记了 N 笔」）：这一天原行（非冲销行）的不同 op 个数，不算 cost_adjust；一笔卖出算一笔；撤销本身不算一笔，记了又撤销的那笔仍算；迟到补偿行、当场写的 cost_fix 和主流水同一个 op，算同一笔（§14 S07-1）。与 /v1/entries/days 的 count 同一口径 }
         cost_missing_count: { type: integer, minimum: 0, description: 有 N 样进价没填（尚未补记的 cost_missing 卖出涉及的商品种数） }
         loss_cost_missing_count: { type: integer, minimum: 0, description: 标了 cost_missing 的损耗行（扔掉、退货、盘点）笔数，「有 N 笔没算进价」（§5.2、§5.3） }
         top_sellers: { type: array, items: { $ref: "#/components/schemas/ProductAmount" } }
@@ -1021,7 +1023,7 @@ components:
         month: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$" }
         sold_fen: { $ref: "#/components/schemas/SignedFen" }
         profit_fen: { $ref: "#/components/schemas/SignedFen" }
-        stock_value_end_fen: { $ref: "#/components/schemas/SignedFen", description: 现在店里货值（本月则为现在，过去的月份为月末） }
+        stock_value_end_fen: { $ref: "#/components/schemas/SignedFen", description: 月末货值 = 下个月第一刻（上海时间）之前全部流水的 value_delta_fen 之和，与 reconciliation.stock_value_end_fen 相同、等于下个月的月初货值。不保证等于商品投影的货值之和：时钟超前 5 分钟以内又跨月的流水算在下个月，那几分钟里本月月末比投影少这一笔（§14 S07-4） }
         discount_fen: { $ref: "#/components/schemas/SignedFen" }
         expire_loss_fen: { $ref: "#/components/schemas/SignedFen", description: Σ expire_loss 行 cogs_fen }
         cost_missing_count: { type: integer, minimum: 0, description: 有 N 样进价没填（尚未补记的 cost_missing 卖出涉及的商品种数） }
