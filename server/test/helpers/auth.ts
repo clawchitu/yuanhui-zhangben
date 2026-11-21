@@ -31,6 +31,8 @@ export function makeApp(
     db?: AppDeps["db"];
     /** 收服务端日志（见 errorLog） */
     logStream?: AppDeps["logStream"];
+    /** 换掉验密码（测「验密码期间账号被清除」） */
+    verifyPassword?: AppDeps["verifyPassword"];
   } = {},
 ): FastifyInstance {
   return buildApp({
@@ -41,6 +43,7 @@ export function makeApp(
     clock: o.clock?.now,
     rateLimits: o.rateLimits,
     syncPageSize: o.syncPageSize,
+    verifyPassword: o.verifyPassword,
   });
 }
 

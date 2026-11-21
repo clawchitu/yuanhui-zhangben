@@ -458,6 +458,44 @@ describe("满 7 天删除", () => {
     await s.app.close();
   });
 
+  it("验密码期间到期清除了这家店：密码登录、改密码、申请注销都回 401，不是 500（Fable 必须改 3）", async () => {
+    const real = (await import("../src/auth/password.ts")).verifyPassword;
+    const cases = [
+      { url: "/v1/auth/login", want: "bad_credentials" },
+      { url: "/v1/account/password", want: "unauthorized" },
+      { url: "/v1/account/delete-request", want: "unauthorized" },
+    ] as const;
+    for (const c of cases) {
+      const clock = new TestClock(T0);
+      const s = await shopWithBooks(clock, `验密码时被删店${c.url}`);
+      const t = await login(s.app, s.username);
+      await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+      const relog = await login(s.app, s.username); // 注销期间还能登录（为了撤回）
+      clock.advance(DELETE_GRACE_MS + 1);
+      let first = true;
+      // 验密码（argon2，几十毫秒）的时候清除跑完了
+      const app = makeApp(tdb, {
+        clock,
+        verifyPassword: async (hash, pw) => {
+          const ok = await real(hash, pw);
+          if (first) {
+            first = false;
+            expect(await purgeStore(tdb.kysely, s.storeId, clock.now())).toBe("purged");
+          }
+          return ok;
+        },
+      });
+      const r =
+        c.url === "/v1/auth/login"
+          ? await app.inject({ method: "POST", url: c.url, payload: { username: s.username, password: PASSWORD, device_id: randomUUID() } })
+          : await app.inject({ method: "POST", url: c.url, headers: bearer(relog.token), payload: c.url === "/v1/account/password" ? { old: PASSWORD, new: "another-pass-123" } : { password: PASSWORD } });
+      expect([r.statusCode, r.body ? r.json().code : null], `${c.url} ${r.body}`).toEqual([401, c.want]);
+      expect((await rowCounts(s.storeId)).accounts).toBe(0);
+      await s.app.close();
+      await app.close();
+    }
+  });
+
   it("对象清理失败：在线数据照样删了，store_purges 记原因代码；删除记录已写；下一轮接着清完", async () => {
     const clock = new TestClock(T0);
     const s = await shopWithBooks(clock, "清理失败店");

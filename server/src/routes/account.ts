@@ -10,8 +10,10 @@ import { sendError } from "./errors.ts";
 export async function accountRoutes(app: FastifyInstance): Promise<void> {
   const db = app.deps.db.kysely;
 
+  // 令牌验过之后这家店到期清除了（jobs/account-purge.ts 删掉了账号）：和清除之后再来的请求一样按令牌不认识回 401，不是 500
+  const gone = (reply: FastifyReply) => sendError(reply, 401, "unauthorized");
   const currentHash = async (accountId: string) =>
-    (await db.selectFrom("accounts").select("password_hash").where("id", "=", accountId).executeTakeFirstOrThrow()).password_hash;
+    (await db.selectFrom("accounts").select("password_hash").where("id", "=", accountId).executeTakeFirst())?.password_hash;
 
   // 原密码输错按账号限速（§14 S03-8）：改密码和申请注销共用一个计数，不计入登录锁定（否则一台家用手机能把登录锁死）。
   // 先占一格再验密码，验对了撤回：同时发来的一批请求也最多猜 5 次。
@@ -25,7 +27,13 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
       sendError(reply, 429, "rate_limited", { retry_after_s: wait, message: "密码错了太多次，请稍后再试" });
       return false;
     }
-    if (await app.deps.verifyPassword(await currentHash(a.account.id), password)) {
+    const hash = await currentHash(a.account.id);
+    if (hash === undefined) {
+      wrongPassword.undo(a.account.id, at);
+      gone(reply);
+      return false;
+    }
+    if (await app.deps.verifyPassword(hash, password)) {
       wrongPassword.undo(a.account.id, at);
       return true;
     }
@@ -52,7 +60,8 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const a = authOf(req);
       if (!(await checkOldPassword(req, reply, req.body.old))) return reply;
-      await db.updateTable("accounts").set({ password_hash: await hashPassword(req.body.new) }).where("id", "=", a.account.id).execute();
+      const r = await db.updateTable("accounts").set({ password_hash: await hashPassword(req.body.new) }).where("id", "=", a.account.id).executeTakeFirst();
+      if (Number(r.numUpdatedRows) !== 1) return gone(reply);
       return reply.code(204).send();
     },
   );
@@ -81,7 +90,8 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
           .where("id", "=", a.account.id)
           // 和登录、兑码同一把账号锁（FOR NO KEY UPDATE，见 createDevice 的说明）
           .forNoKeyUpdate()
-          .executeTakeFirstOrThrow();
+          .executeTakeFirst();
+        if (!acct) return null;
         // 重复申请不重新起算 7 天
         const at = acct.delete_requested_at ?? now;
         if (!acct.delete_requested_at) {
@@ -113,6 +123,7 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
           .execute();
         return at;
       });
+      if (!requestedAt) return gone(reply);
       return { delete_pending_until: deletePendingUntil(requestedAt) };
     },
   );

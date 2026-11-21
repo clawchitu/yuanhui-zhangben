@@ -110,7 +110,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       try {
         out = await db.transaction().execute(async (trx): Promise<Out> => {
           const lock = await lockAccount(trx, acct.id);
-          if (!lock) throw new Error("账号在验密码期间消失了");
+          // 验密码期间这家店到期清除了（清除拿着账号行 FOR UPDATE，这里等它提交后读到空行）：和清除之后再登录一样，401 bad_credentials
+          if (!lock) return { bad: true };
           const row = { locked_until: lock.lockedUntil, failed_logins: lock.failedLogins, delete_requested_at: lock.deleteRequestedAt };
           // 锁定期内再输错不计数、不延长；正确密码也拒、不清锁
           if (row.locked_until && row.locked_until > now) return { locked: row.locked_until };
