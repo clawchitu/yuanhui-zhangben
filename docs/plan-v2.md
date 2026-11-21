@@ -202,7 +202,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `demo_stores` | `store_id, review_password_hash, seeded_at, next_reset_at` | 演示店的重置状态（§8 S09）。`review_password_hash` 是审核号的原始密码哈希，每日重置恢复成它；`seeded_at` 是上一次重置的时间（种子里的「今天」）；`next_reset_at` 是下一次该重置的时间，定时任务在锁内重查它，同一个周期只重置一次 |
 | `export_jobs` | `store_id, requested_at, object_key null, done_at null, attempts, next_try_at, last_error null, cancelled_at null, stale_cleared_at null` | 非演示店申请注销时同一事务插一行。`requested_at` 是这一次申请（撤回后又申请是新的一次，同一行重置）；`next_try_at` 兼作租约；`done_at` / `object_key` 同有同无，是这一版的包生成好了；`stale_cleared_at` 是比这一版更早的旧包删完了（生成和清理分开记，清理失败单独重试）；`last_error` 只记原因代码；`cancelled_at` 是撤回，定时任务删掉包再删行 |
 | `store_purges` | `store_id, purged_at, swept_at null, objects_cleared_at null, attempts, last_error null` | 已清除的店，只有店 id 和时间。在线数据删掉之后继续重试对象清理（商品图、导出包、未完成的分片上传、本机图片缓存）；`swept_at` 是最近一次按前缀清理成功，清除之后满 1 小时的那一遍复扫成功了才记 `objects_cleared_at`（T17）；迟到落地的对象删不掉时 `objects_cleared_at` 被撤回成空，下一轮再清。删除记录的正本在 OSS `deletions/`（§9.4） |
-| `object_discards` | `object_key, store_id, created_at, attempts, next_try_at, last_error null` | 存档桶里该删却没删掉的对象（作废的导出包、生成失败时已经写进去的包），没有任务行再指向它们，所以持久化一条待删标记。导出任务每轮按退避重试，删掉才删这一行；删之前确认没有已完成的导出任务指向这个键 |
+| `object_discards` | `object_key, upload_id, store_id, created_at, attempts, next_try_at, last_error null` | 存档桶里该删却没删掉的对象（作废的导出包、生成失败时已经写进去的包），以及分片上传失败、中止也失败留下的残片（`upload_id` 非空，重试时中止它）；没有任务行再指向它们，所以持久化一条待删标记。导出任务每轮按退避重试，删掉才删这一行；删之前确认没有已完成的导出任务指向这个键 |
 
 ---
 

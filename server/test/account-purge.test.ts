@@ -412,6 +412,37 @@ describe("导出包", () => {
     await s.app.close();
   });
 
+  it("导出包分片上传失败、中止也失败：记下 uploadId，之后定时重试把这次分片上传中止掉（PR #20 Codex 第二轮 3）", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "残片店");
+    const t = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    const archive = new MemoryObjectStore();
+    const realPutFile = archive.putFile.bind(archive);
+    let fail = true;
+    // 像阿里云那样：开了一个分片上传，传到一半失败，中止也失败 → 残片留着，错误里带 uploadId
+    archive.putFile = async (k, f, c) => {
+      if (!fail) return realPutFile(k, f, c);
+      archive.uploads.set("up-1", k);
+      throw Object.assign(new Error("第 2 片失败"), { code: "InternalError", pendingUpload: { key: k, uploadId: "up-1" } });
+    };
+    const realAbort = archive.abortUpload.bind(archive);
+    let abortBroken = true;
+    archive.abortUpload = async (k, id) => {
+      if (abortBroken) throw Object.assign(new Error("中止失败"), { code: "RequestTimeout" });
+      return realAbort(k, id);
+    };
+    expect((await runExportJobs(deps(clock, { archive }))).map((x) => x.result)).toEqual(["failed"]);
+    expect([...archive.uploads.keys()]).toEqual(["up-1"]);
+    abortBroken = false;
+    fail = false;
+    clock.advance(6 * 3_600_000);
+    expect((await runExportJobs(deps(clock, { archive }))).map((x) => x.result)).toEqual(["done"]);
+    expect([...archive.uploads.keys()]).toEqual([]);
+    expect(await tdb.kysely.selectFrom("object_discards").select("object_key").where("store_id", "=", s.storeId).execute()).toEqual([]);
+    await s.app.close();
+  });
+
   it("没配存档桶：有未完成的导出任务就打 error 级告警（export_no_archive），不静默跳过（Fable 必须改 2）", async () => {
     const clock = new TestClock(T0);
     const s = await shopWithBooks(clock, "没桶店");
@@ -858,6 +889,34 @@ describe("满 7 天删除", () => {
     expect(d.archive.objects.has(deletionKey(s.storeId))).toBe(true);
     // 记完成之后再跑：幂等，什么都不做
     expect((await runAccountPurges(d)).cleared).not.toContain(s.storeId);
+    await s.app.close();
+  });
+
+  it("复扫同时中止这家店前缀下未完成的分片上传（images/、exports/），别的店的不动（PR #20 Codex 第二轮 3、T17）", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "残片清除店");
+    const other = randomUUID();
+    const d = deps(clock);
+    const t = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    clock.advance(DELETE_GRACE_MS + 1);
+    expect((await runAccountPurges(d)).purged).toContain(s.storeId);
+    d.images.uploads.set("img-1", imageKey(s.storeId, s.productIds[0]!, 1, "ab".repeat(32)));
+    d.archive.uploads.set("exp-1", `exports/${s.storeId}/${String(T0).padStart(13, "0")}-${"a".repeat(16)}.zip`);
+    d.archive.uploads.set("exp-other", `exports/${other}/${String(T0).padStart(13, "0")}-${"b".repeat(16)}.zip`);
+    // 中止失败：不记清完，下一轮重试
+    const realAbort = d.archive.abortUpload.bind(d.archive);
+    let broken = true;
+    d.archive.abortUpload = async (k, id) => {
+      if (broken) throw Object.assign(new Error("中止失败"), { code: "RequestTimeout" });
+      return realAbort(k, id);
+    };
+    clock.advance(60 * 60_000);
+    expect(await clearPurgedObjects(d)).not.toContain(s.storeId);
+    broken = false;
+    expect(await clearPurgedObjects(d)).toContain(s.storeId);
+    expect([...d.images.uploads.keys()]).toEqual([]);
+    expect([...d.archive.uploads.keys()]).toEqual(["exp-other"]);
     await s.app.close();
   });
 

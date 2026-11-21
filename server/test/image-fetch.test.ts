@@ -184,6 +184,8 @@ describe("图片任务", () => {
       },
       get: async () => null,
       list: async () => [],
+      listUploads: async () => [],
+      abortUpload: async () => {},
       delete: async () => {},
     };
     await runFor(deps({ store: broken }));

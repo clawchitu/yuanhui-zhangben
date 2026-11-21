@@ -271,6 +271,7 @@ export interface StorePurgesTable {
 
 export interface ObjectDiscardsTable {
   object_key: string;
+  upload_id: Generated<string>;
   store_id: string;
   created_at: Ts;
   attempts: Generated<number>;

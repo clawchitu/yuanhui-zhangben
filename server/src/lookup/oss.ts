@@ -24,6 +24,25 @@ export interface ObjectStore {
   list(prefix: string): Promise<string[]>;
   /** 删一个键；本来就没有也算成功 */
   delete(key: string): Promise<void>;
+  /**
+   * 列出一家店某个前缀下还没完成的分片上传（PR #20 Codex 第二轮 3）：传到一半失败、中止也失败留下的残片，
+   * delete(key) 删不掉它们，复扫时按前缀列出来逐个中止。prefix 只能是 storePrefix 给的。没有分片上传的实现返回空
+   */
+  listUploads(prefix: string): Promise<PendingUpload[]>;
+  /** 中止一个分片上传、丢掉它已传的片；本来就没有也算成功 */
+  abortUpload(key: string, uploadId: string): Promise<void>;
+}
+
+/** 一个还没完成的分片上传 */
+export interface PendingUpload {
+  key: string;
+  uploadId: string;
+}
+
+/** putFile 失败、并且没能中止那次分片上传时，错误上带着它（调用方记待删标记、之后重试中止） */
+export function pendingUploadOf(e: unknown): PendingUpload | null {
+  const p = (e as { pendingUpload?: unknown } | null)?.pendingUpload as PendingUpload | undefined;
+  return p && typeof p.key === "string" && typeof p.uploadId === "string" && isObjectKey(p.key) ? { key: p.key, uploadId: p.uploadId } : null;
 }
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -105,6 +124,16 @@ export class MemoryObjectStore implements ObjectStore {
     assertKey(key);
     this.objects.delete(key);
   }
+  /** 未完成的分片上传：uploadId → 键（测试里直接放进去模拟残片） */
+  readonly uploads = new Map<string, string>();
+  async listUploads(prefix: string) {
+    assertStorePrefix(prefix);
+    return [...this.uploads].filter(([, k]) => k.startsWith(prefix)).map(([uploadId, key]) => ({ key, uploadId }));
+  }
+  async abortUpload(key: string, uploadId: string) {
+    assertKey(key);
+    if (this.uploads.get(uploadId) === key) this.uploads.delete(uploadId);
+  }
 }
 
 /** 键 → 目录下的文件。键已校验过格式；再确认拼出来的路径没有跑出根目录 */
@@ -175,6 +204,14 @@ export class LocalDirObjectStore implements ObjectStore {
   async delete(key: string) {
     await rm(safeJoin(this.root, key), { force: true });
   }
+  /** 本机目录没有分片上传（putFile 失败时自己删掉临时文件） */
+  async listUploads(prefix: string) {
+    assertStorePrefix(prefix);
+    return [];
+  }
+  async abortUpload(key: string, _uploadId: string) {
+    assertKey(key);
+  }
 }
 
 /**
@@ -188,19 +225,40 @@ export async function removeStoreDir(root: string, kind: "images" | "exports", s
   await rm(dir, { recursive: true, force: true });
 }
 
+interface AliClient {
+  put(name: string, file: Buffer, o: { headers: Record<string, string> }): Promise<unknown>;
+  multipartUpload(
+    name: string,
+    file: string,
+    o: { partSize: number; parallel: number; mime: string; headers: Record<string, string>; progress?: (p: number, cp?: { uploadId?: string } | null) => Promise<void> },
+  ): Promise<unknown>;
+  abortMultipartUpload(name: string, uploadId: string): Promise<unknown>;
+  listUploads(
+    q: { prefix: string; "max-uploads": number; "key-marker"?: string; "upload-id-marker"?: string },
+    o: object,
+  ): Promise<{ uploads?: Array<{ name: string; uploadId: string }>; nextKeyMarker?: string; nextUploadIdMarker?: string; isTruncated?: boolean }>;
+  get(name: string): Promise<{ content: Buffer }>;
+  list(q: { prefix: string; marker?: string; "max-keys": number }, o: object): Promise<{ objects?: Array<{ name: string }>; nextMarker?: string | null; isTruncated?: boolean }>;
+  delete(name: string): Promise<unknown>;
+  request?: unknown;
+}
+
+const NOT_FOUND = new Set(["NoSuchKey", "NoSuchUpload"]);
+const notFound = (e: unknown) => NOT_FOUND.has(String((e as { code?: unknown })?.code));
+
 /** 阿里云 OSS。ali-oss 按需加载（测试不加载）。凭据只从环境变量来（config.objectStore），S10a 接 */
 export class AliOssObjectStore implements ObjectStore {
-  private client: Promise<{
-    put(name: string, file: Buffer, o: { headers: Record<string, string> }): Promise<unknown>;
-    multipartUpload(name: string, file: string, o: { partSize: number; parallel: number; mime: string; headers: Record<string, string> }): Promise<unknown>;
-    get(name: string): Promise<{ content: Buffer }>;
-    list(q: { prefix: string; marker?: string; "max-keys": number }, o: object): Promise<{ objects?: Array<{ name: string }>; nextMarker?: string | null; isTruncated?: boolean }>;
-    delete(name: string): Promise<unknown>;
-  }>;
-  constructor(c: Extract<Config["objectStore"], { kind: "aliyun" }>) {
-    this.client = import("ali-oss").then(
-      (m) =>
-        new m.default({
+  private client: Promise<AliClient>;
+  /**
+   * 列举、中止分片上传另用一个客户端：ali-oss 的 abortMultipartUpload 会把整个客户端标成「已取消」，
+   * 同一个客户端上正在跑的分片上传会被它打断；复扫时的中止不能波及正在上传的导出包
+   */
+  private ctl: Promise<AliClient>;
+  /** o.request 只给测试用：换掉 ali-oss 的网络传输（分片逻辑仍是实际安装的 ali-oss） */
+  constructor(c: Extract<Config["objectStore"], { kind: "aliyun" }>, o: { request?: (params: unknown) => Promise<unknown> } = {}) {
+    const make = () =>
+      import("ali-oss").then((m) => {
+        const cl = new m.default({
           region: c.region,
           bucket: c.bucket,
           accessKeyId: c.accessKeyId,
@@ -208,18 +266,75 @@ export class AliOssObjectStore implements ObjectStore {
           secure: true,
           timeout: 10_000,
           ...(c.endpoint ? { endpoint: c.endpoint } : {}),
-        }) as never,
-    );
+        }) as unknown as AliClient;
+        if (o.request) cl.request = o.request;
+        return cl;
+      });
+    this.client = make();
+    this.ctl = make();
   }
   async put(key: string, body: Buffer, contentType: string) {
     assertKey(key);
     await (await this.client).put(key, body, { headers: { "Content-Type": contentType, "x-oss-forbid-overwrite": "false" } });
   }
-  /** 分片上传（ali-oss 按片从文件读流；小于 100 KiB 的它自己改走普通上传，同样从文件读）。S10a 接真实 OSS 时实测一次 */
+  /**
+   * 分片上传（ali-oss 按片从文件读流；小于 100 KiB 的它自己改走普通上传，同样从文件读）。S10a 接真实 OSS 时实测一次。
+   * 失败时中止这次分片上传（PR #20 Codex 第二轮 3），不让已传的片留在桶里计费、也不会被 delete(key) 漏掉；
+   * 中止也失败就把 { key, uploadId } 挂在抛出的错误上（pendingUploadOf），由调用方记待删标记；店被清除时复扫也会按前缀中止
+   */
   async putFile(key: string, file: string, contentType: string) {
     assertKey(key);
     await stat(file);
-    await (await this.client).multipartUpload(key, file, { partSize: 1024 * 1024, parallel: 2, mime: contentType, headers: { "Content-Type": contentType } });
+    const c = await this.client;
+    let uploadId: string | undefined;
+    try {
+      await c.multipartUpload(key, file, {
+        partSize: 1024 * 1024,
+        parallel: 2,
+        mime: contentType,
+        headers: { "Content-Type": contentType },
+        progress: async (_p, cp) => {
+          if (cp?.uploadId) uploadId = cp.uploadId;
+        },
+      });
+    } catch (e) {
+      if (uploadId) {
+        try {
+          await c.abortMultipartUpload(key, uploadId);
+        } catch (e2) {
+          if (!notFound(e2)) {
+            if (e && typeof e === "object") Object.assign(e, { pendingUpload: { key, uploadId } });
+            else throw Object.assign(new Error("分片上传失败，中止也失败"), { pendingUpload: { key, uploadId } });
+          }
+        }
+      }
+      throw e;
+    }
+  }
+  /** 按前缀分页列举未完成的分片上传（每页 1000 个）。S10a 接真实 OSS 时实测一次 */
+  async listUploads(prefix: string) {
+    assertStorePrefix(prefix);
+    const c = await this.ctl;
+    const out: PendingUpload[] = [];
+    let km: string | undefined;
+    let um: string | undefined;
+    for (;;) {
+      const r = await c.listUploads({ prefix, "max-uploads": 1000, ...(km ? { "key-marker": km } : {}), ...(um ? { "upload-id-marker": um } : {}) }, {});
+      for (const u of r.uploads ?? []) if (u.name.startsWith(prefix) && isObjectKey(u.name)) out.push({ key: u.name, uploadId: u.uploadId });
+      if (!r.isTruncated || (!r.nextKeyMarker && !r.nextUploadIdMarker)) break;
+      km = r.nextKeyMarker;
+      um = r.nextUploadIdMarker;
+    }
+    return out;
+  }
+  async abortUpload(key: string, uploadId: string) {
+    assertKey(key);
+    try {
+      await (await this.ctl).abortMultipartUpload(key, uploadId);
+    } catch (e) {
+      if (notFound(e)) return;
+      throw e;
+    }
   }
   async get(key: string) {
     assertKey(key);

@@ -31,7 +31,7 @@ import type { Database } from "../db.ts";
 import { DELETE_GRACE_MS } from "../auth/session.ts";
 import { withStoreLock } from "../sync/lock.ts";
 import { wipeStoreData } from "../demo/wipe.ts";
-import { deletionKey, exportKey, removeStoreDir, storePrefix, type ObjectStore } from "../lookup/oss.ts";
+import { deletionKey, exportKey, pendingUploadOf, removeStoreDir, storePrefix, type ObjectStore } from "../lookup/oss.ts";
 import { writeStoreExport } from "../export/store-export.ts";
 
 export interface PurgeLog {
@@ -138,6 +138,9 @@ export async function runOneExportJob(d: AccountJobDeps): Promise<ExportOutcome 
       .where("done_at", "is", null)
       .execute();
     if (key) await discardExport(d, storeId, key, "failed");
+    // 分片上传失败、中止也失败：记下 uploadId，之后重试中止（Codex 第二轮 3）
+    const pu = pendingUploadOf(e);
+    if (pu) await recordDiscard(d, storeId, pu.key, pu.uploadId, "upload_abort_failed", "failed");
     (job.attempts >= 3 ? d.log?.error : d.log?.warn)?.call(d.log, { alert: job.attempts >= 3 ? "account_delete_export_failed" : undefined, store_id: storeId, code, attempts: job.attempts }, "导出包生成失败");
     return { store_id: storeId, result: "failed" };
   } finally {
@@ -162,20 +165,23 @@ export async function runOneExportJob(d: AccountJobDeps): Promise<ExportOutcome 
 export async function discardExport(d: AccountJobDeps, storeId: string, key: string, why: "superseded" | "failed"): Promise<void> {
   try {
     await d.archive!.delete(key);
-    return;
   } catch (e) {
-    const code = reason(e);
-    try {
-      const now = d.clock();
-      await d.db
-        .insertInto("object_discards")
-        .values({ object_key: key, store_id: storeId, created_at: now, next_try_at: now, last_error: code })
-        .onConflict((oc) => oc.column("object_key").doUpdateSet({ last_error: code }))
-        .execute();
-      d.log?.warn({ store_id: storeId, code, why }, "不该留的导出包删除失败，已记待删标记，定时重试");
-    } catch (e2) {
-      d.log?.error({ alert: "export_discard_lost", store_id: storeId, code: reason(e2), why }, "不该留的导出包删除失败，待删标记也没记上");
-    }
+    await recordDiscard(d, storeId, key, "", reason(e), why);
+  }
+}
+
+/** 记一条待删标记（uploadId 空串 = 删对象，非空 = 中止分片上传）；重复记只更新原因 */
+async function recordDiscard(d: AccountJobDeps, storeId: string, key: string, uploadId: string, code: string, why: string): Promise<void> {
+  try {
+    const now = d.clock();
+    await d.db
+      .insertInto("object_discards")
+      .values({ object_key: key, upload_id: uploadId, store_id: storeId, created_at: now, next_try_at: now, last_error: code })
+      .onConflict((oc) => oc.columns(["object_key", "upload_id"]).doUpdateSet({ last_error: code }))
+      .execute();
+    d.log?.warn({ store_id: storeId, code, why, upload: uploadId !== "" }, "不该留的导出包 / 分片上传没删掉，已记待删标记，定时重试");
+  } catch (e2) {
+    d.log?.error({ alert: "export_discard_lost", store_id: storeId, code: reason(e2), why }, "不该留的导出包 / 分片上传没删掉，待删标记也没记上");
   }
 }
 
@@ -188,18 +194,30 @@ export async function retryObjectDiscards(d: AccountJobDeps, limit = 50): Promis
   if (!d.archive) return 0;
   const archive = d.archive;
   let n = 0;
-  const tried: string[] = [];
+  const since = d.clock();
   for (let i = 0; i < limit; i++) {
     const r = await d.db.transaction().execute(async (trx) => {
-      let q = trx.selectFrom("object_discards").selectAll().where("next_try_at", "<=", d.clock());
-      if (tried.length) q = q.where("object_key", "not in", tried);
-      const row = await q.orderBy("next_try_at").orderBy("object_key").limit(1).forUpdate().skipLocked().executeTakeFirst();
+      // 这一轮失败的会被推到以后，不会再领到；只领这一轮开始时已到点的
+      const row = await trx
+        .selectFrom("object_discards")
+        .selectAll()
+        .where("next_try_at", "<=", since)
+        .orderBy("next_try_at")
+        .orderBy("object_key")
+        .orderBy("upload_id")
+        .limit(1)
+        .forUpdate()
+        .skipLocked()
+        .executeTakeFirst();
       if (!row) return null;
-      tried.push(row.object_key);
       try {
-        const live = await trx.selectFrom("export_jobs").select("store_id").where("object_key", "=", row.object_key).where("done_at", "is not", null).executeTakeFirst();
-        if (!live) await archive.delete(row.object_key);
-        await trx.deleteFrom("object_discards").where("object_key", "=", row.object_key).execute();
+        if (row.upload_id !== "") {
+          await archive.abortUpload(row.object_key, row.upload_id);
+        } else {
+          const live = await trx.selectFrom("export_jobs").select("store_id").where("object_key", "=", row.object_key).where("done_at", "is not", null).executeTakeFirst();
+          if (!live) await archive.delete(row.object_key);
+        }
+        await trx.deleteFrom("object_discards").where("object_key", "=", row.object_key).where("upload_id", "=", row.upload_id).execute();
         return true;
       } catch (e) {
         const attempts = row.attempts + 1;
@@ -207,6 +225,7 @@ export async function retryObjectDiscards(d: AccountJobDeps, limit = 50): Promis
           .updateTable("object_discards")
           .set({ attempts, last_error: reason(e), next_try_at: new Date(d.clock().getTime() + exportBackoffMs(attempts)) })
           .where("object_key", "=", row.object_key)
+          .where("upload_id", "=", row.upload_id)
           .execute();
         (attempts >= 3 ? d.log?.error : d.log?.warn)?.call(d.log, { alert: attempts >= 3 ? "object_discard_failed" : undefined, store_id: row.store_id, code: reason(e), attempts }, "待删对象重试失败");
         return false;
@@ -463,6 +482,9 @@ export async function clearPurgedObjects(d: AccountJobDeps, limit = 20): Promise
         await archive.put(deletionKey(row.store_id), deletionRecord(row.store_id, new Date(row.purged_at)), "application/json");
         if (images) for (const k of await images.list(storePrefix("images", row.store_id))) await images.delete(k);
         for (const k of await archive.list(storePrefix("exports", row.store_id))) await archive.delete(k);
+        // 未完成的分片上传（传到一半失败、中止也失败留下的残片，Codex 第二轮 3）：delete 删不掉，按前缀列出来逐个中止
+        if (images) for (const u of await images.listUploads(storePrefix("images", row.store_id))) await images.abortUpload(u.key, u.uploadId);
+        for (const u of await archive.listUploads(storePrefix("exports", row.store_id))) await archive.abortUpload(u.key, u.uploadId);
         await removeStoreDir(d.imageCacheDir, "images", row.store_id);
         await trx
           .updateTable("store_purges")
