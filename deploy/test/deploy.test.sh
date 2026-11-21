@@ -18,7 +18,7 @@ pass=0; fail=0; T=""
 # LC_ALL=C 时测不出来，PR #23 Codex 5、Fable 必须改 3）。Mac 上 C.UTF-8 测不出来，先挑 en_US.UTF-8；CI 的 Ubuntu 只有 C.UTF-8
 for _l in en_US.UTF-8 C.UTF-8; do if locale -a 2>/dev/null | grep -ix "$_l" > /dev/null; then export LC_ALL=$_l; break; fi; done
 
-setup0() {
+setup() {
   T=$(mktemp -d)
   mkdir -p "$T/remote" "$T/state"
   export FAKE_REMOTE="$T/remote" FAKE_STATE="$T/state" FAKE_LOG="$T/log"
@@ -31,8 +31,9 @@ setup0() {
   # 每个用例一个新的空 origin，沙盒仓库里的发布标签清掉
   git init -q --bare "$T/origin.git"; git -C "$G" remote remove origin 2>/dev/null; git -C "$G" remote add origin "$T/origin.git"
   for x in $(git -C "$G" tag -l 'release-*'); do git -C "$G" tag -d "$x" > /dev/null; done
+  # SETUP_ECS 非空时 ECS 上的 current-tag 一开始就是它（release-tag.sh 单独跑的用例）
+  if [ -n "${SETUP_ECS:-}" ]; then echo "$SETUP_ECS" > "$T/remote/current-tag"; fi
 }
-setup() { setup0; }
 rtags() { git -C "$T/origin.git" for-each-ref --format='%(refname:short) %(objecttype) %(*objectname)' 'refs/tags/release-*' | grep -v '^release-current ' || true; }
 # origin 上 release-current 指向的提交（没有就空）
 rcur() { git -C "$T/origin.git" rev-parse --verify --quiet 'refs/tags/release-current^{commit}' || true; }
@@ -272,7 +273,7 @@ ok() { [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ] && [ "$(rcur)" = "$NEW" ]
 t "release-tag.sh 单独跑（runbook 的补救命令，PR #27 Codex 第二轮 1）：三种情况幂等或报错退出"
 # 第三轮起要 ECS_HOST 先核对 ECS 的 current-tag：用 ssh 替身，current-tag 默认是 NEW
 rt() { PATH="$HERE/fakes:$PATH" ECS_HOST="${H-root@47.117.184.253}" RELEASE_GIT_DIR=$G bash "$HERE/../release-tag.sh" "$@" > "$T/out" 2>&1; echo $? > "$T/rc"; }
-setup() { setup0; echo "$NEW" > "$T/remote/current-tag"; }
+SETUP_ECS=$NEW
 setup; rt "$NEW"
 ok() { [ "$(rc)" = 0 ] && [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ] && [ "$(rcur)" = "$NEW" ]; }; check "都没有：打上并推送，release-current 指向它（实际 $(rc)）" ok
 before=$(git -C "$T/origin.git" rev-parse refs/tags/release-current); rt "$NEW"
@@ -298,7 +299,7 @@ ok() { [ "$(rc)" = 0 ] && [ "$(rcur)" = "$NEW" ] && [ "$(rtags)" = "release-${NE
 setup; echo "${NEW:0:7}" > "$T/remote/current-tag"; rt "$NEW"; check "ECS 是短号、参数是 40 位，同一个提交：退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
 setup; rt "$OLD"; ok() { [ "$(rc)" = 3 ] && [ -z "$(rcur)" ] && [ -z "$(rtags)" ] && [ -z "$(git -C "$G" tag -l 'release-*')" ]; }
 check "参数不是 ECS 的 current-tag：退出码 3，本机和 origin 都不打（实际 $(rc)）" ok
-setup() { setup0; }
+SETUP_ECS=
 
 t "发布 A → 发布 B → 手工回滚到 A（用 A 再发布一次）→ 整机恢复按 release-current 取到 A（PR #27 Codex 第二轮 2）"
 setup; deploy "$OLD" --execute; a1=$(rc); sleep 1; deploy "$NEW" --execute; a2=$(rc); sleep 1; deploy "$OLD" --execute
