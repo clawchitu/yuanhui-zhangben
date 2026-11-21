@@ -96,7 +96,7 @@ Compose（`deploy/compose.yml`）：
 
 ## 证书策略（§14 S10a-3，PR #22 Fable 裁定 ①）
 - 方案 A（Let's Encrypt IP 短期证书）续期不稳时**不直接换私有 CA**。备案前服务器上只有假数据，App 离线可用，证书断几天不是紧急事件。
-- 「不稳」要有数字：部署后**观察 14 天**，期间出现过证书剩余有效期低于 48 小时、或过期，才算不稳；一两次续期重试不算。每次续期成功 / 失败的记录和剩余有效期告警在 S10c 做（§14 T19），在那之前每天按上面的命令看一次并记下来。
+- 「不稳」要有数字：部署后**观察 14 天**，期间出现过证书剩余有效期低于 48 小时、或过期，才算不稳；一两次续期重试不算。每次续期成功 / 失败的记录和剩余有效期告警由本机探测做（S10c，§14 T19，见「监控与告警」：`cert-renewals.jsonl`、`ip_cert_expiry`）；探测装上之前每天按上面的命令看一次并记下来。
 - 切方案 B 的前提：S11b 已在真机 Beta 包上用 `URLSession` 实测私有 CA 可连，并写进 `docs/beta-probe.md`（§14 T22）。在那之前即使 A 不稳，也只是停同步、等 S11b；**不许为了连上去加 ATS 例外或 `curl -k`**。
 - B 的约束：CA 私钥只在这台 Mac 的钥匙串；CA 带名称限制，只能签 `47.117.184.253`；服务器证书 IP 写在 SAN、有效期不超过 397 天；信任方式**只许**在 Beta 配置里把 CA 打进包做锚点固定，仍校验 IP。**不装描述文件**（家人手机上装描述文件并打开完全信任是全机信任，不采用）。Release 配置里不出现 CA 和任何例外（S30 归档检查）。
 - S11b 实测 B 还需要 `NSAllowsArbitraryLoads` 之类才能连 → 不做 B，走方案 C（离线试用）。
@@ -146,6 +146,64 @@ Compose（`deploy/compose.yml`）：
 | B9 | 失败信号 | 临时把 `.env` 的 `BACKUP_OSS_ACCESS_KEY_SECRET` 改错跑一次：`backup_failed stage=upload`、`metrics.prom` 的 `last_ok 0`、`consecutive_failures` 加 1、心跳不变；改回后下一次清零 | 待测 |
 | B10 | 资源影响 | S10a 压测的 3 年数据量下，压测进行中手动跑 3 次 `backup.sh`：记 `duration_s`、`backup` 容器内存峰值（cgroup `memory.peak`）、备份期间 `/v1/sync` 的 p95 和不备份时的对比、`free -m` 最低值；没有容器被 OOM 杀 | 待测 |
 | B11 | 云盘自动快照（§9.4） | 每周一次、留 4 份的策略已挂到这块盘上，截图或导出贴进部署实测 PR | 待测 |
+
+## 监控与告警（S10c，§9.5）
+
+所有告警发给 **Chitu**，由 Chitu 转告 Haoqiang 或黄总，不直接发给黄总。两条腿：
+
+- **服务器里的检查任务**（api 进程内，`server/src/monitor/`，每分钟一轮）：从 api 自己的日志里取带 `alert` 字段的行、数 5xx，查库、读 `/opt/yuanhui/backup/`（只读挂成 `/backup`）。告警追加到 ECS 的 `/data/monitor/outbox.jsonl`；配了 `ALERT_WEBHOOK_URL` 再直接推一份。去重状态在 `/data/monitor/state.json`，重启不会重发正在告警的、也不会漏发恢复。
+- **本机探测**（这台 Mac，launchd 每 10 分钟，`deploy/probe/run-probe.sh` → `server/scripts/probe.ts`）：探 `/healthz`、读 IP 证书、用部署 ssh 拉 `outbox.jsonl` 的新行，经 `PROBE_NOTIFY_CMD` / `PROBE_WEBHOOK_URL` 发给 Chitu。api 挂了服务器那条腿也就停了，所以存活和证书放在本机。
+- **阿里云云监控**（手工配，见下）：CPU、内存、磁盘 > 80%，站点监控做存活的第二来源。
+
+去重规则（两条腿相同，`alerter.ts`）：条件类（「现在是不是坏的」）好→坏发一条，一直坏每 6 小时提醒一次，坏→好发「已恢复」；事件类（日志里的告警、门禁被跳过、恢复失败……）同一个键 30 分钟内只发第一条，之后的一条带「另有 N 次」。通道发不出去时下一轮重试，事件最多攒 100 条。告警正文只留白名单字段，像凭据的长串换成「[已隐去]」（`alert.ts`），本机转发前再洗一遍。
+
+| §9.5 的项 | 告警键 | 哪条腿 | 阈值 |
+|---|---|---|---|
+| 服务存活 | `healthz_down` | 本机 + 云监控站点监控 | 连续 2 次（20 分钟）失败 |
+| CPU、内存、磁盘 | 云监控规则；`disk_usage` | 云监控 + 服务器 | > 80% |
+| 证书（T19） | `ip_cert_expiry` | 本机 | 剩余 < 48 小时或链不受信任；续期记进 `cert-renewals.jsonl` |
+| 备份心跳、失败（T26） | `backup_heartbeat_stale`、`backup_failed`、`backup_consecutive_failures`、`backup_lifecycle_stale`、`backup_skipped`、`backup_gate_skipped`、`restore_failed` | 服务器 | 营业时间 2 小时 / 其余 6 小时；连续失败 ≥ 2 升严重 |
+| 营业时间没有同步 | `no_sync:<店>` | 服务器 | 8:00–21:00 超过 3 小时 |
+| 接口错误率 | `http_5xx_rate` | 服务器 | 一小时 > 20 次 |
+| 快鸟额度（S08-3 条件二） | `kuainiao_store_daily:<店>`、`kuainiao_quota` | 服务器 | 单店当天 ≥ 200 次；网关报额度用完 / 限流 |
+| 登录异常 | `login_locked:<店>` | 服务器 | 刚锁上那一次 |
+| 账号注销申请 | `account_delete_request:<店>`、`account_delete_export:<店>` | 服务器 | 申请时一条；导出包生成后再一条（带对象键） |
+| 被退出的手机有待确认的账 | `held_ops:<店>` | 服务器 | > 24 小时 |
+| T16 导出和清除 | `account_delete_export_failed`、`export_no_archive`、`purge_no_archive`、`object_discard_failed`、`export_discard_lost` | 服务器 | 出现即发 |
+| T3 | `ops_table_size`、`ops_table_growth` | 服务器 | ops 表 > 512 MB；24 小时增长 > 64 MB。出现异常增长再提裁定 |
+| 监控自己 | `outbox_unreachable`（本机连续 30 分钟拉不到）、`alert_queue_overflow`、`log_alerts_dropped`、`monitor_state_unwritable` | 两边 | |
+
+### 装本机探测（这台 Mac）
+1. `mkdir -p ~/.config/yuanhui-probe && cp deploy/probe/probe.env.example ~/.config/yuanhui-probe/env && chmod 600 ~/.config/yuanhui-probe/env`，填 `PROBE_URL=https://47.117.184.253`、`PROBE_SSH_TARGET`（部署用的 ssh 目标）、至少一个通道。令牌只放这个文件。
+2. 先手动跑一次：`deploy/probe/run-probe.sh --test-alert`，Chitu 应收到「告警通道测试」。
+3. `sed -e "s#__REPO__#$PWD#" -e "s#__HOME__#$HOME#" -e "s#__NODE_DIR__#$(dirname "$(command -v node)")#" deploy/probe/cn.yuanhuishop.probe.plist > ~/Library/LaunchAgents/cn.yuanhuishop.probe.plist`，`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/cn.yuanhuishop.probe.plist`；看日志 `~/Library/Logs/yuanhui-probe.log`。停用：`launchctl bootout gui/$(id -u)/cn.yuanhuishop.probe`。
+4. 状态在 `~/Library/Application Support/yuanhui-probe/`：`state.json`（去重、outbox 游标）、`cert-renewals.jsonl`（每次看到新证书 `renewed`、该续没续 `renewal_overdue`，14 天观察就看它）。
+
+### 云监控（手工，阿里云控制台；免费额度内）
+- 主机监控：给 ECS 装云监控插件；报警规则 CPU 使用率、内存使用率、磁盘使用率（`/`，有数据盘再加一条）各一条：平均值 > 80%，连续 3 个周期（每周期 5 分钟）报警，恢复也通知；报警联系人只建 Chitu 一人。
+- 站点监控：HTTPS 探 `https://47.117.184.253/healthz`，期望状态码 200，频率 5 分钟，选 3 个以上境内探测点，连续 2 次失败报警，联系人 Chitu。
+- 配好后截图贴进部署实测 PR。
+
+### 平时怎么看
+- 服务器上还没转出去的：`tail /data/monitor/outbox.jsonl`；状态：`cat /data/monitor/state.json`。
+- 关掉服务器监控（不建议）：去掉 compose 里的 `MONITOR_DIR`，api 启动时会打一条警告。
+
+### S10c 部署时验证（真机器上才能做，数字写回这里和部署实测 PR）
+每一项都人为触发一次，记 Chitu 收到的时间和正文截图（正文里不得有口令、令牌、开通码），然后恢复、记收到「已恢复」。
+| # | 项 | 怎么触发 | 结果 |
+|---|---|---|---|
+| M1 | 通道 | 本机 `deploy/probe/run-probe.sh --test-alert` | 待测 |
+| M2 | 服务存活（本机 + 站点监控） | `docker compose stop api` 25 分钟：本机 `healthz_down`、云监控站点报警各一条；`start` 后两条恢复 | 待测 |
+| M3 | CPU / 内存 / 磁盘 80% | ECS 上 `stress-ng --cpu 2 --timeout 20m`；`fallocate` 一个大文件把盘顶过 80%（同时应收到服务器的 `disk_usage`），删掉恢复 | 待测 |
+| M4 | 证书 < 48 小时、续期记录 | 正常续期下不会出现（160 小时证书，Caddy 提前续）：用临时的 `PROBE_STATE_DIR`、`PROBE_URL` 指向一个剩 1 天证书的测试站点跑一次 `run-probe.sh`；另外确认 14 天观察期里 `cert-renewals.jsonl` 至少记过一次 `renewed` | 待测 |
+| M5 | 备份心跳 / 失败 / 连续失败 / 跳过 | S10b 的 B9（改错备份密钥跑两次）→ `backup_failed`、`backup_consecutive_failures`；停定时器 2 小时 → `backup_heartbeat_stale`；`mkdir /opt/yuanhui/backup/lock.d` 后跑 `backup.sh` → `backup_skipped` | 待测 |
+| M6 | 门禁跳过、恢复失败 | B8 的 `--skip-backup-gate` → `backup_gate_skipped`；`RESTORE_COMPOSE_DIR=/opt/yuanhui deploy/restore.sh latest --execute`（目标库不空，必然被拒）→ `restore_failed` | 待测 |
+| M7 | 营业时间无同步 | 测试店唯一一台在用的手机关机 3 小时（营业时间内） | 待测 |
+| M8 | 5xx | `docker compose stop postgres` 1 分钟，期间从本机打 25 次 `/healthz`（查库，失败回 503），再 `start` | 待测 |
+| M9 | 快鸟 200 次 | T9 配上 AppCode 之后，测试店用脚本查 200 个不同条码 | 待测 |
+| M10 | 登录锁定、注销申请、导出包 | 测试店连输错 5 次密码；测试店申请注销 → 两条（申请、导出包位置）；然后撤回 | 待测 |
+| M11 | 被退出手机暂存的账 | 测试手机离线记一笔、在另一台撤销它、它再联网，24 小时后 | 待测 |
+| M12 | outbox 拉不到 | 本机 `PROBE_SSH_TARGET` 临时改成不存在的主机 30 分钟 | 待测 |
 
 ## 关掉商品图开关时清第三方图（T12）
 1. `.env` 里 `PRODUCT_IMAGES_ENABLED=0`，用当前标签跑 `deploy.sh --execute` 重启 api。
