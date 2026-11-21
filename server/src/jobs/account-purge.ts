@@ -2,7 +2,7 @@
 //
 // 1. 导出包（runExportJobs）：申请注销时（routes/account.ts，同一事务）为非演示店插一行 export_jobs。这里一次领一个到期的任务
 //    （FOR UPDATE SKIP LOCKED，attempts + 1、next_try_at 推后当租约），生成 CSV 压缩包（export/store-export.ts）写到临时文件，
-//    上传到存档桶的 exports/<店>/，再按「还是领到时那一次申请、没被撤回」条件写回；条件不成立（期间撤回或撤回后又申请）就删掉刚传的包。
+//    从文件流式上传（putFile，不整包进内存）到存档桶的 exports/<店>/，再按「还是领到时那一次申请、没被撤回」条件写回；条件不成立（期间撤回或撤回后又申请）就删掉刚传的包。
 //    写回成功先打一条告警日志（附包的位置），由 Chitu 转交黄总；再删 exports/<店>/ 下比这一版更早的旧包（clearStaleExports，
 //    只删键里申请时间更早的、开始前在任务行锁里复查版本；失败只让 stale_cleared_at 留空、下一轮单独重试，不碰已完成的包）。
 //    生成、上传、写回失败只记原因代码、按次数退避重试。
@@ -17,7 +17,7 @@
 // 演示店不走这里：审核号的注销申请由每日重置撤回（demo/reset.ts）。
 import { randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -108,7 +108,8 @@ export async function runOneExportJob(d: AccountJobDeps): Promise<ExportOutcome 
       await closed;
     }
     key = exportKey(storeId, requestedAt, randomBytes(8).toString("hex"));
-    await archive.put(key, await readFile(file), "application/zip");
+    // 边读文件边传，不把整包读进内存（PR #20 Codex 5）：生成那头分页、流式压缩，传这头也有界
+    await archive.putFile(key, file, "application/zip");
     await d.afterExportUpload?.();
     const w = await d.db
       .updateTable("export_jobs")

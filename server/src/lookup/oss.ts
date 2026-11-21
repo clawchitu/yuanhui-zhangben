@@ -4,13 +4,20 @@
 // 键只由服务器生成（imageKey、exportKey、deletionKey），读写前都校验格式，不接受外部传来的路径（防路径穿越）。
 // 三种前缀（S09）：images/<店>/…（商品图）、exports/<店>/…（注销导出包）、deletions/<店>.json（删除记录，不随备份回滚，§9.4）。
 // 按店列举和删除只接受 images/<店>/、exports/<店>/ 两种前缀：一次调用只可能碰到一家店的对象。
-import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import type { Config } from "../config.ts";
 
 export interface ObjectStore {
   put(key: string, body: Buffer, contentType: string): Promise<void>;
+  /**
+   * 把本机一个文件传上去，边读边传（导出包用，PR #20 Codex 5）：不把整个文件读进内存。
+   * 阿里云走分片上传（每片 1 MiB、同时 2 片），内存里最多两片。
+   */
+  putFile(key: string, file: string, contentType: string): Promise<void>;
   /** 没有这个键返回 null */
   get(key: string): Promise<Buffer | null>;
   /** 列出一家店某个前缀下的全部键（prefix 只能是 storePrefix 给的） */
@@ -81,6 +88,11 @@ export class MemoryObjectStore implements ObjectStore {
     assertKey(key);
     this.objects.set(key, { body: Buffer.from(body), contentType });
   }
+  /** 内存实现只给测试用：读进来存着 */
+  async putFile(key: string, file: string, contentType: string) {
+    assertKey(key);
+    this.objects.set(key, { body: await readFile(file), contentType });
+  }
   async get(key: string) {
     assertKey(key);
     return this.objects.get(key)?.body ?? null;
@@ -130,6 +142,19 @@ export class LocalDirObjectStore implements ObjectStore {
   async put(key: string, body: Buffer, _contentType?: string) {
     await atomicWrite(safeJoin(this.root, key), body);
   }
+  /** 流式拷到临时文件再改名（读的一方不会看到写了一半的包） */
+  async putFile(key: string, file: string, _contentType?: string) {
+    const dest = safeJoin(this.root, key);
+    await mkdir(path.dirname(dest), { recursive: true });
+    const tmp = `${dest}.${randomBytes(6).toString("hex")}.tmp`;
+    try {
+      await pipeline(createReadStream(file), createWriteStream(tmp, { mode: 0o640 }));
+      await rename(tmp, dest);
+    } catch (e) {
+      await rm(tmp, { force: true });
+      throw e;
+    }
+  }
   async get(key: string) {
     return readIfExists(safeJoin(this.root, key));
   }
@@ -167,6 +192,7 @@ export async function removeStoreDir(root: string, kind: "images" | "exports", s
 export class AliOssObjectStore implements ObjectStore {
   private client: Promise<{
     put(name: string, file: Buffer, o: { headers: Record<string, string> }): Promise<unknown>;
+    multipartUpload(name: string, file: string, o: { partSize: number; parallel: number; mime: string; headers: Record<string, string> }): Promise<unknown>;
     get(name: string): Promise<{ content: Buffer }>;
     list(q: { prefix: string; marker?: string; "max-keys": number }, o: object): Promise<{ objects?: Array<{ name: string }>; nextMarker?: string | null; isTruncated?: boolean }>;
     delete(name: string): Promise<unknown>;
@@ -188,6 +214,12 @@ export class AliOssObjectStore implements ObjectStore {
   async put(key: string, body: Buffer, contentType: string) {
     assertKey(key);
     await (await this.client).put(key, body, { headers: { "Content-Type": contentType, "x-oss-forbid-overwrite": "false" } });
+  }
+  /** 分片上传（ali-oss 按片从文件读流；小于 100 KiB 的它自己改走普通上传，同样从文件读）。S10a 接真实 OSS 时实测一次 */
+  async putFile(key: string, file: string, contentType: string) {
+    assertKey(key);
+    await stat(file);
+    await (await this.client).multipartUpload(key, file, { partSize: 1024 * 1024, parallel: 2, mime: contentType, headers: { "Content-Type": contentType } });
   }
   async get(key: string) {
     assertKey(key);

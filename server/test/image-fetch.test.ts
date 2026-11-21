@@ -178,6 +178,9 @@ describe("图片任务", () => {
       put: async () => {
         throw new Error("oss down");
       },
+      putFile: async () => {
+        throw new Error("oss down");
+      },
       get: async () => null,
       list: async () => [],
       delete: async () => {},

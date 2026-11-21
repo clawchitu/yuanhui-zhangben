@@ -16,7 +16,7 @@ import { readZip } from "./helpers/zip.ts";
 import { parseCsv } from "../src/export/csv.ts";
 import { EXPORT_FILES, MONTH_HEADER, writeStoreExport } from "../src/export/store-export.ts";
 import { reportMonth } from "../src/reports/month.ts";
-import { MemoryObjectStore, archiveStoreFromConfig, deletionKey, imageKey, storePrefix } from "../src/lookup/oss.ts";
+import { LocalDirObjectStore, MemoryObjectStore, archiveStoreFromConfig, deletionKey, imageKey, storePrefix } from "../src/lookup/oss.ts";
 import type { Config } from "../src/config.ts";
 import { clearPurgedObjects, purgeStore, runAccountPurges, runExportJobs, type AccountJobDeps } from "../src/jobs/account-purge.ts";
 import { authenticate } from "../src/auth/authenticate.ts";
@@ -328,8 +328,8 @@ describe("导出包", () => {
     await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(u.token), payload: { password: PASSWORD } });
     const flaky = new MemoryObjectStore();
     let fail = true;
-    const put = flaky.put.bind(flaky);
-    flaky.put = async (k, b, c) => {
+    const put = flaky.putFile.bind(flaky);
+    flaky.putFile = async (k, b, c) => {
       if (fail) throw Object.assign(new Error(`上传到 ${k} 失败：店名元辉`), { code: "RequestTimeout" });
       return put(k, b, c);
     };
@@ -449,6 +449,38 @@ describe("导出包", () => {
     broken = false;
     expect(await runExportJobs(deps(clock, { archive }))).toEqual([]);
     expect(await realList(storePrefix("exports", s.storeId))).toEqual([second!.object_key]);
+    await s.app.close();
+  });
+
+  it("上传导出包走文件流（putFile），不把整个 ZIP 读进内存；本机目录的 putFile 边读边写、原子改名（PR #20 Codex 5）", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "流式上传店");
+    const t = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    const archive = new MemoryObjectStore();
+    const realPut = archive.put.bind(archive);
+    archive.put = async (k, b, c) => {
+      if (k.startsWith("exports/")) throw new Error("导出包不许整包放进内存上传");
+      return realPut(k, b, c);
+    };
+    const r = (await runExportJobs(deps(clock, { archive }))).find((x) => x.store_id === s.storeId);
+    expect(r?.result).toBe("done");
+    expect([...readZip(archive.objects.get(r!.object_key!)!.body).keys()]).toEqual([...EXPORT_FILES]);
+
+    const dir = await mkdtemp(path.join(tmpdir(), "yh-putfile-"));
+    try {
+      const src = path.join(dir, "src.zip");
+      const big = Buffer.alloc(3 * 1024 * 1024 + 7, 0x5a);
+      await writeFile(src, big);
+      const local = new LocalDirObjectStore(path.join(dir, "oss"));
+      const key = `exports/${s.storeId}/${String(T0).padStart(13, "0")}-${"0".repeat(16)}.zip`;
+      await local.putFile(key, src, "application/zip");
+      expect((await local.get(key))!.equals(big)).toBe(true);
+      expect(await local.list(storePrefix("exports", s.storeId))).toEqual([key]);
+      await expect(local.putFile("../x.zip", src, "application/zip")).rejects.toThrow(/对象键/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
     await s.app.close();
   });
 
