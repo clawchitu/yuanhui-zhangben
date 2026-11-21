@@ -7,7 +7,9 @@
 # 每一次（成功或失败）都更新 backup/status.json 和 backup/metrics.prom（Prometheus 文本格式，给 S10c 接告警），
 # 并打印一行 JSON：event=backup_ok，或 event=backup_failed + alert=backup_failed + stage（snapshot / dump / upload）。
 # 不删任何备份：备份账号对 backups/ 只写不删，35 天后由 OSS 生命周期规则删除（§14 T21）。
-# 退出码：0 成功；1 失败；2 已有一次在跑（不重叠）。
+# 退出码：0 成功；1 失败；2 已有一次在跑（不重叠；跳过也记进 backup/skips.log 和 metrics.prom，S10c 看得见）。
+# 锁（backup/lock.d，里面记 pid）：拿锁的进程已经不在（kill -9、OOM、强制重启），或者锁超过 16 分钟
+#   （service 的 TimeoutStartSec=900 保证一次跑不过 15 分钟）都算残留，清掉再拿；拿到锁后清掉上一次残留的 backup/work.*（里面是明文 dump）。
 set -euo pipefail
 umask 077
 D=${YUANHUI_DIR:-$(cd "$(dirname "$0")" && pwd)}
@@ -22,7 +24,8 @@ json() { printf '{"at":"%s","event":"%s"%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 
 # 状态文件：上一次成功的时间保留；失败次数连续累加
 prev() { sed -n "s/^yuanhui_backup_$1 //p" "$S/metrics.prom" 2>/dev/null | tail -1; }
 write_state() { # write_state <ok 0|1> <backup_id> <dump_bytes>
-  local ok=$1 id=$2 bytes=$3 now dur last fails
+  local ok=$1 id=$2 bytes=$3 now dur last fails skipped
+  skipped=$(prev last_skip_timestamp_seconds || true)
   now=$(date +%s); dur=$((now - t0))
   last=$(cat "$S/last-success" 2>/dev/null || echo 0)
   if [ "$ok" = 1 ]; then fails=0; last=$now; else fails=$(( $(prev consecutive_failures || echo 0) + 1 )); fi
@@ -33,7 +36,8 @@ write_state() { # write_state <ok 0|1> <backup_id> <dump_bytes>
     "yuanhui_backup_last_ok $ok" \
     "yuanhui_backup_consecutive_failures $fails" \
     "yuanhui_backup_duration_seconds $dur" \
-    "yuanhui_backup_dump_bytes ${bytes:-0}" > "$S/metrics.prom.tmp"
+    "yuanhui_backup_dump_bytes ${bytes:-0}" \
+    "yuanhui_backup_last_skip_timestamp_seconds ${skipped:-0}" > "$S/metrics.prom.tmp"
   mv "$S/metrics.prom.tmp" "$S/metrics.prom"
   printf '{"last_attempt":%s,"last_success":%s,"ok":%s,"consecutive_failures":%s,"stage":"%s","backup_id":"%s","duration_s":%s}\n' \
     "$now" "$last" "$( [ "$ok" = 1 ] && echo true || echo false )" "$fails" "$stage" "$id" "$dur" > "$S/status.json.tmp"
@@ -41,7 +45,7 @@ write_state() { # write_state <ok 0|1> <backup_id> <dump_bytes>
 }
 cleanup() {
   [ -n "$W" ] && rm -rf "$W"
-  [ "$stage" != lock ] && rmdir "$S/lock.d" 2>/dev/null
+  [ "$stage" != lock ] && rm -rf "$S/lock.d" 2>/dev/null
   return 0
 }
 trap cleanup EXIT
@@ -52,12 +56,32 @@ fail() {
   exit 1
 }
 
-# 不重叠：上一次还在跑就退出；锁超过 60 分钟算残留（进程被杀），清掉再拿
+# 不重叠：上一次还在跑就退出（记一笔跳过）；拿锁的进程不在了或锁超过 16 分钟算残留，清掉再拿（Fable 必须改 6）
+skip() {
+  local now; now=$(date +%s)
+  json backup_skipped ",\"alert\":\"backup_skipped\",\"reason\":\"already_running\",\"lock_pid\":\"${1:-}\"" >&2
+  printf '{"at":%s,"reason":"already_running","lock_pid":"%s"}\n' "$now" "${1:-}" >> "$S/skips.log"
+  if [ -f "$S/metrics.prom" ]; then
+    { grep -v '^yuanhui_backup_last_skip_timestamp_seconds ' "$S/metrics.prom" || true; echo "yuanhui_backup_last_skip_timestamp_seconds $now"; } > "$S/metrics.prom.skip"
+  else
+    echo "yuanhui_backup_last_skip_timestamp_seconds $now" > "$S/metrics.prom.skip"
+  fi
+  mv "$S/metrics.prom.skip" "$S/metrics.prom"
+  exit 2
+}
 if ! mkdir "$S/lock.d" 2>/dev/null; then
-  if [ -n "$(find "$S/lock.d" -maxdepth 0 -mmin +60 2>/dev/null)" ]; then rmdir "$S/lock.d" && mkdir "$S/lock.d"
-  else json backup_skipped ',"reason":"already_running"' >&2; exit 2; fi
+  holder=$(cat "$S/lock.d/pid" 2>/dev/null || true)
+  if { [[ $holder =~ ^[0-9]+$ ]] && ! kill -0 "$holder" 2>/dev/null; } || [ -n "$(find "$S/lock.d" -maxdepth 0 -mmin +16 2>/dev/null)" ]; then
+    json backup_stale_lock ",\"lock_pid\":\"$holder\"" >&2
+    rm -rf "$S/lock.d" && mkdir "$S/lock.d" || skip "$holder"
+  else
+    skip "$holder"
+  fi
 fi
+echo $$ > "$S/lock.d/pid"
 stage=prepare
+# 上一次被杀时留下的工作目录（明文 dump）
+for old in "$S"/work.*; do [ -e "$old" ] && rm -rf "$old"; done
 [ -f "$ENV" ] || fail
 W=$(mktemp -d "$S/work.XXXXXX")
 # backup 容器里是 node 用户（1000），工作目录要让它能写
