@@ -99,15 +99,15 @@ struct StockInView: View {
 
     private var form: some View {
         VStack(spacing: 0) {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     productCard
-                    fields
+                    fields.id("fields")
                     if let p = model.problem {
                         Text(p).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.sell)
                             .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("stockIn.problem")
                     }
-                    if !model.editingDate { blueCard }
                     if model.showsExpiry { expirySection }
                 }
                 .padding(.horizontal, 20)
@@ -115,8 +115,20 @@ struct StockInView: View {
                 .padding(.bottom, 10)
             }
             .scrollBounceBehavior(.basedOnSize)
-            .defaultScrollAnchor(model.editingDate ? .bottom : .top)
             .accessibilityIdentifier("stockIn.scroll")
+            // 放不下时把正在填的那一格滚到看得见的地方（商品卡往上滚，「记好了」里会再报一次商品名）：
+            // 填数量 / 单价时是这两格，填年月日时是日期格
+            .onAppear { scroll(proxy) }
+            .onChange(of: model.active) { _, _ in scroll(proxy) }
+            .onChange(of: model.conversion) { _, _ in scroll(proxy) }
+            }
+            // 蓝卡钉在键盘上面：任何字号下填数时都看得见一共多少、入账多少（06a）
+            if !model.editingDate {
+                blueCard
+                    .dynamicTypeSize(...DiscountPanel.labelCap)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 6)
+            }
             if model.active != nil {
                 Keypad(showsDot: model.keypadShowsDot) { model.key($0) }
                     .accessibilityIdentifier("stockIn.keypad")
@@ -137,6 +149,12 @@ struct StockInView: View {
             .padding(.vertical, 8)
             .background(Tokens.Palette.paper)
         }
+    }
+
+    private func scroll(_ proxy: ScrollViewProxy) {
+        guard let f = model.active else { return }
+        let target = [.qty, .cost].contains(f) ? "fields" : "dates"
+        DispatchQueue.main.async { proxy.scrollTo(target, anchor: .bottom) }
     }
 
     private var productCard: some View {
@@ -217,7 +235,7 @@ struct StockInView: View {
             HStack(alignment: .lastTextBaseline) {
                 Text("一共").font(TypeScale.title).foregroundStyle(Tokens.Palette.ink)
                 Spacer(minLength: 8)
-                Text(model.totalText ?? "¥0.00").font(TypeScale.total).minimumScaleFactor(0.6).lineLimit(1)
+                Text(model.totalText ?? "¥0.00").font(TypeScale.price).minimumScaleFactor(0.6).lineLimit(1)
                     .foregroundStyle(model.totalText == nil ? Tokens.Palette.mute : Tokens.Palette.ink)
                     .accessibilityIdentifier("stockIn.total")
             }
@@ -233,7 +251,8 @@ struct StockInView: View {
                     .accessibilityIdentifier("stockIn.average")
             }
         }
-        .padding(18)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Tokens.Palette.stockTint, in: RoundedRectangle(cornerRadius: Tokens.Radius.card))
     }
@@ -252,7 +271,7 @@ struct StockInView: View {
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("stockIn.expiryUnknownNote")
             } else {
                 if !model.editingDate { modePicker }
-                dateBoxes
+                dateBoxes.id("dates")
                 if model.editingDate {
                     Text("年份默认今年；月、日填满两位自动跳下一格").font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
                         .fixedSize(horizontal: false, vertical: true)
@@ -299,7 +318,7 @@ struct StockInView: View {
 
     private var dateBoxes: some View {
         HStack(spacing: 10) {
-            dateBox(model.year, "年", .year, placeholder: "年").layoutPriority(1)
+            dateBox(model.year, "年", .year, placeholder: "年")
             dateBox(model.month, "月", .month, placeholder: "")
             dateBox(model.day, "日", .day, placeholder: "")
         }
