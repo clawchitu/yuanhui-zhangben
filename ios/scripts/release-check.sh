@@ -23,7 +23,7 @@ bin="$dd/Build/Products/Release-iphonesimulator/YuanhuiZhangben.app/YuanhuiZhang
 [ -f "$bin" ] || { echo "找不到 Release 构建的二进制 $bin" >&2; exit 1; }
 # 查二进制：只在 Debug 里编译的代码留下的字样（演示策略的分支名进反射元数据；长字符串字面量进常量区）。
 # 短于 16 字节的字符串 Swift 内联进指令，查不到，所以不查 -uiRole 这类短参数名，由上面的 UI 测试管。
-markers=(demoSession zhangben-demo.sqlite 5EED0000-0000-4000-8000-00000000F001 5EED0000-0000-4000-8000-00000000F002)
+markers=(demoSession scannerLab zhangben-demo.sqlite 5EED0000-0000-4000-8000-00000000F001 5EED0000-0000-4000-8000-00000000F002)
 has() { LC_ALL=C grep -aqF -- "$2" "$1"; }
 bad=0
 for s in "${markers[@]}"; do

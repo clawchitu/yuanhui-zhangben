@@ -4,4 +4,7 @@ shots:
 shots-s15:
 	scripts/shots-s15.sh ../docs/screenshots/s15
 
-.PHONY: shots shots-s15
+.PHONY: shots shots-s15 shots-s14
+
+shots-s14:
+	scripts/shots-s14.sh ../docs/screenshots/s14

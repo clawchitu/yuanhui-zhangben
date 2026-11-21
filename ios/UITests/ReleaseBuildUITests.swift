@@ -27,13 +27,16 @@ final class ReleaseBuildUITests: XCTestCase {
             ["-uiFixture", "onboarding", "-uiRole", "family"],
             ["-uiRole", "family", "-uiFreshInstall"],
             ["-uiRole", "review"],
+            // S14：扫码测试页、FakeScanner 喂码、强制相机权限都只在 Debug
+            ["-uiFixture", "scanner", "-uiCamera", "denied", "-uiScan", "6921168509256"],
+            ["-uiFixture", "scanner-login", "-uiScan", "6921168509256", "-uiScanSource", "camera"],
             [],  // 上面都试过之后再正常启动一次：本机库里仍然没有会话
         ]
         for args in attempts {
             let app = launch(args)
             XCTAssertTrue(app.otherElements["page.signedOut"].waitForExistence(timeout: 10), "\(args) 应出「还没登录」页")
             XCTAssertTrue(app.staticTexts["还没登录"].exists, "\(args)")
-            for page in ["page.home", "page.onboarding", "page.settings", "page.stockIn", "page.denied"] {
+            for page in ["page.home", "page.onboarding", "page.settings", "page.stockIn", "page.denied", "page.scannerLab"] {
                 XCTAssertFalse(app.otherElements[page].exists, "\(args) 不应出 \(page)")
             }
             app.terminate()
