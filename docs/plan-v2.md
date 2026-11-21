@@ -1414,6 +1414,7 @@ S09 的 PR（#20）提了 16 条，Fable 审核裁定如下（按评论原文；
 | T26 | 告警接上：`backup_failed`、`backup_lifecycle_stale`、`consecutive_failures ≥ 2`、备份被跳过（锁）、`gate-skips.log` 有新行、`restore_failed` | PR #23 Fable | S10c |
 | T27 | 上线前演练时再核对一次口令三份（可用指纹），并确认阿里云主账号的登录和二次验证可用 | PR #23 Fable（S10b-10） | S32 |
 | T28 | §9.5「快鸟额度：每次调用后记余量，< 50 次告警」：快鸟的响应里有没有剩余次数字段，要等 T9 ② 的真实录制件。S10c 先做了单店当天 ≥ 200 次（S08-3 条件二）和网关报额度用完 / 限流（`kuainiao_quota`）两条；T9 确认有余量字段后在 `CatalogService` 记下来、接 `< 50` 的条件告警 | S10c 代码 PR | T9 → S10c 部署实测 |
+| T29 | PR #25 Fable 建议 3 的后一半：服务器检查任务自己的心跳。返修已做每段各自 try、出错段报 `monitor_check_error:<段>`，但整个检查任务停了（scheduler 卡住、进程活着不跑任务）没人知道。做法：每轮在 `/data/monitor/` 写一个时间戳，本机探测 ssh 拉 outbox 时一起读，超过 10 分钟没动就报 `server_monitor_stale` | S10c 代码 PR 返修 | S10c 部署实测前 |
 
 T2 的 PR（#15）定了 4 条，Fable 审核裁定如下：
 
