@@ -22,6 +22,8 @@ final class StockInModel {
         case rejected(String)
         case saved(String)
         case registered(String)
+        /// 04b 没填数量（或填 0）：只登记了商品，库存还没记，接着在进货页填这一批（PR #31 Fable 必须改 2）
+        case registeredNoStock(String)
 
         var text: String {
             switch self {
@@ -29,10 +31,11 @@ final class StockInModel {
             case .rejected(let why): "记不了：\(why)"
             case .saved(let what): "记好了：\(what)"
             case .registered(let name): "登记好了：\(name)，刚填的库存已记上"
+            case .registeredNoStock(let name): "登记好了：\(name)，库存还没记，接着填这一批"
             }
         }
         var isError: Bool {
-            switch self { case .unknownBarcode, .rejected: true; case .saved, .registered: false }
+            switch self { case .unknownBarcode, .rejected: true; case .saved, .registered, .registeredNoStock: false }
         }
     }
 
@@ -52,6 +55,8 @@ final class StockInModel {
     private(set) var conversion: PackConversion?
     private(set) var baseline: ProductPrivate?
     private(set) var stockBefore: Int64?
+    /// 这一样在本机有没上传的库存变动（§14 S19-1）
+    private(set) var hasPendingStock = false
     private(set) var qtyText = ""
     private(set) var cost = YuanInput()
     var active: Field? = .qty
@@ -124,9 +129,11 @@ final class StockInModel {
     var entryLine: String? {
         preview.map { "入账 \($0.baseQty) \(baseUnit)，每\(baseUnit)进价 ¥\(Money.yuanString(Int($0.batchUnitCostFen.raw)))" }
     }
-    /// 「加上原来的，平均进价 ¥2.01」（仅供显示；进价未知或库存不为正时没有）
+    /// 「加上原来的，平均进价 ¥2.01」（仅供显示；进价未知或库存不为正时没有）。
+    /// 本机有没上传的库存变动时也没有：基线货值配不上临时库存，除出来是错的（§14 S19-1）
     var averageLine: String? {
-        preview?.averageCostFen.map { "加上原来的，平均进价 ¥\(Money.yuanString(Int($0.raw)))" }
+        guard !hasPendingStock else { return nil }
+        return preview?.averageCostFen.map { "加上原来的，平均进价 ¥\(Money.yuanString(Int($0.raw)))" }
     }
 
     /// 输入超了上限时的一句话（没填完不算错）
@@ -196,13 +203,20 @@ final class StockInModel {
         }
     }
 
-    /// 登记页关掉：挂了整件码（05）就接着进这一箱；登记了新商品（04b 已带库存）出一句话；返回什么都不做
+    /// 登记页关掉：挂了整件码（05）就接着进这一箱；登记了新商品：04b 记了数量（> 0）出「库存已记上」，
+    /// 没记数量就接着在进货页填这一批（这时不会重复入账）；返回什么都不做
     func finishRegistration(_ outcome: RegistrationOutcome?) {
         registerCode = nil
         guard let outcome else { return }
         switch outcome {
         case .linked(let conv): load(conv)
-        case .registered(let conv, _): show(.registered(conv.product.name))
+        case .registered(let conv, _):
+            if ((try? db.displayStock(conv.product.id))?.qty ?? 0) > 0 {
+                show(.registered(conv.product.name))
+            } else {
+                load(conv)
+                show(.registeredNoStock(conv.product.name))
+            }
         }
         refreshPending()
     }
@@ -211,7 +225,9 @@ final class StockInModel {
     func load(_ conv: PackConversion) {
         conversion = conv
         baseline = try? db.productPrivate(conv.product.id)
-        stockBefore = (try? db.displayStock(conv.product.id))?.qty
+        let stock = try? db.displayStock(conv.product.id)
+        stockBefore = stock?.qty
+        hasPendingStock = (stock?.pendingDelta ?? 0) != 0
         qtyText = ""
         cost = YuanInput()
         confirmZeroCost = false
@@ -228,6 +244,7 @@ final class StockInModel {
         conversion = nil
         baseline = nil
         stockBefore = nil
+        hasPendingStock = false
         qtyText = ""
         cost = YuanInput()
         confirmZeroCost = false
