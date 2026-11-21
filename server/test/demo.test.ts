@@ -24,6 +24,7 @@ const T0 = Date.parse("2026-11-20T02:00:00Z");
 const DEMO_CONFIG = { demoLoginEnabled: true };
 let seq = 0;
 
+// runDemoResets 扫的是整个库里到点的演示店：同一个 schema 里别的测试建的演示店也会出现在结果里，只看本测试这家
 async function newDemo(clock: TestClock) {
   seq += 1;
   const username = `review_${seq}_${randomUUID().slice(0, 6)}`;
@@ -142,20 +143,20 @@ describe("每日重置", () => {
     const dirty = await snapshot(d.storeId);
 
     clock.advance(30 * 60_000); // 15:30，没到点
-    expect(await runDemoResets(tdb.kysely, clock.now())).toEqual({});
+    expect((await runDemoResets(tdb.kysely, clock.now()))[d.storeId]).toBeUndefined();
     clock.advance(30 * 60_000); // 16:00，30 分钟前还有人用
     await app.inject({ method: "GET", url: "/v1/me", headers: bearer(p.token) });
     clock.advance(60_000);
-    expect(await runDemoResets(tdb.kysely, clock.now())).toEqual({ [d.storeId]: "deferred" });
+    expect((await runDemoResets(tdb.kysely, clock.now()))[d.storeId]).toBe("deferred");
     expect(await snapshot(d.storeId)).toEqual({ ...dirty, demo_stores: (await snapshot(d.storeId)).demo_stores });
     const next = (await tdb.kysely.selectFrom("demo_stores").select("next_reset_at").where("store_id", "=", d.storeId).executeTakeFirstOrThrow()).next_reset_at;
     expect(next.getTime()).toBe(clock.t + 60 * 60_000);
     // 顺延期间不再尝试
     clock.advance(30 * 60_000);
-    expect(await runDemoResets(tdb.kysely, clock.now())).toEqual({});
+    expect((await runDemoResets(tdb.kysely, clock.now()))[d.storeId]).toBeUndefined();
     // 17:01：最后一次请求是 16:00，已经超过 60 分钟
     clock.advance(30 * 60_000);
-    expect(await runDemoResets(tdb.kysely, clock.now())).toEqual({ [d.storeId]: "reset" });
+    expect((await runDemoResets(tdb.kysely, clock.now()))[d.storeId]).toBe("reset");
     const price = await tdb.kysely.selectFrom("products").select("price_fen").where("store_id", "=", d.storeId).where("id", "=", seedId(d.storeId, "product:water")).executeTakeFirstOrThrow();
     expect(price.price_fen).toBe("200");
     const ds = await tdb.kysely.selectFrom("demo_stores").selectAll().where("store_id", "=", d.storeId).executeTakeFirstOrThrow();
@@ -184,10 +185,10 @@ describe("每日重置", () => {
     const seed = await snapshot(d.storeId);
 
     const r = await syncOk(app, phone.token, { epoch: d.epoch, ops: pending });
-    expect(r.body.device).toMatchObject({ revoked: true, discard_outbox: true });
-    expect(r.body.results).toEqual([]);
-    expect(r.body.changes.products).toEqual([]);
-    await expectContract("SyncResponse", r.body);
+    expect(r.device).toMatchObject({ revoked: true, discard_outbox: true });
+    expect(r.results).toEqual([]);
+    expect(r.changes.products).toEqual([]);
+    await expectContract("SyncResponse", r);
     const got = await tdb.kysely.selectFrom("ops").select("id").where("store_id", "=", d.storeId).where("id", "in", pending.map((o) => o.id)).execute();
     expect(got).toEqual([]);
     expect(await snapshot(d.storeId)).toEqual(seed);
@@ -215,7 +216,7 @@ describe("每日重置", () => {
     const price = await tdb.kysely.selectFrom("products").select("price_fen").where("store_id", "=", d.storeId).where("id", "=", pid).executeTakeFirstOrThrow();
     expect(price.price_fen).toBe("200");
     // 每个手机这次或下次同步都拿到 discard_outbox
-    for (const p of phones) expect((await syncOk(app, p.token, { epoch: d.epoch })).body.device.discard_outbox).toBe(true);
+    for (const p of phones) expect((await syncOk(app, p.token, { epoch: d.epoch })).device.discard_outbox).toBe(true);
     const ops = await tdb.kysely.selectFrom("ops").select("device_id").where("store_id", "=", d.storeId).execute();
     expect(new Set(ops.map((o) => o.device_id))).toEqual(new Set([seedId(d.storeId, "device:seed")]));
     await app.close();
@@ -234,7 +235,7 @@ describe("每日重置", () => {
     const ids = (await tdb.kysely.selectFrom("devices").select("id").where("store_id", "=", d.storeId).execute()).map((x) => x.id);
     expect(ids).not.toContain(old.deviceId);
     expect(ids).toContain(recent.deviceId);
-    expect((await syncOk(app, recent.token, { epoch: d.epoch })).body.device.discard_outbox).toBe(true);
+    expect((await syncOk(app, recent.token, { epoch: d.epoch })).device.discard_outbox).toBe(true);
     await app.close();
   });
 
@@ -256,7 +257,7 @@ describe("演示登录与注销申请（§14 S03-9 的裁定）", () => {
     const q = await demoLogin(app);
     expect(q.delete_pending_until).toBe(del.json().delete_pending_until);
     const r = await syncOk(app, q.token, { epoch: d.epoch, ops: [op("product_edit", { product_id: seedId(d.storeId, "product:water"), price_fen: 5 }, { at: clock.now() })] });
-    expect([r.body.results, r.body.delete_pending_until]).toEqual([[], del.json().delete_pending_until]);
+    expect([r.results, r.delete_pending_until]).toEqual([[], del.json().delete_pending_until]);
     clock.advance(2 * 3600_000);
     await resetDemoStore(tdb.kysely, d.storeId, clock.now());
     expect((await demoLogin(app)).delete_pending_until).toBeUndefined();

@@ -10,8 +10,9 @@ CREATE TABLE demo_stores (
   next_reset_at        timestamptz NOT NULL
 );
 
--- 注销申请生成的导出包（非演示店）。申请时插入一行，由定时任务生成、上传 OSS exports/、告警通知运维。
--- 撤回注销 → 删掉这一行和已生成的导出包；到期清除 → 和店铺一起删。
+-- 注销申请生成的导出包（非演示店）。申请时插入一行（同一事务），由定时任务生成 CSV 压缩包、上传 OSS exports/、告警通知运维。
+-- 撤回注销 → 记 cancelled_at，定时任务删掉 exports/<店>/ 下的包再删这一行；撤回后又申请 → 同一行重置成新的一次。
+-- 到期清除 → 和店铺一起删（exports/<店>/ 在清除的对象清理里删）。
 CREATE TABLE export_jobs (
   store_id      uuid PRIMARY KEY REFERENCES stores (id),
   -- 对应的注销申请时间（撤回后再申请是新的一次，键里带它）
@@ -19,15 +20,20 @@ CREATE TABLE export_jobs (
   object_key    text,
   done_at       timestamptz,
   attempts      integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  -- 下次可领的时间：领任务时推后（租约，进程崩了到点会被重新领）；失败后按次数退避
+  next_try_at   timestamptz NOT NULL,
+  -- 只记原因代码，不记业务数据
   last_error    text,
+  cancelled_at  timestamptz,
   CHECK ((done_at IS NULL) = (object_key IS NULL))
 );
 
--- 已清除的店：只记店 id 和时间（不含任何业务数据），用来在库里的行删掉之后继续重试 OSS 和本机缓存的清理。
+-- 已清除的店：只记店 id 和时间（不含任何业务数据），用来在库里的行删掉之后继续重试删除记录、OSS 和本机缓存的清理。
 -- 删除记录的正本在 OSS deletions/（不随备份回滚，§9.4）；这张表只是清理进度。
 CREATE TABLE store_purges (
   store_id           uuid PRIMARY KEY,
   purged_at          timestamptz NOT NULL,
   objects_cleared_at timestamptz,
+  attempts           integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
   last_error         text
 );

@@ -99,11 +99,12 @@ export async function resetDemoStore(db: Kysely<Database>, storeId: string, now:
     }
 
     await wipeStoreData(tx);
+    // 全部设备（含重置前已因申请注销、被踢、退出而撤销的）都改成 demo_reset：它们的 outbox 同样属于重置前那份数据，
+    // 留着别的撤销原因，被踢设备补传的规则会把旧 op 记进刚种好的数据里。已撤销的保留原撤销时间（7 天清理按它算）
     await tx.trx
       .updateTable("devices")
-      .set({ revoked_at: now, revoke_reason: "demo_reset" })
+      .set((eb) => ({ revoked_at: eb.fn.coalesce("revoked_at", eb.val(now)), revoke_reason: "demo_reset" }))
       .where("store_id", "=", storeId)
-      .where("revoked_at", "is", null)
       .execute();
     await tx.trx
       .deleteFrom("devices")

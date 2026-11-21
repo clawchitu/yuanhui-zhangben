@@ -254,13 +254,16 @@ export interface ExportJobsTable {
   object_key: string | null;
   done_at: Ts | null;
   attempts: Generated<number>;
+  next_try_at: Ts;
   last_error: string | null;
+  cancelled_at: Ts | null;
 }
 
 export interface StorePurgesTable {
   store_id: string;
   purged_at: Ts;
   objects_cleared_at: Ts | null;
+  attempts: Generated<number>;
   last_error: string | null;
 }
 

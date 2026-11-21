@@ -4,7 +4,7 @@
 // entry_id / batch_id 已被占用）抛 LedgerInvalid / CostError / AllocationError → 回滚这个 op 写过的行，rejected invalid 并留档。
 // 之后写库时再出 22xxx 不在这里接，由 push.ts 让整个请求 500（§14 S04-14）。
 // 每改一行取一个新号；每次库存变动 stock_ver + 1；期初写 last_count_at。同一个 op 产生的流水 seq 连续递增（cost_fix 冲销相邻依赖它）。
-import { randomUUID } from "node:crypto";
+import { derivedId } from "./ids.ts";
 import { sql, type Selectable } from "kysely";
 import type { Database } from "../db.ts";
 import type { StoreTx } from "../sync/lock.ts";
@@ -130,7 +130,7 @@ export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRo
   const step = settle(stateOf(prod), rawStep, late);
   let seq = await nextSeq(tx);
   for (const [i, d] of step.entries.entries()) {
-    const id = i === 0 && main.id !== undefined ? main.id.toLowerCase() : randomUUID();
+    const id = i === 0 && main.id !== undefined ? main.id.toLowerCase() : derivedId(tx.storeId, "entry", ctx.opId.toLowerCase(), String(seq));
     await tx.trx
       .insertInto("entries")
       .values({
