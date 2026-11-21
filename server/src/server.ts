@@ -4,7 +4,7 @@
 import { buildApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
 import { createDb, migrate } from "./db.ts";
-import { startImageFetchLoop } from "./jobs/image-fetch.ts";
+import { defaultTasks, Scheduler } from "./jobs/scheduler.ts";
 
 const config = loadConfig();
 const db = createDb({ connectionString: config.databaseUrl });
@@ -17,16 +17,28 @@ if (process.env.MIGRATE_ON_START === "1") {
 
 await app.listen({ host: config.host, port: config.port });
 
-// 商品图任务：开关打开且配了对象存储才跑（S08；S09 的 jobs/scheduler.ts 落地后挪过去）
-const stopImages =
-  config.productImagesEnabled && app.deps.objectStore
-    ? startImageFetchLoop({ db: db.kysely, store: app.deps.objectStore, enabled: true, clock: () => new Date(), log: app.log })
-    : () => {};
+// 后台任务（jobs/scheduler.ts）：商品图（开关打开且配了对象存储才登记）、演示店每日重置、注销导出包、注销到期清除。
+// 存档桶（exports/、deletions/）在 S10a 配第二个桶之前和商品图用同一个对象存储（§9.1）。
+const clock = () => new Date();
+const scheduler = new Scheduler({
+  clock,
+  log: app.log,
+  tasks: defaultTasks({
+    db: db.kysely,
+    clock,
+    productImagesEnabled: config.productImagesEnabled,
+    images: app.deps.objectStore,
+    archive: app.deps.objectStore,
+    imageCacheDir: config.imageCacheDir,
+    log: app.log,
+  }),
+});
+scheduler.start();
 
 for (const sig of ["SIGTERM", "SIGINT"] as const) {
   process.once(sig, async () => {
     app.log.info({ sig }, "收到退出信号");
-    stopImages();
+    await scheduler.stop();
     await app.close();
     await db.close();
     process.exit(0);

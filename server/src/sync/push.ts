@@ -31,7 +31,7 @@ import { applyVoid, voidTargetSale } from "../ledger/void.ts";
 import { applyCount } from "../ledger/count.ts";
 import { applyReviewComplete } from "../ledger/costfix.ts";
 import { applyExpiryDispose, applyLotSnooze } from "../ledger/lots.ts";
-import { STORE_QUEUE_LIMIT, withStoreLock, type StoreTx } from "./lock.ts";
+import { STORE_QUEUE_LIMIT, StoreGone, withStoreLock, type StoreTx } from "./lock.ts";
 import { opSchemaValid, type OpType } from "./validate.ts";
 
 /** 手机时钟超前多少算错（§4.4） */
@@ -185,7 +185,8 @@ export async function pushOps(db: Kysely<Database>, guard: Guard, input: PushInp
   const { auth, now } = input;
   const storeId = auth.store.id;
   return withStoreLock(db, storeId, async (tx) => {
-    const store = await tx.trx.selectFrom("stores").select("epoch").where("id", "=", storeId).executeTakeFirstOrThrow();
+    const store = await tx.trx.selectFrom("stores").select("epoch").where("id", "=", storeId).executeTakeFirst();
+    if (!store) throw new StoreGone(storeId);
     if (store.epoch.toLowerCase() !== input.epoch.toLowerCase()) throw new EpochMismatch(store.epoch);
     const device = await readDevice(tx, auth);
     // 注销期间（锁内重新读的状态）：一个都不应用、不留档、不给结果（§14 S04-2）
@@ -236,7 +237,9 @@ async function readDevice(tx: StoreTx, auth: AuthContext): Promise<DeviceState> 
     .select(["d.role", "d.label", "d.revoked_at", "d.revoke_reason", "a.kind", "a.delete_requested_at"])
     .where("d.store_id", "=", tx.storeId)
     .where("d.id", "=", auth.device.id)
-    .executeTakeFirstOrThrow();
+    .executeTakeFirst();
+  // 店还在、设备行却没了：只有清除会删设备（演示店重置只删 7 天前就撤销了的，不会是刚验过令牌的这台）
+  if (!d) throw new StoreGone(tx.storeId);
   return {
     role: d.role,
     label: d.label,

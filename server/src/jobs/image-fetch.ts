@@ -156,23 +156,3 @@ async function finish(d: ImageJobDeps, job: Claimed, err: string | null) {
     .where("product_id", "=", job.product_id)
     .execute();
 }
-
-/** 进程里定时跑（server.ts 在开关打开、配了对象存储时启动）。一轮跑完才排下一轮，不会叠着跑 */
-export function startImageFetchLoop(d: ImageJobDeps, intervalMs = 30_000): () => void {
-  let stopped = false;
-  let timer: NodeJS.Timeout | undefined;
-  const tick = async () => {
-    try {
-      await enqueueImageJobs(d);
-      await runImageJobs(d);
-    } catch (e) {
-      d.log?.warn({ err: (e as Error).message }, "商品图任务这一轮出错");
-    }
-    if (!stopped) timer = setTimeout(tick, intervalMs);
-  };
-  timer = setTimeout(tick, intervalMs);
-  return () => {
-    stopped = true;
-    clearTimeout(timer);
-  };
-}

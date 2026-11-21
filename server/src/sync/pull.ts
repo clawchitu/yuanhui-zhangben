@@ -8,6 +8,7 @@
 import { sql, type Kysely } from "kysely";
 import type { Database } from "../db.ts";
 import { shanghaiDay } from "../auth/guard.ts";
+import { StoreGone } from "./lock.ts";
 import { barcodeOut, batchOut, cashierRemovedVisible, entryOut, int, LEDGER_DAYS, lotOut, productOut, removedOut, type Scope } from "./projection.ts";
 
 /** 每页 500 行（§4.2） */
@@ -75,7 +76,8 @@ export async function pullChanges(db: Kysely<Database>, input: PullInput): Promi
     .setIsolationLevel("repeatable read")
     .setAccessMode("read only")
     .execute(async (trx) => {
-      const store = await trx.selectFrom("stores").select("rev").where("id", "=", storeId).executeTakeFirstOrThrow();
+      const store = await trx.selectFrom("stores").select("rev").where("id", "=", storeId).executeTakeFirst();
+      if (!store) throw new StoreGone(storeId);
       const storeRev = int(store.rev);
 
       // ── catalog ──

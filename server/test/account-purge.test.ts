@@ -17,7 +17,12 @@ import { parseCsv } from "../src/export/csv.ts";
 import { EXPORT_FILES, MONTH_HEADER, writeStoreExport } from "../src/export/store-export.ts";
 import { reportMonth } from "../src/reports/month.ts";
 import { MemoryObjectStore, deletionKey, imageKey, storePrefix } from "../src/lookup/oss.ts";
-import { clearPurgedObjects, runAccountPurges, runExportJobs, type AccountJobDeps } from "../src/jobs/account-purge.ts";
+import { clearPurgedObjects, purgeStore, runAccountPurges, runExportJobs, type AccountJobDeps } from "../src/jobs/account-purge.ts";
+import { authenticate } from "../src/auth/authenticate.ts";
+import { Guard } from "../src/auth/guard.ts";
+import { pullChanges } from "../src/sync/pull.ts";
+import { pushOps } from "../src/sync/push.ts";
+import { StoreGone } from "../src/sync/lock.ts";
 import { DELETE_GRACE_MS } from "../src/auth/session.ts";
 import { STORE_DATA_TABLES } from "../src/demo/wipe.ts";
 import { exportStoreToFile } from "../scripts/export-store.ts";
@@ -193,14 +198,15 @@ describe("导出包", () => {
     const pid = randomUUID();
     const code = newBarcode();
     await syncOk(app, boss.token, { epoch: shop.epoch, ops: [upsertFull({ productId: pid, barcode: code, price: 100 }), op("opening", { entry_id: randomUUID(), product_id: pid, counted_qty: 100000, unit_cost_fen: 50 }, { at: "2026-11-01T00:00:00Z" })] });
-    for (let k = 0; k < 15; k++) {
-      const ops = Array.from({ length: 200 }, (_, i) =>
-        op("sale_batch", { batch_id: randomUUID(), paid_total_fen: 100, lines: [{ entry_id: randomUUID(), product_id: pid, barcode: code, name: "x", unit_name: "个", pack_qty: 1, pack_count: 1, unit_price_fen: 100 }] }, {
-          at: new Date(Date.parse("2026-11-05T00:00:00Z") + (k * 200 + i) * 60_000),
-        }),
-      );
-      await syncOk(app, boss.token, { epoch: shop.epoch, ops });
-    }
+    // 每笔卖出 200 行（op 的上限），15 笔 = 3000 条流水；比 3000 个 op 快得多，跑全套时不会超时
+    const ops = Array.from({ length: 15 }, (_, k) =>
+      op("sale_batch", {
+        batch_id: randomUUID(),
+        paid_total_fen: 200 * 100,
+        lines: Array.from({ length: 200 }, () => ({ entry_id: randomUUID(), product_id: pid, barcode: code, name: "x", unit_name: "个", pack_qty: 1, pack_count: 1, unit_price_fen: 100 })),
+      }, { at: new Date(Date.parse("2026-11-05T00:00:00Z") + k * 3_600_000) }),
+    );
+    for (let k = 0; k < ops.length; k += 5) await syncOk(app, boss.token, { epoch: shop.epoch, ops: ops.slice(k, k + 5) });
     const files = readZip(await zipOf(shop.storeId, clock.now(), 250));
     const body = csv(files, "流水.csv").slice(1);
     expect(body.length).toBe(3001);
@@ -419,15 +425,36 @@ describe("满 7 天删除", () => {
     clock.advance(DELETE_GRACE_MS + 60_000);
     const d = deps(clock);
     const sink = logSink();
-    const syncs = Array.from({ length: 4 }, () =>
-      s.app.inject({ method: "POST", url: "/v1/sync", headers: bearer(relog.token), payload: { epoch: s.epoch, cursors: { catalog: 0, ledger: 0 }, ops: [], app_build: 1 } }),
+    const syncs = Array.from({ length: 6 }, (_, i) =>
+      s.app.inject({
+        method: "POST",
+        url: "/v1/sync",
+        headers: bearer(relog.token),
+        payload: { epoch: s.epoch, cursors: { catalog: 0, ledger: 0 }, ops: i % 2 ? [op("product_edit", { product_id: s.productIds[0], price_fen: 1 })] : [], app_build: 1 },
+      }),
     );
     const [r1, r2, r3, ...rs] = await Promise.all([runAccountPurges({ ...d, log: sink.log }), runAccountPurges({ ...d, log: sink.log }), runAccountPurges({ ...d, log: sink.log }), ...syncs]);
     expect([r1, r2, r3].flatMap((r) => r.purged).filter((x) => x === s.storeId)).toEqual([s.storeId]);
     expect(sink.lines.filter((l) => l.level === "error")).toEqual([]);
-    for (const r of rs) expect([200, 401]).toContain(r.statusCode);
+    for (const r of rs) expect([200, 401], r.body).toContain(r.statusCode);
     expect(Object.values(await rowCounts(s.storeId)).every((n) => n === 0)).toBe(true);
     expect(d.archive.objects.has(deletionKey(s.storeId))).toBe(true);
+    await s.app.close();
+  });
+
+  it("令牌验过之后店被清除了：拉取、推送都按令牌不认识处理（StoreGone → 401），不是 500", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "验完就删店");
+    const t = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    const relog = await login(s.app, s.username);
+    const auth = (await authenticate(tdb.kysely, relog.token, clock.now()))!;
+    clock.advance(DELETE_GRACE_MS + 1);
+    expect(await purgeStore(tdb.kysely, s.storeId, clock.now())).toBe("purged");
+    await expect(pullChanges(tdb.kysely, { storeId: s.storeId, deviceId: relog.deviceId, scope: "full_store", cursors: { catalog: 0, ledger: 0 }, pageSize: 10, now: clock.now() })).rejects.toThrow(StoreGone);
+    await expect(
+      pushOps(tdb.kysely, new Guard(), { auth, ops: [op("product_edit", { product_id: s.productIds[0], price_fen: 1 }) as never], now: clock.now(), epoch: s.epoch, config: { demoLoginEnabled: false, recoveryMode: false } }),
+    ).rejects.toThrow(StoreGone);
     await s.app.close();
   });
 
