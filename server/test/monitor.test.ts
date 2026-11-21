@@ -431,6 +431,17 @@ describe("本机探测（scripts/probe.ts）", () => {
     expect(await forwardOutbox(JSON.stringify(m3), c, { sink: s2, clock: t.clock.now })).toBe(0);
     expect(c.outboxId).toBe(m2.id);
   });
+  it("服务器 outbox 里的 details 不可信：本机按白名单再洗一遍（去掉 forwardOutbox 的 sanitizeDetails 这条就失败，PR #25 Fable 建议 5）", async () => {
+    const t = setup();
+    const tok = "4f1c0e9a8b7d6c5e4f3a2b1c0d9e8f7a6b5c4d3e";
+    // 手写一行（不经 buildMessage）：模拟服务器侧白名单出错或 outbox 被改过
+    const line = JSON.stringify({ id: "000001", at: t.clock.now().toISOString(), kind: "event", key: "backup_failed", severity: "warning", title: "备份失败", details: { password: "hunter2-pw", code: "PAIR-839201", reason: `token=${tok}`, nested: { a: 1 }, count: 2 }, text: "x" });
+    const sink = new FakeSink();
+    expect(await forwardOutbox(line, {}, { sink, clock: t.clock.now })).toBe(1);
+    const sent = sink.sent[0]!;
+    expect(Object.keys(sent.details).sort()).toEqual(["count", "reason"]);
+    for (const secret of ["hunter2-pw", "PAIR-839201", tok, "nested"]) expect(JSON.stringify(sent)).not.toContain(secret);
+  });
   it("ssh 连续 3 次拉不到 outbox 告警，拉到了恢复", async () => {
     const t = setup();
     t.setSsh(false);
