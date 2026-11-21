@@ -245,7 +245,7 @@ describe("记账 op 预检查之后写库报 22xxx（§14 S04-14、S05-4 第三�
       it(`${type}（${sqlstate}）：整个请求 500、同批的 op 一起回滚、库里什么都不变、记 error 日志；去掉故障重发后正常入账`, async () => {
         const shop = await makeFastShop(tdb.kysely);
         const lines: Array<Record<string, unknown>> = [];
-        const app = buildApp({ config: testConfig(), db: tdb, logStream: { write: (l) => void lines.push(JSON.parse(l)) } });
+        const app = buildApp({ config: testConfig(), db: tdb, clock: new TestClock().now, logStream: { write: (l) => void lines.push(JSON.parse(l)) } });
         const u = upsertFull();
         const pid = u.payload.product_id as string;
         const sale0 = saleOf(pid);

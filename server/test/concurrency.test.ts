@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
-import { bearer, errorLog, login, makeApp, makeLoginShop, PASSWORD } from "./helpers/auth.ts";
+import { bearer, errorLog, login, makeApp, makeLoginShop, PASSWORD, TestClock } from "./helpers/auth.ts";
 import { createDb } from "../src/db.ts";
 import { verifyPassword } from "../src/auth/password.ts";
 
@@ -90,7 +90,8 @@ describe("并发登录（§14 S03-3）", () => {
   it("20 个错密码 + 1 个对密码同时发：结束后账号是锁定的；对的那个只有赶在锁生效前才拿到令牌", async () => {
     const shop = await makeLoginShop(tdb);
     const log = errorLog();
-    const app = makeApp(tdb, { logStream: log.stream });
+    const clock = new TestClock();
+    const app = makeApp(tdb, { clock, logStream: log.stream });
     const rightId = randomUUID();
     const reqs = [
       ...Array.from({ length: 20 }, (_, i) => loginReq(shop.username, `wrong-${i}`)),
@@ -104,7 +105,7 @@ describe("并发登录（§14 S03-3）", () => {
     const acct = await accountRow(shop.accountId);
     // 锁一定在，没被正确密码清掉
     expect(acct.locked_until).not.toBeNull();
-    expect(acct.locked_until!.getTime()).toBeGreaterThan(Date.now());
+    expect(acct.locked_until!.getTime()).toBeGreaterThan(clock.t); // 服务器时钟（固定的 TestClock），不是真实时间
     expect(acct.failed_logins).toBe(0);
     const dev = await tdb.kysely.selectFrom("devices").select("created_at").where("id", "=", rightId).executeTakeFirst();
     if (right.statusCode === 200) {

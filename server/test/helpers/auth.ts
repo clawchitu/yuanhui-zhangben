@@ -9,9 +9,12 @@ import { testConfig, type TestDb } from "./db.ts";
 
 export const PASSWORD = "correct-horse-1";
 
+/** 测试默认的「现在」：上海 2026-11-20 10:00（UTC 02:00），和 helpers/sync.ts 等处写死的流水时间配套 */
+export const TEST_NOW = Date.parse("2026-11-20T02:00:00Z");
+
 export class TestClock {
   t: number;
-  constructor(start = Date.parse("2026-11-20T02:00:00Z")) {
+  constructor(start = TEST_NOW) {
     this.t = start;
   }
   now = () => new Date(this.t);
@@ -23,7 +26,11 @@ export class TestClock {
 export function makeApp(
   tdb: TestDb,
   o: {
-    clock?: TestClock;
+    /**
+     * 服务器时钟。默认新建一个固定在 TEST_NOW 的 TestClock，测试不随真实日期推进而失败（拉流水的保留窗口等）。
+     * 确实要真实时钟的用例显式传 "real"。
+     */
+    clock?: TestClock | "real";
     config?: Partial<Config>;
     rateLimits?: AppDeps["rateLimits"];
     syncPageSize?: number;
@@ -40,7 +47,7 @@ export function makeApp(
     db: o.db ?? tdb,
     logger: false,
     logStream: o.logStream,
-    clock: o.clock?.now,
+    clock: o.clock === "real" ? undefined : (o.clock ?? new TestClock()).now,
     rateLimits: o.rateLimits,
     syncPageSize: o.syncPageSize,
     verifyPassword: o.verifyPassword,
