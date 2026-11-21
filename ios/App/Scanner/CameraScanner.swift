@@ -13,23 +13,43 @@ protocol CameraRunning: AnyObject {
     var onCode: ((String) -> Void)? { get set }
 }
 
+/// 识别结果输出端（正式是 `AVCaptureMetadataOutput`，测试换成记录器）。只在会话队列上用。
+protocol MetadataOutputTarget: AnyObject {
+    var rectOfInterest: CGRect { get set }
+    func setMetadataObjectsDelegate(_ objectsDelegate: (any AVCaptureMetadataOutputObjectsDelegate)?,
+                                    queue objectsCallbackQueue: DispatchQueue?)
+}
+
+extension AVCaptureMetadataOutput: MetadataOutputTarget {}
+
 /// 相机识别条码：`AVCaptureMetadataOutput`（§1：EAN-13 / EAN-8 / UPC-E / ITF-14 / Code128；扫码登录另加 QR）。
 /// 会话的配置、启动、停止、识别范围都在自己的串行队列上做，按调用顺序执行；认出的码在主线程交给 `onCode`。
-/// 只认取景框里的码（§14 S14-2）：`rectOfInterest` 由预览视图布局后按可见范围设。
+///
+/// 交码按「代」隔离（PR #17 Codex 第二轮 1、2）：主线程上每次 `start()` / `stop()` / `setRectOfInterest` 都换一代（`epoch`），
+/// 并立刻关掉交码；会话队列按顺序做完这一代的设置后，才给输出端装上一个带这一代代号的新回调（`Relay`），
+/// 再回主线程开交码（只开这一代）。旧代的回调哪怕已经排在主线程上，代号对不上一律丢掉——快速停用再启用也放不进旧码。
+///
+/// 只认取景框里的码（§14 S14-2）：`rectOfInterest` 由预览视图在会话跑起来、布局后按可见范围设。
+/// 还没有有效范围、或者换算结果无效（空、NaN、完全在画面外）时不装回调、不交码，绝不退回整个画面。
 /// 会话出错（`runtimeErrorNotification`）或被打断后恢复时，只要还应该开着就重新启动。
-final class CameraSession: NSObject, CameraRunning, AVCaptureMetadataOutputObjectsDelegate, @unchecked Sendable {
+final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     static let productTypes: [AVMetadataObject.ObjectType] = [.ean13, .ean8, .upce, .itf14, .code128]
 
-    let session = AVCaptureSession()
-    private let queue = DispatchQueue(label: "cn.yuanhuishop.zhangben.camera")
-    private let types: [AVMetadataObject.ObjectType]
-    // 以下三个只在 `queue` 上读写
-    private var configured = false
-    private var wantsRunning = false
-    private var output: AVCaptureMetadataOutput?
-    private var rectOfInterest = CGRect(x: 0, y: 0, width: 1, height: 1)
-    /// 只在主线程读写：停了之后已经排在主线程上的识别回调直接丢掉
-    @MainActor private var delivering = false
+    nonisolated(unsafe) let session = AVCaptureSession()
+    nonisolated private let queue = DispatchQueue(label: "cn.yuanhuishop.zhangben.camera")
+    nonisolated private let types: [AVMetadataObject.ObjectType]
+    /// 真的去开停 `AVCaptureSession`（测试注入输出端时为假）
+    nonisolated private let drivesSession: Bool
+    // 以下只在 `queue` 上读写
+    nonisolated(unsafe) private var configured = false
+    nonisolated(unsafe) private var wantsRunning = false
+    nonisolated(unsafe) private var output: MetadataOutputTarget?
+    /// 有效的识别范围；nil = 还没有 / 换算失败，此时不交码
+    nonisolated(unsafe) private var validRect: CGRect?
+    nonisolated(unsafe) private var relay: Relay?
+    /// 只在主线程读写：当前这一代，和已经装好回调、允许交码的那一代
+    @MainActor private(set) var epoch = 0
+    @MainActor private var acceptedEpoch: Int?
     @MainActor var onCode: ((String) -> Void)?
     private var observers: [NSObjectProtocol] = []
 
@@ -38,6 +58,7 @@ final class CameraSession: NSObject, CameraRunning, AVCaptureMetadataOutputObjec
 
     init(includeQR: Bool = false) {
         types = Self.productTypes + (includeQR ? [.qr] : [])
+        drivesSession = true
         super.init()
         let center = NotificationCenter.default
         for name in [AVCaptureSession.runtimeErrorNotification, AVCaptureSession.interruptionEndedNotification] {
@@ -47,52 +68,96 @@ final class CameraSession: NSObject, CameraRunning, AVCaptureMetadataOutputObjec
         }
     }
 
+    /// 测试用：输出端换成记录器，不开真相机
+    init(testOutput: MetadataOutputTarget) {
+        types = Self.productTypes
+        drivesSession = false
+        super.init()
+        output = testOutput
+        configured = true
+    }
+
     deinit {
         observers.forEach(NotificationCenter.default.removeObserver)
     }
 
+    /// 换一代并立刻关交码；返回新一代的代号
+    @MainActor private func nextEpoch() -> Int {
+        epoch += 1
+        acceptedEpoch = nil
+        return epoch
+    }
+
     @MainActor func start() {
-        delivering = true
+        let e = nextEpoch()
         queue.async { [self] in
             wantsRunning = true
-            if !configured { configure() }
-            if configured, !session.isRunning { session.startRunning() }
+            if !configured, drivesSession { configure() }
+            if configured, drivesSession, !session.isRunning { session.startRunning() }
+            install(epoch: e)
         }
     }
 
     @MainActor func stop() {
-        delivering = false
+        let e = nextEpoch()
         queue.async { [self] in
             wantsRunning = false
-            if session.isRunning { session.stopRunning() }
+            if drivesSession, session.isRunning { session.stopRunning() }
+            install(epoch: e)
         }
     }
 
     /// 出错或打断结束后：还该开着就重新启动（媒体服务重置后会话会停下）
-    private func resumeIfWanted() {
+    nonisolated private func resumeIfWanted() {
         queue.async { [self] in
-            if wantsRunning, configured, !session.isRunning { session.startRunning() }
+            if wantsRunning, configured, drivesSession, !session.isRunning { session.startRunning() }
         }
     }
 
-    /// 识别范围（`metadataOutputRectConverted` 换算后的 0…1 坐标）
-    func setRectOfInterest(_ rect: CGRect) {
-        let rect = Self.clampedRectOfInterest(rect)
+    /// 识别范围（`metadataOutputRectConverted` 换算后的 0…1 坐标）；nil 或无效 = 范围未就绪，停止交码
+    @MainActor func setRectOfInterest(_ rect: CGRect?) {
+        let rect = rect.flatMap(Self.validRectOfInterest)
+        let e = nextEpoch()
         queue.async { [self] in
-            rectOfInterest = rect
-            output?.rectOfInterest = rect
+            validRect = rect
+            install(epoch: e)
         }
     }
 
-    /// 收进 0…1 的单位方块；算不出来（空、NaN、完全在外面）时认整个画面，不至于一个码都认不出
-    static func clampedRectOfInterest(_ rect: CGRect) -> CGRect {
+    /// 收进 0…1 的单位方块；算不出来（空、NaN、完全在画面外）返回 nil——不交码，不退回整个画面
+    static func validRectOfInterest(_ rect: CGRect) -> CGRect? {
         let full = CGRect(x: 0, y: 0, width: 1, height: 1)
-        guard !rect.isNull, [rect.minX, rect.minY, rect.width, rect.height].allSatisfy(\.isFinite) else { return full }
+        guard !rect.isNull, !rect.isInfinite,
+              [rect.minX, rect.minY, rect.width, rect.height].allSatisfy(\.isFinite) else { return nil }
         let r = rect.standardized.intersection(full)
-        return r.isNull || r.width <= 0 || r.height <= 0 ? full : r
+        return r.isNull || r.width <= 0 || r.height <= 0 ? nil : r
     }
 
-    private func configure() {
+    /// 会话队列上：该开着且有有效范围，就先设范围、再装这一代的回调，最后回主线程开这一代的交码；否则摘掉回调
+    nonisolated private func install(epoch e: Int) {
+        guard let output else { return }
+        guard wantsRunning, let rect = validRect else {
+            relay = nil
+            output.setMetadataObjectsDelegate(nil, queue: nil)
+            return
+        }
+        output.rectOfInterest = rect
+        let relay = Relay(owner: self, epoch: e)
+        self.relay = relay
+        // 先排「开交码」再装回调：这一代的回调到主线程时，交码一定已经开了（主队列先进先出）
+        DispatchQueue.main.async { [self] in
+            MainActor.assumeIsolated { if epoch == e { acceptedEpoch = e } }
+        }
+        output.setMetadataObjectsDelegate(relay, queue: .main)
+    }
+
+    /// 主线程：只交当前这一代、并且已经开了交码的码
+    @MainActor fileprivate func deliver(_ codes: [String], epoch e: Int) {
+        guard e == epoch, acceptedEpoch == e else { return }
+        for code in codes { onCode?(code) }
+    }
+
+    nonisolated private func configure() {
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
                 ?? AVCaptureDevice.default(for: .video),
               let input = try? AVCaptureDeviceInput(device: device) else { return }
@@ -104,9 +169,7 @@ final class CameraSession: NSObject, CameraRunning, AVCaptureMetadataOutputObjec
         let output = AVCaptureMetadataOutput()
         guard session.canAddOutput(output) else { return }
         session.addOutput(output)
-        output.setMetadataObjectsDelegate(self, queue: .main)
         output.metadataObjectTypes = types.filter(output.availableMetadataObjectTypes.contains)
-        output.rectOfInterest = rectOfInterest
         self.output = output
         // 近距离扫小条码：能自动对焦近处就打开
         if (try? device.lockForConfiguration()) != nil {
@@ -116,14 +179,30 @@ final class CameraSession: NSObject, CameraRunning, AVCaptureMetadataOutputObjec
         configured = true
     }
 
-    nonisolated func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject],
-                                    from connection: AVCaptureConnection) {
-        let codes = objects.compactMap { ($0 as? AVMetadataMachineReadableCodeObject)?.stringValue }
-        MainActor.assumeIsolated {
-            guard delivering else { return }
-            for code in codes { onCode?(code) }
+    /// 某一代的识别回调：带着自己的代号，代号过期的码在 `deliver` 里丢掉
+    final class Relay: NSObject, AVCaptureMetadataOutputObjectsDelegate, @unchecked Sendable {
+        private weak var owner: CameraSession?
+        let epoch: Int
+
+        init(owner: CameraSession, epoch: Int) {
+            self.owner = owner
+            self.epoch = epoch
+        }
+
+        nonisolated func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject],
+                                        from connection: AVCaptureConnection) {
+            let codes = objects.compactMap { ($0 as? AVMetadataMachineReadableCodeObject)?.stringValue }
+            MainActor.assumeIsolated { deliver(codes) }
+        }
+
+        /// 主线程：把这一代认出的码交给会话（测试直接调它模拟排队的回调）
+        @MainActor func deliver(_ codes: [String]) {
+            owner?.deliver(codes, epoch: epoch)
         }
     }
+
+    /// 测试用：等会话队列上已排的活做完
+    nonisolated func waitForQueue() { queue.sync {} }
 }
 
 /// 相机什么时候开：页面看得见、App 在前台（scene `.active`）、相机允许、页面没让它暂停（被面板盖住等），
@@ -171,11 +250,13 @@ final class CameraController {
 }
 
 /// 相机画面（预览层铺满）。布局后把预览层的可见范围换算成识别坐标交给 `onVisibleRect`（设 `rectOfInterest`）。
+/// 会话没在跑时预览层的换算不准，交 nil（范围未就绪，不交码）；会话跑起来后再算一次。
 final class CameraPreviewView: UIView {
     override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
     var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
-    var onVisibleRect: ((CGRect) -> Void)?
-    private var lastRect: CGRect?
+    var onVisibleRect: ((CGRect?) -> Void)?
+    /// 上次交出去的范围（外层 nil = 还没交过）
+    private var lastRect: CGRect??
     private var startObserver: NSObjectProtocol?
 
     /// 会话开始跑之后预览层的换算才准：那时再算一次
@@ -195,10 +276,10 @@ final class CameraPreviewView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard bounds.width > 0, bounds.height > 0 else { return }
-        let rect = previewLayer.metadataOutputRectConverted(fromLayerRect: bounds)
-        guard rect != lastRect else { return }
-        lastRect = rect
+        let ready = bounds.width > 0 && bounds.height > 0 && previewLayer.session?.isRunning == true
+        let rect: CGRect? = ready ? previewLayer.metadataOutputRectConverted(fromLayerRect: bounds) : nil
+        if let lastRect, lastRect == rect { return }
+        lastRect = .some(rect)
         onVisibleRect?(rect)
     }
 }
