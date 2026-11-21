@@ -1,5 +1,6 @@
-# 构建生产镜像（linux/amd64，S08 sharp 要求 1–3）。S10a 代码 PR 只构建、不推送：
-# 推 ACR 要 ACR 凭据（仓库 secrets ACR_REGISTRY / ACR_USERNAME / ACR_PASSWORD），配好之前推送步骤自动跳过。
+# 构建生产镜像（linux/amd64，S08 sharp 要求 1–3），合并到 main 后推 ACR（§8 S10a 产出「构建并推 ACR」，§14 S10a-8 保留推送步骤）。
+# 推送要仓库 secrets ACR_REGISTRY（ACR 的公网地址，不是 ECS 拉取用的 VPC 地址）/ ACR_USERNAME / ACR_PASSWORD；
+# 没配之前推送步骤自动跳过，PR 上只构建、不推送。
 name: image
 on:
   pull_request:
