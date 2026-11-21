@@ -110,8 +110,8 @@ final class NewProductModel {
     var name = "" {
         didSet {
             if name != autoName { nameEdited = true }
-            // 名称一改，「去掉了条码」的提示和恢复就作废（PR #31 Fable 建议 4）
-            if name != strippedName { nameScanNotice = nil; nameBeforeStrip = nil; strippedName = nil }
+            // 名称一改，「像条码」的提示就作废（PR #31 Fable 建议 4）
+            if name != oldValue { nameScanNotice = nil; suspectedCode = nil }
         }
     }
     private var autoName: String?
@@ -135,14 +135,11 @@ final class NewProductModel {
     private(set) var error: String?
     /// 卖价填 0 时等人确认（「卖价是 0 元，确定吗」）：打一个「0」就按 ¥0.00 卖出去太容易误存（PR #30 Fable 建议 2）
     private(set) var confirmZeroPrice = false
-    /// 写名称时扣了扫码枪：名称框里打进的那串条码已去掉（PR #30 Fable 建议 3）
+    /// 写名称时扣了扫码枪：名称末尾像是打进了一串条码（PR #30 Fable 建议 3）
     private(set) var nameScanNotice: String?
-    /// 去掉条码之前的原名称：点「不是条码，改回来」原样恢复（PR #31 Codex 必须改 1）
-    private var nameBeforeStrip: String?
-    private var strippedName: String?
-    /// 人说过「不是条码」的名称：再按回车不再去
-    private var keptName: String?
-    var canRestoreName: Bool { nameBeforeStrip != nil }
+    /// 名称末尾像条码的那串数字：只提示，人点了「是条码，去掉这串数字」才去（PR #31 Codex 必须改 1：不自动删名称）
+    private(set) var suspectedCode: String?
+    var canStripCode: Bool { suspectedCode != nil }
 
     init(db: LocalDB, barcode: String, mode: ShopMode, quick: Bool, canLinkPack: Bool) {
         self.db = db; self.barcode = barcode; self.mode = mode; self.quick = quick; self.canLinkPack = canLinkPack && !quick
@@ -256,27 +253,22 @@ final class NewProductModel {
 
     func cancelZeroPrice() { confirmZeroPrice = false }
 
-    /// 名称框按了回车（扫码枪的后缀是回车，§14 S14-4）：名称末尾是一串 8 位以上的数字，就当成扫码枪打进来的条码，去掉，
-    /// 不让条码当名称存进去。返回去掉的那串（没有是 nil）
+    /// 名称框按了回车（扫码枪的后缀是回车，§14 S14-4）：名称末尾是一串 8 位以上的数字，像扫码枪打进来的条码，
+    /// 在名称框下面提示一句。名称一个字不动——「配件 12345678」「20261121」这样的名称照原样存（PR #31 Codex 必须改 1）；
+    /// 人点了「是条码，去掉这串数字」才去（`stripScannedCode`）。返回像条码的那串（没有是 nil）
     @discardableResult
     func submitName() -> String? {
         let tail = String(name.reversed().prefix { $0.isASCII && $0.isNumber }.reversed())
-        guard tail.count >= 8, name != keptName else { nameScanNotice = nil; return nil }
-        let original = name
-        let stripped = String(name.dropLast(tail.count)).trimmingCharacters(in: .whitespaces)
-        strippedName = stripped
-        name = stripped
-        nameBeforeStrip = original
-        nameScanNotice = "名称末尾的一串数字（\(tail)）像条码，已去掉；扫码请先点别处"
+        guard tail.count >= 8 else { nameScanNotice = nil; suspectedCode = nil; return nil }
+        suspectedCode = tail
+        nameScanNotice = "名称末尾的一串数字（\(tail)）像扫码枪打进来的条码；是名称的一部分就不用管"
         return tail
     }
 
-    /// 「不是条码，改回来」：名称原样恢复，这个名称以后按回车也不再去
-    func restoreName() {
-        guard let original = nameBeforeStrip else { return }
-        keptName = original
-        strippedName = nil
-        name = original
+    /// 「是条码，去掉这串数字」：人确认过才把末尾那串去掉
+    func stripScannedCode() {
+        guard let tail = suspectedCode, name.hasSuffix(tail) else { return }
+        name = String(name.dropLast(tail.count)).trimmingCharacters(in: .whitespaces)
     }
 
     private func save(_ make: () throws -> NewProduct) -> PackConversion? {

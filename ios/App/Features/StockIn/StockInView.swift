@@ -11,6 +11,7 @@ import UIKit
 struct StockInView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var model: StockInModel
     @State private var permission: CameraPermission
     @State private var hub = ScanHub(feedback: ScanFeedback.shared)
@@ -148,6 +149,9 @@ struct StockInView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 8)
             .background(Tokens.Palette.paper)
+            // 底部按钮的高度先保住，放不下时让上面的表单滚动、压缩（PR #31 Codex 2）
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
         }
     }
 
@@ -232,6 +236,12 @@ struct StockInView: View {
     /// 蓝卡：一共 / 入账多少、每个进价 / 加上原来的平均（预计）
     private var blueCard: some View {
         VStack(alignment: .leading, spacing: 4) {
+            // 大字 / 最大辅助字号下商品卡会滚出首屏：蓝卡顶上带一行商品名，填钱时看得见是哪一样（PR #31 Fable 建议 1，同 S18-3）
+            if typeSize >= .xxxLarge, let p = model.product {
+                Text(p.name).font(TypeScale.secondary.weight(.semibold)).foregroundStyle(Tokens.Palette.ink2)
+                    .lineLimit(1).truncationMode(.middle)
+                    .accessibilityIdentifier("stockIn.cardName")
+            }
             HStack(alignment: .lastTextBaseline) {
                 Text("一共").font(TypeScale.title).foregroundStyle(Tokens.Palette.ink)
                 Spacer(minLength: 8)

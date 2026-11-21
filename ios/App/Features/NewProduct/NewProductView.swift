@@ -110,17 +110,17 @@ struct NewProductView: View {
                             .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(Tokens.Palette.line, lineWidth: 2))
                             .accessibilityIdentifier("newProduct.name")
                     }
-                    // 去掉了像条码的数字：提示单独在名称框下面，名称一改就清；点一下原样恢复（PR #31 Codex 1、Fable 建议 4）
+                    // 名称末尾像条码：提示单独在名称框下面，名称一改就清；人点了才去掉（PR #31 Codex 1、Fable 建议 4）
                     if let n = model.nameScanNotice {
                         Text(n).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.sell)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("newProduct.nameNotice")
-                        if model.canRestoreName {
-                            Button { model.restoreName() } label: {
-                                Text("不是条码，改回来").font(TypeScale.body.weight(.semibold)).underline()
+                        if model.canStripCode {
+                            Button { model.stripScannedCode() } label: {
+                                Text("是条码，去掉这串数字").font(TypeScale.body.weight(.semibold)).underline()
                                     .foregroundStyle(Tokens.Palette.ink).frame(minHeight: Tokens.Size.minHitTarget)
                             }
-                            .accessibilityIdentifier("newProduct.restoreName")
+                            .accessibilityIdentifier("newProduct.stripCode")
                         }
                     }
                 }
