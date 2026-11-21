@@ -179,4 +179,33 @@ final class ScanHubTests: XCTestCase {
         XCTAssertEqual(hub.receive(" 6921168509256\n", from: .manual), .known)
         XCTAssertEqual(scans.map(\.code), ["6921168509256"])
     }
+
+    // MARK: 字符集（§14 S14-5 ⑭）：三个入口同一个规则
+
+    func testCodesWithOtherCharactersAreRejectedWholeOnEveryEntrance() {
+        let hub = makeHub()
+        for bad in ["ABC-6921168509256", "6921168509256#", "6921 168509256", "６９２１１６８５０９２５６", "69211685092é6"] {
+            XCTAssertNil(hub.receive(bad, from: .camera), "相机：\(bad)")
+            XCTAssertNil(hub.receive(bad, from: .manual), "手输：\(bad)")
+            now += 2
+        }
+        gun(hub, "ABC-6921168509256")
+        XCTAssertEqual(scans, [], "含其他字符的码整串不交给页面、不截断")
+        XCTAssertEqual(recorder.played, [], "也不出声")
+    }
+
+    func testLettersAreKeptAsIsOnEveryEntrance() {
+        let hub = makeHub(known: ["Ab12345678"])
+        XCTAssertEqual(hub.receive("Ab12345678", from: .camera), .known)
+        XCTAssertEqual(hub.receive("Ab12345678", from: .manual), .known)
+        gun(hub, "Ab12345678")
+        XCTAssertEqual(scans.map(\.code), ["Ab12345678", "Ab12345678", "Ab12345678"], "大小写原样，不折叠")
+        XCTAssertEqual(scans.map(\.source), [.camera, .manual, .gun])
+    }
+
+    func testRejectedCameraCodeDoesNotStartTheDedupeTimer() {
+        let hub = makeHub(known: ["6921168509256"])
+        XCTAssertNil(hub.receive("6921168509256-", from: .camera))
+        XCTAssertEqual(hub.receive("6921168509256", from: .camera), .known, "被挡掉的码不占去重的计时")
+    }
 }

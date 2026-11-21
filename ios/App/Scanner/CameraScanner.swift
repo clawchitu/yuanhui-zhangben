@@ -47,6 +47,7 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     /// 有效的识别范围；nil = 还没有 / 换算失败，此时不交码
     nonisolated(unsafe) private var validRect: CGRect?
     nonisolated(unsafe) private var relay: Relay?
+    nonisolated(unsafe) private var restartLimiter = RestartLimiter()
     /// 只在主线程读写：当前这一代，和已经装好回调、允许交码的那一代
     @MainActor private(set) var epoch = 0
     @MainActor private var acceptedEpoch: Int?
@@ -55,6 +56,11 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
 
     /// 这台机器有没有后置相机（模拟器没有）
     static var hasCamera: Bool { AVCaptureDevice.default(for: .video) != nil }
+
+    /// 扫码用的相机：后置广角，没有就系统默认的。手电筒（`Torch`）也用它，两处是同一个设备
+    nonisolated static func preferredDevice() -> AVCaptureDevice? {
+        AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) ?? AVCaptureDevice.default(for: .video)
+    }
 
     init(includeQR: Bool = false) {
         types = Self.productTypes + (includeQR ? [.qr] : [])
@@ -107,10 +113,13 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
         }
     }
 
-    /// 出错或打断结束后：还该开着就重新启动（媒体服务重置后会话会停下）
+    /// 出错或打断结束后：还该开着就重新启动（媒体服务重置后会话会停下）。
+    /// 重启有上限：1 秒内最多一次（相机坏了或一直被别的 App 占着时不连续重启转圈，PR #17 Fable 第二轮）
     nonisolated private func resumeIfWanted() {
         queue.async { [self] in
-            if wantsRunning, configured, drivesSession, !session.isRunning { session.startRunning() }
+            guard wantsRunning, configured, drivesSession, !session.isRunning,
+                  restartLimiter.allow(at: ProcessInfo.processInfo.systemUptime) else { return }
+            session.startRunning()
         }
     }
 
@@ -162,8 +171,7 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     }
 
     nonisolated private func configure() {
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
-                ?? AVCaptureDevice.default(for: .video),
+        guard let device = Self.preferredDevice(),
               let input = try? AVCaptureDeviceInput(device: device) else { return }
         session.beginConfiguration()
         defer { session.commitConfiguration() }
@@ -207,6 +215,20 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
 
     /// 测试用：等会话队列上已排的活做完
     nonisolated func waitForQueue() { queue.sync {} }
+}
+
+/// 出错后自动重启的限速：距上一次放行不到 `interval` 秒就不放行
+struct RestartLimiter: Sendable {
+    var interval: TimeInterval = 1
+    private var last: TimeInterval?
+
+    init(interval: TimeInterval = 1) { self.interval = interval }
+
+    mutating func allow(at now: TimeInterval) -> Bool {
+        if let last, now >= last, now - last < interval { return false }
+        last = now
+        return true
+    }
 }
 
 /// 相机什么时候开：页面看得见、App 在前台（scene `.active`）、相机允许、页面没让它暂停（被面板盖住等），

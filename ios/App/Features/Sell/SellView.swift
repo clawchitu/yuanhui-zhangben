@@ -11,9 +11,10 @@ import UIKit
 struct SellView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
     @State private var model: SellModel
-    @State private var camera: CameraAccess
+    @State private var permission: CameraPermission
+    /// 卖出页自己的扫码汇合点；提示音全 App 共用一个（`ScanFeedback.shared`，§14 S14-3 ⑪）
+    @State private var hub = ScanHub(feedback: ScanFeedback.shared)
     @State private var torchOn = false
     @State private var showManual = false
     @State private var showDiscount = false
@@ -22,15 +23,18 @@ struct SellView: View {
 
     init(db: LocalDB, fixture: SellFixture) {
         _model = State(initialValue: SellModel(db: db))
-        _camera = State(initialValue: fixture.camera ?? CameraAccess.current)
+        _permission = State(initialValue: CameraPermission(forced: fixture.camera))
         self.fixture = fixture
     }
+
+    /// 推到手输条码 / 抹零页（S17 换成面板后同样算「盖住」）：相机停、扫码枪不接、扫到的码不收
+    private var covered: Bool { showManual || showDiscount }
 
     var body: some View {
         VStack(spacing: 0) {
             ModeBar(title: "卖出", mode: .sell, pendingCount: model.pendingCount, onBack: { dismiss() })
-            CameraStrip(access: camera, torchOn: torchOn, onTorch: toggleTorch, onManual: { showManual = true },
-                        onOpenSettings: openSettings)
+            CameraStrip(hub: hub, permission: permission, paused: covered, torchOn: torchOn, onTorch: toggleTorch,
+                        onManual: { showManual = true })
             ZStack(alignment: .top) {
                 basketArea
                 if let n = model.notice { noticeBanner(n) }
@@ -42,6 +46,8 @@ struct SellView: View {
         .background(Tokens.Palette.paper.ignoresSafeArea())
         .animation(.easeOut(duration: 0.2), value: model.done)
         .overlay(alignment: .bottomLeading) { probe }
+        .scannerInput(hub, active: !covered)
+        .refreshesCameraPermission(permission)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(Route.sell.pageId)
         .navigationDestination(isPresented: $showManual) { RouteView(route: .manualCode) }
@@ -50,8 +56,11 @@ struct SellView: View {
             UIApplication.shared.isIdleTimerDisabled = true
             let appModel = app
             model.onPendingChange = { appModel.figures.pendingCount = $0 }
-            camera = fixture.camera ?? CameraAccess.current
+            let model = model
+            hub.handler = { model.handle($0) }
+            model.accepting = !covered
         }
+        .onChange(of: covered) { _, c in model.accepting = !c }
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
             if torchOn { _ = Torch.set(false); torchOn = false }
@@ -100,10 +109,6 @@ struct SellView: View {
         if let now = Torch.set(!torchOn) { torchOn = now }
     }
 
-    private func openSettings() {
-        if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-    }
-
     /// 「记好了」黑卡停 2.5 秒；下一次扫码会立刻把它换掉
     private func autoDismissDone() async {
         guard let id = model.done?.id, !fixture.holdDone else { return }
@@ -117,15 +122,14 @@ struct SellView: View {
         if !Task.isCancelled { model.dismissNotice() }
     }
 
-    /// 测试夹具（只在 Debug 有内容）：开页后依次喂码、改实收、自动记账
+    /// 测试夹具（只在 Debug 有内容）：开页后由 FakeScanner 把码喂进扫码层（和真扫码走同一条路：去重、出声），
+    /// 喂完改实收、自动记账
     private func feedFixture() async {
         guard !fedFixture else { return }
         fedFixture = true
-        guard !fixture.isEmpty else { return }
-        for code in fixture.scans {
-            try? await Task.sleep(for: .milliseconds(120))
-            model.scan(code)
-        }
+        #if DEBUG
+        if let scanner = fixture.scanner { await scanner.run(into: hub) }
+        #endif
         if let paid = fixture.paidFen { try? model.setPaid(paid) }
         if fixture.autoCommit {
             try? await Task.sleep(for: .milliseconds(200))

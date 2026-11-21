@@ -86,22 +86,30 @@ final class SellModel {
 
     // MARK: - 动作
 
-    /// 扫到一个码（相机、扫码枪、手输都走这里）
-    func scan(_ raw: String) {
-        let code = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !code.isEmpty else { return }
+    /// 页面这会儿收不收码：推到手输条码 / 抹零页、被面板盖住时为假，扫到的码返回 `.ignored`（不出声）。
+    /// 相机另由 `CameraViewfinder(paused:)` 停掉，这里只管扫码枪和已经排着的码（§14 S14-3 ⑨）
+    var accepting = true
+
+    /// 扫码层（`ScanHub.handler`）交来一个码：相机（已按 1.5 秒去重）、扫码枪、手输都走这里。
+    /// 返回给扫码层决定提示音：进了购物篮 `.known`；没登记的码、超上限加不进去 `.unknown`（低音 + 警告触感，
+    /// 收银员要看黄条）；页面不收码 `.ignored`。
+    func handle(_ scan: Scan) -> ScanOutcome {
+        guard accepting else { return .ignored }
+        let code = scan.code
         done = nil
         notice = nil
         do {
             guard let conv = try db.lookup(barcode: code) else {
                 notice = .unknownBarcode(code)
-                return
+                return .unknown
             }
             let i = try basket.add(conv)
             focusId = basket.lines[i].id
             clearPaidOverride()
+            return .known
         } catch {
             notice = .rejected(Self.describe(error))
+            return .unknown
         }
     }
 

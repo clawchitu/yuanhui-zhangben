@@ -83,10 +83,9 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .count: "S26"
         case .pairing, .devices: "S23a"
         case .account: "S23b"
-        case .scanner: "S14"
         case .privacy: "S21"
         case .logout: "S22b"
-        case .sell, .settings, .deviceName: nil
+        case .sell, .settings, .deviceName, .scanner: nil
         }
     }
 
@@ -107,7 +106,7 @@ struct RouteView: View {
 
     /// 这条路由在这些能力下出哪种页面（纯函数，单元测试逐个路由 × 身份测）
     enum Content: Equatable {
-        case denied, sell, settings, deviceName, placeholder
+        case denied, sell, settings, deviceName, scanner, placeholder
     }
 
     static func content(for route: Route, capabilities: Capabilities) -> Content {
@@ -116,6 +115,7 @@ struct RouteView: View {
         case .sell: return .sell
         case .settings: return .settings
         case .deviceName: return .deviceName
+        case .scanner: return .scanner
         default: return .placeholder
         }
     }
@@ -127,6 +127,7 @@ struct RouteView: View {
             case .sell: SellView(db: model.db, fixture: model.sellFixture)
             case .settings: SettingsView()
             case .deviceName: DeviceNameView()
+            case .scanner: ScannerStatusView()
             case .placeholder: PlaceholderPage(route: route, layout: model.layout)
             }
         }

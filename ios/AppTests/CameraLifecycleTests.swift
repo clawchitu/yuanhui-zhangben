@@ -313,4 +313,16 @@ final class CameraLifecycleTests: XCTestCase {
         v.layoutIfNeeded()
         XCTAssertEqual(reported, [nil], "没变不重复交")
     }
+
+    // MARK: 出错后自动重启的上限（PR #17 Fable 第二轮：1 秒内最多一次）
+
+    func testRestartLimiterAllowsAtMostOncePerSecond() {
+        var l = RestartLimiter()
+        XCTAssertTrue(l.allow(at: 100))
+        XCTAssertFalse(l.allow(at: 100.2))
+        XCTAssertFalse(l.allow(at: 100.99))
+        XCTAssertTrue(l.allow(at: 101.0))
+        XCTAssertFalse(l.allow(at: 101.5))
+        XCTAssertTrue(l.allow(at: 90), "时钟倒退时放行，不会永远卡住")
+    }
 }
