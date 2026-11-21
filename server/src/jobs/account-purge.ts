@@ -349,7 +349,13 @@ export type PurgeOutcome = "purged" | "skipped";
  * （PR #20 Codex 1）：否则提交之后、写删除记录之前进程退出或写失败，从备份恢复就会让这家店复活。写删除记录失败 → 抛错、整个事务回滚，下一轮重来。
  * 记录先写、事务后来回滚了也无妨：这家店已满 7 天、撤回不了，下一轮照样会删，重放记录删它是对的。
  */
-export async function purgeStore(db: Kysely<Database>, storeId: string, now: Date, archive: ObjectStore): Promise<PurgeOutcome> {
+export async function purgeStore(
+  db: Kysely<Database>,
+  storeId: string,
+  now: Date,
+  archive: ObjectStore,
+  clock: () => Date = () => now,
+): Promise<PurgeOutcome> {
   return withStoreLock(db, storeId, async (tx) => {
     const acct = await tx.trx
       .selectFrom("accounts as a")
@@ -367,7 +373,10 @@ export async function purgeStore(db: Kysely<Database>, storeId: string, now: Dat
     await tx.trx.deleteFrom("demo_stores").where("store_id", "=", storeId).execute();
     await tx.trx.deleteFrom("accounts").where("store_id", "=", storeId).execute();
     await tx.trx.deleteFrom("stores").where("id", "=", storeId).execute();
-    await tx.trx.insertInto("store_purges").values({ store_id: storeId, purged_at: now }).onConflict((oc) => oc.column("store_id").doNothing()).execute();
+    // purged_at 取在线数据删完、提交之前这一刻的钟（PR #20 Codex 第三轮 1）：复扫的「满 1 小时」从这里起算。
+    // 用整轮开始时的 now 的话，前面的店清除耗时或等锁超过 1 小时，这家店刚提交，第一遍就会被当成复扫记清完
+    const purgedAt = new Date(Math.max(now.getTime(), clock().getTime()));
+    await tx.trx.insertInto("store_purges").values({ store_id: storeId, purged_at: purgedAt }).onConflict((oc) => oc.column("store_id").doNothing()).execute();
     return "purged";
   });
 }
@@ -390,7 +399,7 @@ export async function runAccountPurges(d: AccountJobDeps): Promise<{ purged: str
   }
   for (const { store_id } of d.archive ? due : []) {
     try {
-      if ((await purgeStore(d.db, store_id, now, d.archive!)) === "purged") {
+      if ((await purgeStore(d.db, store_id, now, d.archive!, d.clock)) === "purged") {
         purged.push(store_id);
         d.log?.info({ store_id }, "注销到期：在线数据已清除");
       }

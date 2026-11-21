@@ -892,6 +892,48 @@ describe("满 7 天删除", () => {
     await s.app.close();
   });
 
+  it("清除本身拖过 1 小时（前面的店耗时、等锁）：满 1 小时从这家店实际清除完成时起算，清完马上跑的对象清理不算清完（PR #20 Codex 第三轮 1）", async () => {
+    const clock = new TestClock(T0);
+    const a = await shopWithBooks(clock, "慢清除店甲");
+    const b = await shopWithBooks(clock, "慢清除店乙");
+    const d = deps(clock);
+    for (const s of [a, b]) {
+      const t = await login(s.app, s.username);
+      await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    }
+    clock.advance(DELETE_GRACE_MS + 1);
+    const roundStart = clock.t;
+    // 这一轮里先清的那家店（写删除记录、删在线数据）用掉 61 分钟，后一家店才开始清
+    const put = d.archive.put.bind(d.archive);
+    let slowed = false;
+    d.archive.put = async (k, body, type) => {
+      if (!slowed && (k === deletionKey(a.storeId) || k === deletionKey(b.storeId))) {
+        slowed = true;
+        clock.advance(61 * 60_000);
+      }
+      return put(k, body, type);
+    };
+    const r0 = await runAccountPurges(d);
+    expect([a, b].map((s) => r0.purged.includes(s.storeId))).toEqual([true, true]);
+    // 清完马上做的那一遍：两家都不能记清完
+    expect([a, b].map((s) => r0.cleared.includes(s.storeId))).toEqual([false, false]);
+    const rows = await tdb.kysely.selectFrom("store_purges").select(["store_id", "purged_at", "objects_cleared_at"]).where("store_id", "in", [a.storeId, b.storeId]).execute();
+    for (const row of rows) {
+      expect(row.objects_cleared_at).toBeNull();
+      expect(row.purged_at.getTime()).toBeGreaterThanOrEqual(roundStart + 61 * 60_000);
+    }
+    // 清除之后才落地的包：要等复扫删掉
+    const late = `exports/${b.storeId}/${String(T0).padStart(13, "0")}-${"f".repeat(16)}.zip`;
+    await d.archive.put(late, Buffer.from("zip"), "application/zip");
+    clock.advance(59 * 60_000);
+    expect((await clearPurgedObjects(d)).filter((x) => x === a.storeId || x === b.storeId)).toEqual([]);
+    expect(d.archive.objects.has(late)).toBe(true);
+    clock.advance(60_000);
+    expect((await clearPurgedObjects(d)).filter((x) => x === a.storeId || x === b.storeId).sort()).toEqual([a.storeId, b.storeId].sort());
+    expect(d.archive.objects.has(late)).toBe(false);
+    for (const s of [a, b]) await s.app.close();
+  });
+
   it("复扫同时中止这家店前缀下未完成的分片上传（images/、exports/），别的店的不动（PR #20 Codex 第二轮 3、T17）", async () => {
     const clock = new TestClock(T0);
     const s = await shopWithBooks(clock, "残片清除店");
