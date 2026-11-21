@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# 测试替身：swapon --show… 列出 $FAKE_STATE/swaps；swapon <文件> 把它加进去
+printf 'swapon %s\n' "$*" >> "$FAKE_LOG"
+case "${1:-}" in
+  --show*) cat "$FAKE_STATE/swaps" 2>/dev/null; exit 0 ;;
+  *) echo "$1" >> "$FAKE_STATE/swaps" ;;
+esac

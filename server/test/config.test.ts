@@ -19,6 +19,21 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ DATABASE_URL: "x", PRIVACY_URL: "javascript:alert(1)" })).toThrow(ConfigError);
   });
 
+  it("TRUST_PROXY：默认关；打开必须同时给 Caddy 地址（IP / CIDR），格式不对启动时报错（S03-6）", () => {
+    expect(loadConfig({ DATABASE_URL: "x" })).toMatchObject({ trustProxy: false, trustedProxies: [] });
+    expect(() => loadConfig({ DATABASE_URL: "x", TRUST_PROXY: "1" })).toThrow(/TRUSTED_PROXY/);
+    expect(() => loadConfig({ DATABASE_URL: "x", TRUST_PROXY: "1", TRUSTED_PROXY: "caddy" })).toThrow(ConfigError);
+    expect(() => loadConfig({ DATABASE_URL: "x", TRUST_PROXY: "1", TRUSTED_PROXY: "10.0.0.0/33" })).toThrow(ConfigError);
+    // 前缀长度 0 等于信所有对端（PR #22 Fable，§14 S03-6 补）
+    for (const all of ["0.0.0.0/0", "::/0", "172.30.0.2, 0.0.0.0/0", "10.0.0.0/00"]) {
+      expect(() => loadConfig({ DATABASE_URL: "x", TRUST_PROXY: "1", TRUSTED_PROXY: all })).toThrow(/前缀长度/);
+    }
+    expect(loadConfig({ DATABASE_URL: "x", TRUST_PROXY: "1", TRUSTED_PROXY: "172.30.0.2, 172.30.0.0/29" })).toMatchObject({
+      trustProxy: true,
+      trustedProxies: ["172.30.0.2", "172.30.0.0/29"],
+    });
+  });
+
   it("环境变量覆盖", () => {
     const c = loadConfig({ DATABASE_URL: "x", MIN_BUILD: "42", DEMO_LOGIN_ENABLED: "1", RECOVERY_MODE: "true" });
     expect(c).toMatchObject({ minBuild: 42, demoLoginEnabled: true, recoveryMode: true });

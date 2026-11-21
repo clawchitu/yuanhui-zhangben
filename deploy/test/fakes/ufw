@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# 测试替身：规则记在 $FAKE_STATE/ufw，enable 之后 status 显示 active
+printf 'ufw %s\n' "$*" >> "$FAKE_LOG"
+case "${1:-}" in
+  status) [ -f "$FAKE_STATE/ufw_active" ] && echo "Status: active" || echo "Status: inactive" ;;
+  allow) echo "$2" >> "$FAKE_STATE/ufw" ;;
+  --force) touch "$FAKE_STATE/ufw_active" ;;
+esac
+exit 0

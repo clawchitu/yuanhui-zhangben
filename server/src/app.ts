@@ -18,6 +18,7 @@ import { lookupRoutes } from "./routes/lookup.ts";
 import { sourceFromConfig, type BarcodeSource } from "./lookup/kuainiao.ts";
 import { objectStoreFromConfig, type ObjectStore } from "./lookup/oss.ts";
 import { CatalogService } from "./lookup/catalog.ts";
+import { proxyTrust } from "./auth/proxy.ts";
 
 /**
  * 请求体上限 1 MiB（§4.2）。最大的合法 op（200 行的卖出、每个字符串都写满、非 ASCII 全转义成 \uXXXX）约 0.75 MiB，
@@ -82,8 +83,9 @@ export function buildApp(input: AppDeps): FastifyInstance {
   };
   if (!Number.isInteger(deps.syncPageSize) || deps.syncPageSize < 1) throw new Error("syncPageSize 必须是正整数");
   const app = Fastify({
-    // 前面有 Caddy 反代时打开，按 X-Forwarded-For 取客户端 IP（按 IP 限速要用）
-    trustProxy: deps.config.trustProxy,
+    // 前面有 Caddy 反代时打开，只信一跳、只信 Caddy 的地址（§14 S03-6、S10a，见 auth/proxy.ts）：
+    // req.ip 取 X-Forwarded-For 最右边那一项；客户端自带的更左边的项一律不信。关着时 req.ip 就是 TCP 对端地址。
+    trustProxy: deps.config.trustProxy ? proxyTrust(deps.config.trustedProxies) : false,
     logger:
       deps.logger === false && !deps.logStream
         ? false

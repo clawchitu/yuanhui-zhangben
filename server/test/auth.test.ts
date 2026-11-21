@@ -119,6 +119,60 @@ describe("POST /v1/auth/login", () => {
     expect(other.statusCode).toBe(200);
   });
 
+  it("TRUST_PROXY 只信一跳（S03-6）：伪造的 X-Forwarded-For 左边项换不出新额度，按 Caddy 填的最右一项限速", async () => {
+    const shop = await makeLoginShop(tdb);
+    const app = makeApp(tdb, { config: { trustProxy: true, trustedProxies: ["172.18.0.2"] }, rateLimits: { login: { limit: 3, windowMs: 60_000 } } });
+    // Caddy 在容器网络里的地址是 TCP 对端；真实客户端 203.0.113.7 是 Caddy 追加的最右一项
+    const viaCaddy = (xff: string) => ({
+      method: "POST" as const,
+      url: "/v1/auth/login",
+      payload: loginBody("nobody", "pw"),
+      remoteAddress: "172.18.0.2",
+      headers: { "x-forwarded-for": xff },
+    });
+    for (let i = 0; i < 3; i++) expect((await app.inject(viaCaddy(`10.9.9.${i}, 203.0.113.7`))).statusCode).toBe(401);
+    // 每次换一个伪造的左边项（含多项、含 IPv6），都还是同一个真实 IP 的额度
+    for (const spoof of ["1.1.1.1, 203.0.113.7", "8.8.8.8, 9.9.9.9, 203.0.113.7", "::1, 203.0.113.7"]) {
+      const r = await app.inject({ ...viaCaddy(spoof), payload: loginBody(shop.username, PASSWORD) });
+      expect([spoof, r.statusCode, r.json().code]).toEqual([spoof, 429, "rate_limited"]);
+    }
+    // 真实 IP 不同才是另一份额度
+    const other = await app.inject({ ...viaCaddy("203.0.113.7, 198.51.100.9"), payload: loginBody(shop.username, PASSWORD) });
+    await app.close();
+    expect(other.statusCode).toBe(200);
+  });
+
+  it("TRUST_PROXY 打开但对端不是 Caddy（绕过反代直连 api 端口）：不看 X-Forwarded-For，按对端限速", async () => {
+    const shop = await makeLoginShop(tdb);
+    const app = makeApp(tdb, { config: { trustProxy: true, trustedProxies: ["172.18.0.2"] }, rateLimits: { login: { limit: 2, windowMs: 60_000 } } });
+    const direct = (xff: string, username = "nobody", pw = "pw") => ({
+      method: "POST" as const,
+      url: "/v1/auth/login",
+      payload: loginBody(username, pw),
+      remoteAddress: "198.51.100.66",
+      headers: { "x-forwarded-for": xff },
+    });
+    for (let i = 0; i < 2; i++) expect((await app.inject(direct(`172.18.0.2, 10.0.0.${i}`))).statusCode).toBe(401);
+    const r = await app.inject(direct("10.0.0.99", shop.username, PASSWORD));
+    // IPv4 映射的 IPv6 写法的 Caddy 地址照样认
+    const mapped = await app.inject({ ...direct("203.0.113.50", shop.username, PASSWORD), remoteAddress: "::ffff:172.18.0.2" });
+    await app.close();
+    expect(r.statusCode).toBe(429);
+    expect(mapped.statusCode).toBe(200);
+  });
+
+  it("TRUST_PROXY 关着（默认）：完全不看 X-Forwarded-For，按 TCP 对端限速", async () => {
+    const shop = await makeLoginShop(tdb);
+    const app = makeApp(tdb, { rateLimits: { login: { limit: 2, windowMs: 60_000 } } });
+    for (let i = 0; i < 2; i++) {
+      const r = await app.inject({ method: "POST", url: "/v1/auth/login", payload: loginBody("nobody", "pw"), remoteAddress: "10.0.0.5", headers: { "x-forwarded-for": `198.51.100.${i}` } });
+      expect(r.statusCode).toBe(401);
+    }
+    const r = await app.inject({ method: "POST", url: "/v1/auth/login", payload: loginBody(shop.username, PASSWORD), remoteAddress: "10.0.0.5", headers: { "x-forwarded-for": "198.51.100.200" } });
+    await app.close();
+    expect(r.statusCode).toBe(429);
+  });
+
   it("同店里重复的 device_id → 400 invalid（每次登录必须新生成）", async () => {
     const shop = await makeLoginShop(tdb);
     const app = makeApp(tdb);

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# 模拟 ssh：跳过选项和主机，把「--」之后的参数像 sshd 那样拼成一个字符串交给远端 shell（这里是本机 bash -c），
+# 所以引号、分号的处理和真 ssh 一致；远端的 /opt/yuanhui 换成沙盒目录。stdin 原样传下去（bash -s 用）。
+set -u
+printf 'ssh %s\n' "$*" >> "$FAKE_LOG"
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+[ $# -gt 0 ] && shift
+cmd="$*"
+cmd=${cmd//\/opt\/yuanhui/$FAKE_REMOTE}
+# 初始化脚本的测试：整台机器的路径挪进沙盒 ${FAKE_ROOT}（新脚本认 YH_ROOT；旧写法的内联命令按字符串替换）
+if [ -n "${FAKE_ROOT:-}" ]; then
+  export YH_ROOT=$FAKE_ROOT
+  for p in /swapfile /etc/fstab /data/ /root/; do cmd=${cmd//$p/@@R@@$p}; done
+  cmd=${cmd//@@R@@/$FAKE_ROOT}
+fi
+exec bash -c "$cmd"

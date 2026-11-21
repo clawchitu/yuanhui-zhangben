@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+printf 'mkswap %s\n' "$*" >> "$FAKE_LOG"
+[ "${FAKE_MKSWAP_FAIL:-0}" = 1 ] && exit 1
+exit 0

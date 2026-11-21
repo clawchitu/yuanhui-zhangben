@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# 模拟 curl（只给 smoke.test.sh 用）：HTTP 请求一律当成服务正常（/ 返回 404）；
+# telnet:// 交给真 curl（$REAL_CURL），用来演示旧的端口检查漏报。
+set -u
+for a in "$@"; do case "$a" in telnet://*) exec "$REAL_CURL" "$@" ;; esac; done
+w=""; prev=""
+for a in "$@"; do [ "$prev" = -w ] && w=$a; prev=$a; done
+case "$w" in
+  *http_code*) printf 404 ;;
+  "") echo ok ;;
+  *) printf '证书校验：0（0 = 公开受信任）\n' ;;
+esac
+exit 0

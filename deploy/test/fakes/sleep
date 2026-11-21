@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# 测试里不真的等
+exit 0

@@ -254,6 +254,8 @@ export class AliOssObjectStore implements ObjectStore {
    * 同一个客户端上正在跑的分片上传会被它打断；复扫时的中止不能波及正在上传的导出包
    */
   private ctl: Promise<AliClient>;
+  /** 这个实例读写的桶（商品图桶和存档桶各一个实例） */
+  readonly bucket: string;
   /** o.request 只给测试用：换掉 ali-oss 的网络传输（分片逻辑仍是实际安装的 ali-oss） */
   constructor(c: Extract<Config["objectStore"], { kind: "aliyun" }>, o: { request?: (params: unknown) => Promise<unknown> } = {}) {
     const make = () =>
@@ -270,6 +272,7 @@ export class AliOssObjectStore implements ObjectStore {
         if (o.request) cl.request = o.request;
         return cl;
       });
+    this.bucket = c.bucket;
     this.client = make();
     this.ctl = make();
   }
@@ -373,12 +376,14 @@ export class AliOssObjectStore implements ObjectStore {
 /**
  * 存档桶（exports/、deletions/，§9.1 的 yuanhui-backup）。S09-11：生产不许和商品图共用桶。
  * - 本机目录（开发、测试）：和商品图同一个目录。
- * - 阿里云：S10a 加第二个桶的配置之前一律按没配处理（返回 null），导出和清除那边会按 export_no_archive / purge_no_archive 告警，
- *   绝不把导出包、删除记录写进商品图桶 yuanhui-img（§14 T13）。
+ * - 阿里云：第二个桶 OSS_ARCHIVE_BUCKET（S10a，§14 T13），同一组 RAM 凭据；loadConfig 已要求必填且和商品图桶不同。
+ *   万一拿到的配置没有存档桶或和商品图桶相同（只可能是手工拼的 Config），仍按没配处理（返回 null），
+ *   导出和清除那边按 export_no_archive / purge_no_archive 告警，绝不把导出包、删除记录写进商品图桶 yuanhui-img。
  */
 export function archiveStoreFromConfig(config: Config, images: ObjectStore | null): ObjectStore | null {
   const c = config.objectStore;
   if (c.kind === "local") return images;
+  if (c.kind === "aliyun" && c.archiveBucket && c.archiveBucket !== c.bucket) return new AliOssObjectStore({ ...c, bucket: c.archiveBucket });
   return null;
 }
 

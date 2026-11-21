@@ -1,5 +1,6 @@
 // 服务器配置：全部从环境变量读，启动时校验一次。密钥（数据库口令等）只在环境变量里，不进仓库、不进日志。
 // 示例见 server/.env.example。
+import { parseProxyList } from "./auth/proxy.ts";
 
 export interface Config {
   databaseUrl: string;
@@ -14,8 +15,10 @@ export interface Config {
   supportUrl: string;
   /** 恢复模式：平时关闭，打开后才接受 POST /v1/recovery/import（§4.6） */
   recoveryMode: boolean;
-  /** 前面有 Caddy 反代时为真：按 X-Forwarded-For 取客户端 IP（§7 按 IP 限速） */
+  /** 前面有 Caddy 反代时为真：只信一跳，取 X-Forwarded-For 最右边一项（Caddy 填的对端地址）作客户端 IP（§7 按 IP 限速，§14 S03-6） */
   trustProxy: boolean;
+  /** TRUST_PROXY 打开时必填：Caddy 的地址（IP 或 CIDR，逗号分隔）。只有 TCP 对端在这里面时才看 X-Forwarded-For，而且只取最右一项 */
+  trustedProxies: string[];
   /** 每家店在本进程里在途（排队 + 正在处理）的同步写入上限，超过直接 503（§14 S04-8，默认 32） */
   storeQueueLimit: number;
   /** 商品图总开关（S08、§12 Q2）。默认关：关着时不抓图、GET /v1/images 一律 404、条码查询 has_image=false，手机全部显示首字 */
@@ -30,7 +33,17 @@ export interface Config {
   objectStore:
     | { kind: "none" }
     | { kind: "local"; dir: string }
-    | { kind: "aliyun"; region: string; bucket: string; accessKeyId: string; accessKeySecret: string; endpoint?: string };
+    | {
+        kind: "aliyun";
+        region: string;
+        /** 商品图桶（yuanhui-img），只放 images/ */
+        bucket: string;
+        /** 存档桶（yuanhui-backup），放 exports/、deletions/ 和备份；必须和商品图桶不同（§14 S09-11、T13）。loadConfig 要求必填 */
+        archiveBucket?: string;
+        accessKeyId: string;
+        accessKeySecret: string;
+        endpoint?: string;
+      };
   /** GET /v1/images 的本机磁盘缓存目录，缺了回源对象存储 */
   imageCacheDir: string;
 }
@@ -81,7 +94,7 @@ export function loadConfig(env: Env = process.env): Config {
     privacyUrl: url(env, "PRIVACY_URL", "https://yuanhuishop.cn/privacy"),
     supportUrl: url(env, "SUPPORT_URL", "https://yuanhuishop.cn/support"),
     recoveryMode: bool(env, "RECOVERY_MODE", false),
-    trustProxy: bool(env, "TRUST_PROXY", false),
+    ...trustProxy(env),
     storeQueueLimit: int(env, "STORE_QUEUE_LIMIT", 32, 1, 10_000),
     productImagesEnabled: bool(env, "PRODUCT_IMAGES_ENABLED", false),
     kuainiao: {
@@ -95,6 +108,20 @@ export function loadConfig(env: Env = process.env): Config {
   };
 }
 
+function trustProxy(env: Env): Pick<Config, "trustProxy" | "trustedProxies"> {
+  const on = bool(env, "TRUST_PROXY", false);
+  if (!on) return { trustProxy: false, trustedProxies: [] };
+  let list: string[];
+  try {
+    list = parseProxyList(env.TRUSTED_PROXY ?? "");
+  } catch (e) {
+    throw new ConfigError(`TRUSTED_PROXY ${(e as Error).message}`);
+  }
+  // 只开 TRUST_PROXY 不写 Caddy 地址等于信任所有对端，伪造的头就能换限速额度（S03-6），启动时拒绝
+  if (!list.length) throw new ConfigError("TRUST_PROXY=1 需要 TRUSTED_PROXY（Caddy 的地址，如 172.30.0.2）");
+  return { trustProxy: true, trustedProxies: list };
+}
+
 function objectStore(env: Env): Config["objectStore"] {
   const kind = env.OBJECT_STORE || "none";
   if (kind === "none") return { kind };
@@ -103,12 +130,15 @@ function objectStore(env: Env): Config["objectStore"] {
     return { kind, dir: env.OBJECT_STORE_DIR };
   }
   if (kind === "aliyun") {
-    const need = ["OSS_REGION", "OSS_BUCKET", "OSS_ACCESS_KEY_ID", "OSS_ACCESS_KEY_SECRET"] as const;
+    // 配了商品图桶就必须同时配好存档桶，而且不许是同一个（PR #20 Fable 第二轮裁定 ①、§14 S09-11、T13）
+    const need = ["OSS_REGION", "OSS_BUCKET", "OSS_ARCHIVE_BUCKET", "OSS_ACCESS_KEY_ID", "OSS_ACCESS_KEY_SECRET"] as const;
     for (const k of need) if (!env[k]) throw new ConfigError(`OBJECT_STORE=aliyun 需要 ${k}`);
+    if (env.OSS_ARCHIVE_BUCKET === env.OSS_BUCKET) throw new ConfigError("OSS_ARCHIVE_BUCKET 不能和 OSS_BUCKET 是同一个桶（S09-11）");
     return {
       kind,
       region: env.OSS_REGION!,
       bucket: env.OSS_BUCKET!,
+      archiveBucket: env.OSS_ARCHIVE_BUCKET!,
       accessKeyId: env.OSS_ACCESS_KEY_ID!,
       accessKeySecret: env.OSS_ACCESS_KEY_SECRET!,
       ...(env.OSS_ENDPOINT ? { endpoint: url(env, "OSS_ENDPOINT", "") } : {}),

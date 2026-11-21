@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# 远端是 Ubuntu（GNU sed）。本机是 macOS（BSD sed）时把 GNU 写法的 `sed -i` 换成 `sed -i ''`，CI 上原样透传
+real=/usr/bin/sed
+if "$real" --version >/dev/null 2>&1; then exec "$real" "$@"; fi
+args=(); for a in "$@"; do if [ "$a" = -i ]; then args+=(-i ''); else args+=("$a"); fi; done
+exec "$real" "${args[@]}"
