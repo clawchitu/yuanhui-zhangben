@@ -92,7 +92,8 @@ TLS_MOUNT=(); [ -d "$D/caddy/tls" ] && TLS_MOUNT=(-v "$D/caddy/tls:/etc/caddy/tl
 docker run --rm --network none -e ACME_EMAIL="$(envval ACME_EMAIL)" -e PUBLIC_IP="$(envval PUBLIC_IP)" \
   -v "$IN/Caddyfile.ip:/etc/caddy/Caddyfile:ro" ${TLS_MOUNT[@]+"${TLS_MOUNT[@]}"} "$(envval CADDY_IMAGE)" \
   caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-[ -n "$LOAD" ] || docker pull "$NEW"
+# 本机已有这个镜像（tar 载入过、手工回滚到上一个标签、本机构建的测试镜像）就不拉
+[ -n "$LOAD" ] || docker image inspect "$NEW" > /dev/null 2>&1 || docker pull "$NEW"
 
 # ── 2. 备份当前配置，装上新配置 ──
 mkdir -p "$D/prev" "$D/caddy"

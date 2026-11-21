@@ -18,7 +18,7 @@ setup() {
   export FAKE_REMOTE="$T/remote" FAKE_STATE="$T/state" FAKE_LOG="$T/log"
   : > "$FAKE_LOG"
   printf 'POSTGRES_PASSWORD=0123456789abcdef0123\nACME_EMAIL=a@example.invalid\nPUBLIC_IP=47.117.184.253\nCADDY_IMAGE=%s/caddy:2.10.2\nPOSTGRES_IMAGE=%s/postgres:16\nAPI_IMAGE=\n' "$REG" "$REG" > "$T/remote/.env"
-  unset FAKE_PULL_FAIL FAKE_MIGRATE_FAIL FAKE_UP_FAIL_IMAGE FAKE_BAD_IMAGE FAKE_UNHEALTHY_IMAGE FAKE_CADDY_INVALID FAKE_CADDY_RELOAD_FAIL FAKE_SYSTEMCTL_FAIL GATE_NOW
+  unset FAKE_IMAGE_PRESENT FAKE_PULL_FAIL FAKE_MIGRATE_FAIL FAKE_UP_FAIL_IMAGE FAKE_BAD_IMAGE FAKE_UNHEALTHY_IMAGE FAKE_CADDY_INVALID FAKE_CADDY_RELOAD_FAIL FAKE_SYSTEMCTL_FAIL GATE_NOW
   # 默认有一份刚成功的备份（迁移前门禁放行，S10b、T20）；定时器装进沙盒目录
   mkdir -p "$T/remote/backup" "$T/units"; date +%s > "$T/remote/backup/last-success"
   export SYSTEMD_DIR="$T/units"
@@ -206,6 +206,11 @@ check "没有 docker pull" no grep -q "^docker pull" "$FAKE_LOG"
 check "load 完删掉了 tar" [ ! -e "$T/remote/incoming/yuanhui-images-$NEW.tar.gz" ]
 check ".env 指向 local/yuanhui/api:新标签（实际 $(envimg)）" [ "$(envimg)" = "local/yuanhui/api:$NEW" ]
 unset A
+setup; with_prev; export FAKE_IMAGE_PRESENT=1; deploy "$NEW" --execute
+check "不带 tar、本机已有镜像：不 docker pull（实际 $(rc)）" [ "$(rc)" = 0 ] && no grep -q "^docker pull" "$FAKE_LOG"
+unset FAKE_IMAGE_PRESENT
+setup; with_prev; deploy "$NEW" --execute
+check "不带 tar、本机没有镜像：照常 docker pull" grep -q "^docker pull $REG/api:$NEW" "$FAKE_LOG"
 setup; with_prev; IMAGES_TAR="$T/nope.tar.gz" deploy "$NEW" --execute
 check "tar 不存在：退出码 2、没有 ssh（实际 $(rc)）" [ "$(rc)" = 2 ] && [ ! -s "$FAKE_LOG" ]
 setup; with_prev; printf x > "$T/a;b.tar"; IMAGES_TAR="$T/a;b.tar" deploy "$NEW" --execute

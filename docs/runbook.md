@@ -8,24 +8,25 @@ Compose（`deploy/compose.yml`）：
 - `api` 内存上限 512 MB 且 `memswap_limit` 同为 512 MB（不许靠 swap 顶，§14 S10a-7）；`caddy` 128 MB；三个服务日志轮转 20 MB × 5。
 - api `TRUST_PROXY=1`、`TRUSTED_PROXY=172.30.0.2`：只有对端是 Caddy 才看 `X-Forwarded-For`，且只取最右一项（§14 S03-6）。
 - Caddy 只放行 `/v1/*` 和 `/healthz`，其余 404；只开 h1、h2（§14 S10a-5）。
-- 镜像全部从 ACR 的 VPC 地址拉（`.env` 的 `CADDY_IMAGE`、`POSTGRES_IMAGE`，`API_IMAGE` 由发布脚本写）。
+- 镜像不从 Docker Hub 拉（ECS 连不上）。默认（负责人 11/22 决定，不用 ACR）：GitHub Actions 的 `image.yml` 把 api、`caddy:2.10.2`、`postgres:16` 打成 `yuanhui-images-<提交号>.tar.gz`，发布时传上去 `docker load`，镜像名前缀 `local/yuanhui`（`.env` 的 `CADDY_IMAGE=local/yuanhui/caddy:2.10.2`、`POSTGRES_IMAGE=local/yuanhui/postgres:16`，`API_IMAGE` 由发布脚本写）。ACR 路径保留为可选（`cloud-manual-steps.md` 第 5 步）。
+- OSS：`yuanhui-backup`（只放 `backups/`，**合规保留 35 天**）、`yuanhui-archive`（`exports/`、`deletions/`、`heartbeat/`）；商品图桶 `yuanhui-img` T9 前不建。**按负责人决定，服务器使用部署账号密钥，不使用专用子账号**（`cloud-manual-steps.md` 第 4 步）。
 
 **备案通过前，服务器上只放假数据**（演示小店、测试店；黄总试用店先说明「账不作数」，Q8 未答复前不建），两个域名都不解析到这台 ECS（§9.2、§14 S10a-4）。
 
 ## 首次部署（顺序不能乱）
-1. 云上人工步骤 `docs/cloud-manual-steps.md` 第 0–5 步做完（安全组、密钥、OSS、RAM、ACR）。
-2. 镜像推 ACR：`mirror-base-images.sh --execute`（基础镜像）；`main` 上的 `image.yml` 推 `api:<提交号>` 成功（Actions 里看到「推 ACR」步骤绿）。
+1. 云上人工步骤 `docs/cloud-manual-steps.md` 第 0–4 步做完（安全组、密钥、两个 OSS 桶和合规保留、生命周期）。第 5 步 ACR 不做。
+2. 镜像 tar：`image.yml` 在 main 的 push、手动触发（`gh workflow run image.yml`）或带 `deploy-tar` 标签的 PR 上传 artifact `yuanhui-images-<提交号>`（留 3 天）。本机 `gh run download <run id> -D /tmp/yh-img`，`shasum -a 256 -c *.sha256`。
 3. `ECS_HOST=root@47.117.184.253 deploy/bootstrap-ecs.sh` → 看一遍 → `--execute`。
-4. ECS 上填 `/opt/yuanhui/.env`（`deploy/.env.example`，`POSTGRES_PASSWORD` 用 `openssl rand -hex 24`）。
-5. ECS 上 `docker login <ACR 的 VPC 地址>`。
-6. 本机发布：`ECS_HOST=root@47.117.184.253 ACR=<ACR 的 VPC 地址>/yuanhui deploy/deploy.sh <提交号>` → 看一遍 → 加 `--execute`。**`<提交号>` 填 40 位完整提交号**（`git rev-parse <提交>`）：`image.yml` 推的标签是 `${GITHUB_SHA}`，填 7 位短号会在拉镜像时失败（什么都没动，但白跑一趟）。首次发布时 `.env` 的 `API_IMAGE` 还是空的，脚本在切换前的 `compose config`、起 Postgres、迁移这几步临时带上新镜像，不用手填。首次发布会先起 Postgres、等健康，再跑迁移。首次发布还没有任何备份，要加 `--skip-backup-gate`（会记进 `backup/gate-skips.log`）；发布成功后备份定时器自动装上，之后的发布不再跳过。
+4. ECS 上填 `/opt/yuanhui/.env`（`deploy/.env.example`，`POSTGRES_PASSWORD` 用 `openssl rand -hex 24`）。密钥走管道写入、不显示：本机把 `KEY=值` 行从钥匙串拼出来，`| ssh root@47.117.184.253 'bash /root/setenv.sh'`（ECS 上一个替换同名行的小脚本，见部署实测 PR），不在命令行和终端里出现值。
+5. （不用 ACR 时跳过 `docker login`。）
+6. 本机发布：`IMAGES_TAR=/tmp/yh-img/…/yuanhui-images-<提交号>.tar.gz ECS_HOST=root@47.117.184.253 deploy/deploy.sh <提交号>` → 看一遍 → 加 `--execute`（tar 约 300 MB，scp 加 `docker load` 几分钟）。**`<提交号>` 填 40 位完整提交号**，和 tar 文件名里的一致：tar 里的 api 镜像标签就是它，对不上 `remote-deploy.sh` 在 `docker load` 后就停（什么都没切）。用 ACR 时不带 `IMAGES_TAR`、加 `ACR=<ACR 的 VPC 地址>/yuanhui`。首次发布时 `.env` 的 `API_IMAGE` 还是空的，脚本在切换前的 `compose config`、起 Postgres、迁移这几步临时带上新镜像，不用手填。首次发布会先起 Postgres、等健康，再跑迁移。首次发布还没有任何备份，要加 `--skip-backup-gate`（会记进 `backup/gate-skips.log`）；发布成功后备份定时器自动装上，之后的发布不再跳过。
 7. 冒烟：`deploy/smoke.sh`；然后按下面「部署时验证」逐项做。
 
 ## 发布 / 回滚
-- 发布：同上第 6 步（40 位完整提交号）。`deploy.sh` 在第一条 ssh 之前校验 `ACR`、`ECS_HOST`、标签（7–40 位小写十六进制），不对退出码 2。
-- ECS 上 `remote-deploy.sh` 的顺序：校验新 compose 和新 Caddyfile → 拉镜像 → 备份当前配置到 `prev/` → 起 Postgres 等健康 → `migrate` → 换 `API_IMAGE` → `up -d` → 探 `/healthz` → 镜像内缩图冒烟 → `caddy reload`。**从起 Postgres 到重载 Caddy 任何一步失败**，自动换回 `prev/` 里的配置和上一个镜像，再探一次健康、重载一次 Caddy；回滚这几步也失败则退出码 3。
+- 发布：同上第 6 步（40 位完整提交号）。`deploy.sh` 在第一条 ssh 之前校验 `IMAGES_TAR`（文件存在、文件名）或 `ACR`、`ECS_HOST`、标签（7–40 位小写十六进制），不对退出码 2。
+- ECS 上 `remote-deploy.sh` 的顺序：（`--load-images` 时先 `docker load`、删掉 tar、确认 tar 里有 `api:<标签>`）→ 校验新 compose 和新 Caddyfile → 拉镜像（tar 时不拉）→ 备份当前配置到 `prev/` → 起 Postgres 等健康 → `migrate` → 换 `API_IMAGE` → `up -d` → 探 `/healthz` → 镜像内缩图冒烟 → `caddy reload`。**从起 Postgres 到重载 Caddy 任何一步失败**，自动换回 `prev/` 里的配置和上一个镜像，再探一次健康、重载一次 Caddy；回滚这几步也失败则退出码 3。
 - `current-tag` 只在整套成功后写；失败时它保持上一个成功的标签。退出码：0 成功；1 失败已回滚（或首次发布没有可回的）；2 参数 / `.env` 不对，什么都没动；3 回滚也失败，需人工；4 发布成功但备份定时器没装上；5 备份门禁拒绝，什么都没动。
-- 手工回滚 = 用上一个标签再跑一次 `deploy.sh`。
+- 手工回滚 = 用上一个标签再跑一次 `deploy.sh`（上一个镜像已经在 ECS 上，不带 `IMAGES_TAR`、带 `ACR=local/yuanhui` 也行：`docker pull` 会失败，所以 tar 路径下手工回滚要带上那次的 tar，或改走自动回滚）。
 - **迁移前备份门禁**（S10b，§14 T20）：`remote-deploy.sh` 动任何东西之前看 `/opt/yuanhui/backup/last-success`，营业时间（上海 8:00–22:59）超过 2 小时、其余时间超过 6 小时没有成功备份 → 退出码 5、什么都不动。先在 ECS 上 `bash /opt/yuanhui/backup.sh`，成功再发布。确需跳过（首次发布、备份本身坏了要发修复）加 `--skip-backup-gate`，每次跳过记进 `/opt/yuanhui/backup/gate-skips.log`（时间、标签、原因）。
 - 发布避开整点和 02:30 之后的两三分钟：迁移的 DDL 会排在正在跑的 `pg_dump` 后面，排队期间那张表的读写都要等。
 - 发布成功后会装上 `backup.sh` 和 `yuanhui-backup.{service,timer}` 并 `enable --now`；这一步失败退出码 4（发布本身已成功，不回滚）。
@@ -35,22 +36,23 @@ Compose（`deploy/compose.yml`）：
 **时间表**：`yuanhui-backup.timer`，上海时间 8:00–22:00 每小时一次、02:30 一次（`systemctl list-timers yuanhui-backup.timer` 看下一次）。错过的开机补跑。
 **一次备份**（`/opt/yuanhui/backup.sh`，也可手动跑）：`backup` 容器开可重复读事务、`pg_export_snapshot()`、在同一快照里算清单 → Postgres 容器里 `pg_dump -Fc --snapshot=<同一快照>` → `backup` 容器用口令加密（scrypt + AES-256-GCM）→ 传 `backups/<UTC 时间>-<随机>.dump.enc` 和 `.manifest.enc` → 写心跳 `heartbeat/backup.json` → 写 `backup/last-success`。不重叠（`backup/lock.d`，里面记 pid）：上一次还在跑就跳过，退出码 2，打 `alert=backup_skipped` 并记进 `backup/skips.log` 和 `metrics.prom` 的 `last_skip_timestamp_seconds`；持锁进程已不在（`kill -9`、OOM、强制重启）或锁超过 16 分钟（`TimeoutStartSec=900`）算残留，清掉照常跑。拿到锁后先删上一次残留的 `backup/work.*`（明文 dump）。
 **清单**：每张表的行数；每家店的流水条数、`value_delta_fen` 合计、`cogs_fen` 合计、商品库存 / 货值 / 最近进价的校验和、每条流水数量 / 金额 / 成本的校验和、本月和上月月报全部数字。和 dump 同一快照，恢复后逐项比对必须全等。**不覆盖**商品名、售价、条码内容、设备和账号（这些表只比行数），它们靠 dump 的 sha256 和 `pg_restore --exit-on-error` 保证，清单不是全量校验。加密格式（scrypt + AES-256-GCM）见 `server/src/backup/crypto.ts` 开头（§14 S10b-1）。
-**保留**：备份账号删不了任何对象；`backups/` 35 天后由 OSS 生命周期删除（`cloud-manual-steps.md` 第 3 步）。每次备份顺带列一遍 `backups/`，最旧的一份超过 36 天打 `alert=backup_lifecycle_stale`（生命周期没生效）。
+**保留**：`yuanhui-backup` 桶开了 OSS 合规保留（WORM）35 天，保留期内任何人（含主账号、服务器上的密钥）都删不掉、覆盖不了 `backups/` 里的对象；35 天后由 OSS 生命周期删除（`cloud-manual-steps.md` 第 3 步，生命周期天数不能早于保留期）。备份键各不相同（UTC 时间 + 随机），从不覆盖同名对象；心跳要覆盖，放在存档桶 `yuanhui-archive`。每次备份顺带列一遍 `backups/`，最旧的一份超过 36 天打 `alert=backup_lifecycle_stale`（生命周期没生效）。
 **可观测**（S10c 接告警）：
 - `journalctl -u yuanhui-backup`：每次一行 JSON，`event=backup_ok`（`backup_id`、`dump_bytes`、`duration_s`），或 `event=backup_failed`、`alert=backup_failed`、`stage=prepare|snapshot|dump|upload`；
 - `/opt/yuanhui/backup/status.json`、`metrics.prom`（`yuanhui_backup_last_success_timestamp_seconds`、`_last_attempt_timestamp_seconds`、`_last_ok`、`_consecutive_failures`、`_duration_seconds`、`_dump_bytes`）；
-- OSS 上的心跳对象 `heartbeat/backup.json`（`at`、`backup_id`）：§9.5 的「营业时间内超过 2 小时没更新」看它。
+- OSS 上的心跳对象 `yuanhui-archive` 桶的 `heartbeat/backup.json`（`at`、`backup_id`）：§9.5 的「营业时间内超过 2 小时没更新」看它。
 - 手动看桶：`docker compose -f /opt/yuanhui/compose.yml --project-directory /opt/yuanhui --env-file /opt/yuanhui/.env run --rm -T backup node scripts/backup.ts status`。
 
 ### 恢复（演练和整机重建都用这一套）
-只需要：这个仓库（`cd server && npm ci`）、`pg_restore` 16 或更新、备份账号的 AccessKey、加密口令（见下面「口令保管」）。不需要 ECS。整机重建见下一节。
+只需要：这个仓库（`cd server && npm ci`）、`pg_restore` 16 或更新、部署账号的 AccessKey、加密口令（见下面「口令保管」）。不需要 ECS。整机重建见下一节。
 1. 建一个**空库**做目标（本机 `createdb yh_restore`）。脚本只写空库或「恢复中」的库，在用的库不会被覆盖。
 2. 环境变量：
    ```sh
    export DATABASE_URL=postgres://<用户>:<口令>@127.0.0.1:5432/yh_restore   # 口令经 PGPASSWORD 给 pg_restore，不进命令行
    export BACKUP_PASSPHRASE="$(security find-generic-password -s yuanhui-backup-passphrase -w)"
-   export BACKUP_OSS_REGION=oss-cn-shanghai BACKUP_OSS_BUCKET=yuanhui-backup BACKUP_OSS_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com
-   export BACKUP_OSS_ACCESS_KEY_ID=… BACKUP_OSS_ACCESS_KEY_SECRET=…   # 钥匙串 yuanhui-backup-oss
+   export BACKUP_OSS_REGION=oss-cn-shanghai BACKUP_OSS_BUCKET=yuanhui-backup BACKUP_OSS_ARCHIVE_BUCKET=yuanhui-archive BACKUP_OSS_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com
+   export BACKUP_OSS_ACCESS_KEY_ID="$(security find-generic-password -s tomo-credential-broker -a aliyun-huang-ak-id -w)"
+   export BACKUP_OSS_ACCESS_KEY_SECRET="$(security find-generic-password -s tomo-credential-broker -a aliyun-huang-ak-secret -w)"
    ```
 3. `deploy/restore.sh latest`（或指定 `<备份 id>`）：dry-run，下载、解密、核对 sha256、`pg_restore --list`、检查目标库、列出删除记录，单独一行 `restore_will_delete` 列出恢复时会被删掉的店（元辉店不许在里面），目标库不写。
 4. `deploy/restore.sh latest --execute`：清空目标库、打「恢复中」标记 → `pg_restore` → 按清单逐项比对（不一致就停，不换 epoch）→ 重放 `deletions/` 里的删除记录（已注销的店整家删掉，旧令牌和重传 401）→ 再比对 → 全部店换新 `epoch`、标记改「已恢复」。最后一行 `restore_ok` 带 `restore_seconds`。
@@ -58,12 +60,12 @@ Compose（`deploy/compose.yml`）：
 
 ### 整机重建（新 ECS）
 数据库容器不映射端口，所有库操作都在容器里做（`restore.sh` 的 `RESTORE_COMPOSE_DIR` 跑法：node 步骤 `docker compose run backup`，`pg_restore` 用 `docker compose exec postgres`）。**先恢复、后发布**：先发布会跑迁移建出表，恢复会被拒绝。下面 `C` = `docker compose -f /opt/yuanhui/compose.yml --project-directory /opt/yuanhui --env-file /opt/yuanhui/.env`。
-1. 新 ECS 按 `cloud-manual-steps.md` 第 1、2、6 步准备好；填 `/opt/yuanhui/.env`，其中 `BACKUP_*` 和口令从钥匙串取，`API_IMAGE=<ACR 的 VPC 地址>/yuanhui/api:<最后一次成功发布的 40 位提交号>`，`RECOVERY_MODE=0`。
+1. 新 ECS 按 `cloud-manual-steps.md` 第 1、2、6 步准备好；填 `/opt/yuanhui/.env`，其中密钥和口令从钥匙串取，`API_IMAGE=local/yuanhui/api:<最后一次成功发布的 40 位提交号>`，`RECOVERY_MODE=0`；那个提交的镜像 tar（artifact 过期了就 `gh workflow run image.yml --ref <提交>` 重打）传上去 `docker load -i`。
 2. 本机：`scp deploy/compose.yml deploy/restore.sh root@<新 IP>:/opt/yuanhui/`
 3. ECS 上只起 Postgres：`C up -d --wait postgres`
 4. 恢复：`RESTORE_COMPOSE_DIR=/opt/yuanhui bash /opt/yuanhui/restore.sh latest`（dry-run，看 `restore_will_delete`）→ 加 `--execute`，最后一行 `restore_ok`。
 5. 清掉恢复标记：`C run --rm -T backup node scripts/restore.ts clear-marker`（输出 `"state":"foreign"`，之后任何恢复都拒绝这个库）。
-6. 本机发布同一个提交：`ECS_HOST=root@<新 IP> ACR=<ACR 的 VPC 地址>/yuanhui deploy/deploy.sh <同一提交号> --execute --skip-backup-gate`（迁移是空操作；备份定时器随之装上）。
+6. 本机发布同一个提交：`IMAGES_TAR=<同一个 tar> ECS_HOST=root@<新 IP> deploy/deploy.sh <同一提交号> --execute --skip-backup-gate`（迁移是空操作；备份定时器随之装上）。
 7. 冒烟：`deploy/smoke.sh`，再 `bash /opt/yuanhui/backup.sh` 出 `backup_ok`。RTO 1 小时指第 1 步到这里。
 8. 手机下一次同步拿到 `epoch_mismatch` → 全量拉取 → 重传保留的 op（§4.6）。备份之后才开通的设备重新开通，再开「恢复模式」补交。
 
@@ -72,8 +74,8 @@ Compose（`deploy/compose.yml`）：
 - 关（补交完就关）：改回 `RECOVERY_MODE=0`，`C up -d api`，同一条命令输出 `0`。
 
 ### 口令保管（§9.1、§14 S10b-10）
-备份口令丢了所有备份都解不开，补不回来；备份账号的 AccessKey 丢了可以用阿里云主账号重发。口令留三份，不经过聊天软件、邮件、备忘录：
-1. 部署机（这台 Mac）的钥匙串：`security add-generic-password -s yuanhui-backup-passphrase -a yuanhui -w "$(openssl rand -base64 32)"`；写进 ECS 时走管道、不显示：`printf 'BACKUP_PASSPHRASE=%s\n' "$(security find-generic-password -s yuanhui-backup-passphrase -w)" | ssh root@47.117.184.253 'cat >> /opt/yuanhui/.env'`。AccessKey 存 `-s yuanhui-backup-oss`。
+备份口令丢了所有备份都解不开，补不回来；部署账号的 AccessKey 丢了可以用阿里云主账号重发。口令留三份，不经过聊天软件、邮件、备忘录：
+1. 部署机（这台 Mac）的钥匙串：`security add-generic-password -s yuanhui-backup-passphrase -a yuanhui -w "$(openssl rand -base64 32)"`；写进 ECS 时走管道、不显示：`printf 'BACKUP_PASSPHRASE=%s\n' "$(security find-generic-password -s yuanhui-backup-passphrase -w)" | ssh root@47.117.184.253 'cat >> /opt/yuanhui/.env'`。AccessKey 在钥匙串 `-s tomo-credential-broker -a aliyun-huang-ak-id|aliyun-huang-ak-secret`（部署账号，不另建备份账号）。
 2. Haoqiang 的 iPhone「密码」App：他本人在这台 Mac 的终端里 `security find-generic-password -s yuanhui-backup-passphrase -w | pbcopy`，粘贴进「密码」App 新建的「元辉账本 备份口令」（存 iCloud 钥匙串，手机上能打开），然后 `pbcopy < /dev/null`。AccessKey 同样存一项。
 3. 纸质一份：只抄口令，放家里。
 4. Haoqiang 确认阿里云主账号的登录密码和二次验证在他本人手里（AccessKey 丢了靠它重发）。
@@ -115,45 +117,46 @@ Compose（`deploy/compose.yml`）：
 4. 用当前标签跑 `deploy.sh --execute`（校验后 `caddy reload`）；本机 `openssl s_client` 看签发方已是自家 CA；`curl` 不加 `-k` 时**应失败**（公网不信这张证书，这是预期），真机 Beta 包按 S11b 的结果验证。
 5. 方案 B 期间每年证书到期前 30 天重签（有效期 ≤ 397 天）；备案切域名后按 §9.3 第 7 步删掉 IP 站点和这两个文件。
 
-## 部署实测进度（2026-11-22，S10 部署实测 PR）
-- 已做：`bootstrap-ecs.sh --execute`（11/22 00:04，`ECS_HOST=huang-shop`）：Docker 29.1.3、Compose 2.40.3、`/swapfile` 4G（原有）进 fstab、`sshd -T` 为 `passwordauthentication no` / `kbdinteractiveauthentication no` / `permitrootlogin without-password`，本机口令登录 `Permission denied (publickey)`；ufw 只放 22、80、443/tcp；`/opt/yuanhui`、`/data/{pg,img,monitor,caddy}` 建好。
-- 已做：备份口令生成，存进 Mac 钥匙串（`-s yuanhui-backup-passphrase -a yuanhui`，另一份 `-s tomo-credential-broker -a yuanhui-backup-passphrase`），写进 ECS `.env`；`.env`（600 root）已填 `POSTGRES_PASSWORD`、`BACKUP_PASSPHRASE`、`OBJECT_STORE=aliyun`、`OSS_ENDPOINT`（内网）、两个桶名，镜像地址、OSS 两组 AccessKey、`ACME_EMAIL` 空着。
-- **阻塞 ①（云账号权限）**：本机的阿里云 AccessKey 是 RAM 用户 `chitu`，实测只有 OSS 列举：`oss:PutBucket` 403、`ram:ListUsers` / `ram:ListPolicies` 403、`ecs:DescribeSecurityGroupAttribute` / `DescribeInstances` 403、ACR 接口 `AUTHENTICATION_FAILED`。`cloud-manual-steps.md` 第 1、3、4、5 步因此一步都做不了，镜像推不进 ACR、ECS 拉不到镜像（ECS 连 Docker Hub 超时，实测 `curl https://registry-1.docker.io/v2/` 8 秒超时），首次部署停在第 1 步。
-- 阻塞 ②：`ACME_EMAIL` 是 compose 必填项（`${ACME_EMAIL:?}`），要一个收 Let's Encrypt 通知的邮箱。
-- 阻塞 ③：本机没有 Docker，`mirror-base-images.sh` 跑不了；ACR 建好后改用 `crane copy`（`brew install crane`，免费）或在 GitHub Actions 里镜像，待定。
-- 下一步：权限给到后按「首次部署」从第 1 步接着做：建 `yuanhui-img`、`yuanhui-backup`（私有、不开版本控制、按第 3 步配生命周期）→ RAM `yuanhui-api`、`yuanhui-backup` 两个子账号和策略（AccessKey 存钥匙串 `tomo-credential-broker` / `yuanhui-api-oss-ak-id|secret`、`yuanhui-backup-oss-ak-id|secret`，备份那组另存 `-s yuanhui-backup-oss`）→ ACR 个人版、命名空间 `yuanhui`、四个私有仓库、GitHub secrets → 镜像 → `deploy.sh` → 逐项验证。
+## 部署实测进度（2026-11-22，S10 部署实测 PR #27）
+- 负责人 11/22 04:19 决定：不建 RAM 子账号（**按负责人决定，服务器使用部署账号密钥，不使用专用子账号**）；备份桶开合规保留 35 天作补偿；不用 ACR（镜像 tar）；不开云盘快照；`ACME_EMAIL=clawchitu@gmail.com`；告警 webhook 暂留空；只用 IP、只放假数据、不加域名解析。
+- 之前「403 / 没权限」是误判：aliyun CLI 有默认配置时忽略 `ALIBABA_CLOUD_ACCESS_KEY_*` 环境变量、用了另一个账号。每条命令显式带 `--access-key-id/--access-key-secret/--region` 后，`sts GetCallerIdentity` 的 AccountId 为 1776699878997935（RAM 用户 `chitu`），OSS、ECS 正常。
+- 11/22 04:24 建桶：`yuanhui-backup`（私有、LRS、版本控制未开、生命周期 `backups/` 35 天 + 碎片 7 天、合规保留 35 天，04:34 验证备份写入后**已锁定**，WormId 8CAC3FA9…）、`yuanhui-archive`（私有、版本控制未开、生命周期 `exports/` 30 天 + 碎片 7 天）。`yuanhui-img` 没建（只批了两个桶，T9 前不开商品图）。
+- 11/22 04:2x 安全组 `sg-uf6jbhnzv9gbczcabcp3`：删掉 22/tcp 和 ICMP 对 `0.0.0.0/0` 的规则，22 只放部署机出口 `97.126.176.236/32`；80、443/tcp 对 `0.0.0.0/0`；没有 3000、5432、443/udp。
+- 11/22 04:26–04:31 首次发布 `efd4e05`（`IMAGES_TAR`，tar 309 MB，scp + load + 发布共 5 分 29 秒，`--skip-backup-gate`）：迁移 0001、0002，三容器起来，Caddy 拿到 Let's Encrypt IP 证书，备份定时器装上。
+- 代码改动（本 PR）：`image.yml` 打镜像 tar；`deploy.sh` / `remote-deploy.sh` 支持 `IMAGES_TAR` / `--load-images`，本机已有镜像时不 `docker pull`；备份存储 `BACKUP_OSS_ARCHIVE_BUCKET`（心跳、`deletions/` 不进合规保留桶）。
+- **遗留**：① 商品图桶 `yuanhui-img` 不存在：注销清除（申请后 7 天）会按前缀扫 `images/<店>/`，桶不存在这一步报错、清除失败。正式开放注销、或开商品图之前要建（第三个桶，需负责人同意）。② 告警通道待配置（webhook 留空），本机探测没装。③ 家里出口 IP 变了要改安全组 22 那条（`cloud-manual-steps.md` 第 1 步）。
 
 ## 部署时验证（数字写回这里和部署实测 PR；本 PR 合并不等于 S10a 通过，§14 S10a-9）
 | # | 项 | 方法 | 结果 |
 |---|---|---|---|
-| 1 | 自动回滚 | 用一个故意坏掉的镜像（如 `/healthz` 永远 503 的分支构建）跑 `deploy.sh --execute`：退出码 1、`current-tag` 不变、api 回到上一个镜像、`smoke.sh` 通过 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| 2 | 端口 | 公网连不上 3000 **和 5432**（`smoke.sh` 两个都查）；`nmap -Pn -p 22,80,443,3000,5432,3389 47.117.184.253` 从家外网络跑一次 | 部分（不算通过）：11/22 00:06 本机 `nc -z` 测 47.117.184.253：22 通，80/443/3000/3389/5432 不通；服务还没起，80/443 不通是预期、3000/5432 不通不说明问题；安全组规则读不到（阻塞 ①），`nmap` 家外网络一次待做 |
-| 3 | 客户端 IP | `SMOKE_XFF=1 deploy/smoke.sh`（伪造 XFF 换不出额度）；**另外** Caddy 访问日志里的 `remote_ip` 等于测试机的公网出口 IP（不是 `172.30.0.1` 之类的网关）；换一个出口（手机蜂窝）登录不受前一个 IP 限速影响 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| 4 | 无 SNI | `openssl s_client -connect 47.117.184.253:443 -noservername` 拿到的是公网签发的 IP 证书 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| 5 | 证书 | 境外和本机各一次 `curl`（不加 `-k`），记签发方、有效期；观察到一次自动续期，记续期前后的到期时间；14 天观察记录（见证书策略） | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| 6 | 存档桶 | 日志里没有 `export_no_archive`、`purge_no_archive` | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| 7 | RAM 负测 | 用 api 的凭据写 `images/` 以外的前缀、读写 `backups/`、删 `deletions/`，都 403（`cloud-manual-steps.md` 第 4 步，T9 ⑤） | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| 8 | 镜像链路 | CI 推 ACR 成功一次，记耗时；ECS 从 VPC 地址拉取成功 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| 9 | T4 / T2-2、T7 | 30 个登录同时到：最慢一个响应时间、期间 `/healthz` 和一次 `/v1/sync` 耗时、0 个 500；单次 argon2 耗时。约 40 万行流水下月报和 `/v1/entries/days` 耗时，07c > 200 ms 要改 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| 10 | T10 | 512 MB api 里 3 个并发登录 + 缩 5000×5000 隔行 16 位 PNG：不被 OOM 杀；记 cgroup `memory.peak`（`docker exec yuanhui-api-1 cat /sys/fs/cgroup/memory.peak`）写在这里 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| 11 | T13 / T17 | 真实 OSS 上列举、删除、`putFile` 分片、`listUploads` / `abortUpload` 各一次 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| 12 | T9 ①–⑥ | ① 20 个真实条码命中率 / 有图率；② 真实录制件替换手写夹具、定判别字段；③ 条款原文摘进 `docs/image-rights.md`；④ 计费是预付次数包、用完即停；⑤ 真实 OSS 往返、RAM 只能读写 `images/`；⑥ 条码格式过滤做不做 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| 13 | 重启 | `reboot` 后三个容器自己起来（`restart: unless-stopped`），`swapon --show` 仍有 `/swapfile`，`smoke.sh` 通过 | 未做：容器还没起（阻塞 ①）。`bootstrap` 后 `/swapfile` 4G 已在 `swapon --show` 和 `/etc/fstab` |
+| 1 | 自动回滚 | 用一个故意坏掉的镜像（如 `/healthz` 永远 503 的分支构建）跑 `deploy.sh --execute`：退出码 1、`current-tag` 不变、api 回到上一个镜像、`smoke.sh` 通过 | **通过**（11/22 04:35）：本机用 `efd4e05` 镜像在 ECS 上构建一个 `/healthz` 永远 503 的镜像 `api:dead…b1`，`ACR=local/yuanhui deploy.sh dead…b1 --execute`：退出码 1，「已回滚到 efd4e05（current-tag 仍是 efd4e05）」，`.env` 和正在跑的容器都是 `local/yuanhui/api:efd4e05…`，`smoke.sh` 通过 |
+| 2 | 端口 | 公网连不上 3000 **和 5432**（`smoke.sh` 两个都查）；`nmap -Pn -p 22,80,443,3000,5432,3389 47.117.184.253` 从家外网络跑一次 | 部分：安全组（API 读出）入方向只有 22（`97.126.176.236/32`）、80、443/tcp；`smoke.sh` 3000、5432 公网不可达；本机 `nc` 22 通。家外网络 `nmap` 一次待做（部署机本身在境外家庭网络，算一次「外网」，但没跑 nmap） |
+| 3 | 客户端 IP | `SMOKE_XFF=1 deploy/smoke.sh`（伪造 XFF 换不出额度）；**另外** Caddy 访问日志里的 `remote_ip` 等于测试机的公网出口 IP（不是 `172.30.0.1` 之类的网关）；换一个出口（手机蜂窝）登录不受前一个 IP 限速影响 | 部分：`SMOKE_XFF=1 smoke.sh` 第 31 次 429（伪造 XFF 换不出额度）；Caddy 访问日志 `remote_ip` 69 条是部署机公网出口 `97.126.176.236`（另有几条境外扫描器 IP、1 条 `172.30.0.128` 是我在 ECS 本机 curl 的），不是网关地址。换手机蜂窝出口那一步没做（要人拿手机） |
+| 4 | 无 SNI | `openssl s_client -connect 47.117.184.253:443 -noservername` 拿到的是公网签发的 IP 证书 | **通过**：`-noservername` 拿到 `issuer=Let's Encrypt, CN=YE1`、SAN `IP Address:47.117.184.253` |
+| 5 | 证书 | 境外和本机各一次 `curl`（不加 `-k`），记签发方、有效期；观察到一次自动续期，记续期前后的到期时间；14 天观察记录（见证书策略） | 部分：本机（境外家庭网络）`curl` 不加 `-k` 成功，Let's Encrypt YE1，11/21 19:33 → 11/28 11:33 UTC（约 160 小时）。境内一次、自动续期、14 天观察待做（探测没装，见 M 节） |
+| 6 | 存档桶 | 日志里没有 `export_no_archive`、`purge_no_archive` | **通过**（截至 04:50）：`docker logs yuanhui-api-1 | grep -cE 'export_no_archive|purge_no_archive'` = 0 |
+| 7 | RAM 负测 | 用 api 的凭据写 `images/` 以外的前缀、读写 `backups/`、删 `deletions/`，都 403（`cloud-manual-steps.md` 第 4 步，T9 ⑤） | 不适用：按负责人决定，服务器使用部署账号密钥，不使用专用子账号，没有可负测的最小权限。代替的保护：备份桶合规保留，用这把密钥删 / 覆盖 `backups/` 对象都返回 `409 FileImmutable`（见 B3） |
+| 8 | 镜像链路 | CI 推 ACR 成功一次，记耗时；ECS 从 VPC 地址拉取成功 | **通过**（改为 tar 链路）：`image.yml` 在 PR 上（`deploy-tar` 标签）产出 artifact，tar 309 MB；`gh run download` + `shasum -c` OK；scp + `docker load` + 发布 5 分 29 秒；ECS 没连 Docker Hub、没用 ACR |
+| 9 | T4 / T2-2、T7 | 30 个登录同时到：最慢一个响应时间、期间 `/healthz` 和一次 `/v1/sync` 耗时、0 个 500；单次 argon2 耗时。约 40 万行流水下月报和 `/v1/entries/days` 耗时，07c > 200 ms 要改 | 未做：要一家测试店和 30 个账号 / 约 40 万行流水的造数脚本，这一轮没做到 |
+| 10 | T10 | 512 MB api 里 3 个并发登录 + 缩 5000×5000 隔行 16 位 PNG：不被 OOM 杀；记 cgroup `memory.peak`（`docker exec yuanhui-api-1 cat /sys/fs/cgroup/memory.peak`）写在这里 | 部分：api 容器里造一张 5000×5000 隔行 16 位 PNG（129 MB）并缩到 200 px，2.0 秒，`memory.peak` 417 MB（512 MB 上限内），`OOMKilled=false`、重启 0 次。没有同时 3 个登录（同第 9 项，缺测试店）；造图本身也占内存，比真实上传更重 |
+| 11 | T13 / T17 | 真实 OSS 上列举、删除、`putFile` 分片、`listUploads` / `abortUpload` 各一次 | **通过**：api 容器里用 `AliOssObjectStore` 对 `yuanhui-archive` 的 `exports/<随机店>/`：`putFile` 3 MiB（分片）628 ms、`list` 1 个、`get` 3145851 字节、手工开一个分片上传后 `listUploads` 看到它、`abortUpload` 后 0 个、`delete` 后 `list` 0 个 |
+| 12 | T9 ①–⑥ | ① 20 个真实条码命中率 / 有图率；② 真实录制件替换手写夹具、定判别字段；③ 条款原文摘进 `docs/image-rights.md`；④ 计费是预付次数包、用完即停；⑤ 真实 OSS 往返、RAM 只能读写 `images/`；⑥ 条码格式过滤做不做 | 未做：需要快鸟 AppCode 和真实条码（T9 未开始）；⑤ 的「RAM 只能读写 `images/`」按负责人决定不适用 |
+| 13 | 重启 | `reboot` 后三个容器自己起来（`restart: unless-stopped`），`swapon --show` 仍有 `/swapfile`，`smoke.sh` 通过 | **通过**（04:45 `systemctl reboot`）：三个容器自己起来（api、postgres healthy），`swapon` 有 `/swapfile` 4G，`yuanhui-backup.timer` 仍 `enabled`、下一次 08:00，`smoke.sh` 通过 |
 
 ### S10b 部署时验证（真机器上才能做，数字写回这里和部署实测 PR；B1–B6、B8–B11 没做完 S10b 不算通过，§14 S10b-11）
 原 B7（真手机换 epoch 后补回）和第 36 天的生命周期检查不在这里等，记在 §14 待办 T23、T24。
 | # | 项 | 方法 | 结果 |
 |---|---|---|---|
-| B1 | 定时器在 ECS 上按时跑 | `systemctl list-timers yuanhui-backup.timer` 的下一次时间对得上（上海 8:00–22:00 整点、02:30）；跑过一个营业日后 `journalctl -u yuanhui-backup --since today` 里 15 次 `backup_ok`，桶里 `backups/` 多 15 对对象；ECS `reboot` 之后定时器仍是 `enabled`，下一次按时跑 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| B2 | 跨容器快照 | 第一次 `bash /opt/yuanhui/backup.sh` 成功（`pg_dump --snapshot` 在 Postgres 容器里导入 backup 容器导出的快照）；记 `duration_s`、`dump_bytes` | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| B3 | 真实 OSS 读写 | 备份账号：`backups/` 分片上传（`putFile`）、读、列举，`deletions/` 列举、读，心跳读写各成功一次；`cloud-manual-steps.md` 第 4 步的负测全部 403。`PutObject` 能覆盖已有对象是已知并接受的（§14 S10b-9），不算负测失败 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| B4 | 生命周期、版本控制 | `ossutil lifecycle --method get` 的输出贴进 PR：`backups/` 35 天、`exports/` 30 天、`deletions/` 无；两个桶「版本控制」未开通；第 36 天的检查见 §14 T24 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| B5 | 口令三份 | 按「口令保管」：Mac 钥匙串有 `yuanhui-backup-passphrase`、`yuanhui-backup-oss`；Haoqiang 确认 iPhone「密码」App 里有两项、纸质一份已放好、主账号登录和二次验证在他手里（不贴值）。可选附三处 12 位指纹 | 部分：11/22 00:05 Mac 钥匙串 `yuanhui-backup-passphrase` 已生成、ECS `.env` 已写，两处 12 位指纹一致；`yuanhui-backup-oss` 未建（阻塞 ①）；iPhone 和纸质两份等 Haoqiang（口令另放 `~/Downloads/元辉账本-备份口令.txt`，600，抄完请删） |
-| B6 | 异机恢复演练 | 在 Mac 上只凭 OSS 和钥匙串按上面「恢复」做一遍：`restore_ok`、清单逐项一致、注销的店不在；再在恢复出来的库上起一个本机 api：`/healthz` 200、用新 epoch 同步一次 200；记 `restore_seconds` 和从开始到这一步的总时长（RTO 目标 1 小时以内，含下载） | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| B8 | 迁移前门禁 | 营业时间内停掉定时器超过 2 小时后发布 → 退出码 5；`--skip-backup-gate` 能发布且 `gate-skips.log` 有记录；恢复定时器 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| B9 | 失败信号 | 临时把 `.env` 的 `BACKUP_OSS_ACCESS_KEY_SECRET` 改错跑一次：`backup_failed stage=upload`、`metrics.prom` 的 `last_ok 0`、`consecutive_failures` 加 1、心跳不变；改回后下一次清零 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| B10 | 资源影响 | S10a 压测的 3 年数据量下，压测进行中手动跑 3 次 `backup.sh`：记 `duration_s`、`backup` 容器内存峰值（cgroup `memory.peak`）、备份期间 `/v1/sync` 的 p95 和不备份时的对比、`free -m` 最低值；没有容器被 OOM 杀 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| B11 | 云盘自动快照（§9.4） | 每周一次、留 4 份的策略已挂到这块盘上，截图或导出贴进部署实测 PR | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
+| B1 | 定时器在 ECS 上按时跑 | `systemctl list-timers yuanhui-backup.timer` 的下一次时间对得上（上海 8:00–22:00 整点、02:30）；跑过一个营业日后 `journalctl -u yuanhui-backup --since today` 里 15 次 `backup_ok`，桶里 `backups/` 多 15 对对象；ECS `reboot` 之后定时器仍是 `enabled`，下一次按时跑 | 部分：`list-timers` 下一次 08:00 CST（对）；重启后仍 `enabled`。跑满一个营业日 15 次 `backup_ok` 要等到 11/22 22:00 以后 |
+| B2 | 跨容器快照 | 第一次 `bash /opt/yuanhui/backup.sh` 成功（`pg_dump --snapshot` 在 Postgres 容器里导入 backup 容器导出的快照）；记 `duration_s`、`dump_bytes` | **通过**：第一次 `bash /opt/yuanhui/backup.sh`：`backup_ok`、`duration_s` 7、`dump_bytes` 53057（空库只有迁移） |
+| B3 | 真实 OSS 读写 | 备份账号：`backups/` 分片上传（`putFile`）、读、列举，`deletions/` 列举、读，心跳读写各成功一次；`cloud-manual-steps.md` 第 4 步的负测全部 403。`PutObject` 能覆盖已有对象是已知并接受的（§14 S10b-9），不算负测失败 | **通过**（按新布局）：`backups/` 写入（dump、清单）、读（B6 恢复下载）、列举（`backup_status`），心跳写进 `yuanhui-archive`、读（`status`），`deletions/` 列举（B6，0 条）。负测改为合规保留：用部署账号删 `backups/…manifest.enc`、覆盖同名对象都 `409 FileImmutable`。RAM 负测按负责人决定不适用 |
+| B4 | 生命周期、版本控制 | `ossutil lifecycle --method get` 的输出贴进 PR：`backups/` 35 天、`exports/` 30 天、`deletions/` 无；两个桶「版本控制」未开通；第 36 天的检查见 §14 T24 | **通过**：`lifecycle --method get`：`yuanhui-backup` `backups/` 35 天、碎片 7 天；`yuanhui-archive` `exports/` 30 天、碎片 7 天，`deletions/`、`heartbeat/` 无；两桶 `bucket-versioning` 为 null（未开通）；`worm get`：`Locked`、35 天。第 36 天检查见 T24 |
+| B5 | 口令三份 | 按「口令保管」：Mac 钥匙串有 `yuanhui-backup-passphrase`、`yuanhui-backup-oss`；Haoqiang 确认 iPhone「密码」App 里有两项、纸质一份已放好、主账号登录和二次验证在他手里（不贴值）。可选附三处 12 位指纹 | 部分：Mac 钥匙串有 `yuanhui-backup-passphrase`（未重新生成），ECS `.env` 有，两处指纹 11/22 00:05 已核一致；AccessKey 用部署账号那把（钥匙串 `tomo-credential-broker`）。iPhone「密码」App、纸质一份、主账号二次验证等 Haoqiang 确认 |
+| B6 | 异机恢复演练 | 在 Mac 上只凭 OSS 和钥匙串按上面「恢复」做一遍：`restore_ok`、清单逐项一致、注销的店不在；再在恢复出来的库上起一个本机 api：`/healthz` 200、用新 epoch 同步一次 200；记 `restore_seconds` 和从开始到这一步的总时长（RTO 目标 1 小时以内，含下载） | 部分：Mac 上临时 Postgres 16 空库，只凭 OSS 和钥匙串：dry-run `restore_will_delete []`，`--execute` 得 `restore_ok`、`restore_seconds` 2，开始到结束 5 秒（库里还只有迁移，没有店）。在恢复库上起本机 api、`/healthz`、新 epoch 同步没做（库里没有店可同步），等有假数据后重做 |
+| B8 | 迁移前门禁 | 营业时间内停掉定时器超过 2 小时后发布 → 退出码 5；`--skip-backup-gate` 能发布且 `gate-skips.log` 有记录；恢复定时器 | **通过**（部分条件）：挪走 `last-success` 后发布 → 退出码 5、「没有任何成功的备份记录，拒绝在迁移前发布」；`--skip-backup-gate` 退出码 0，`gate-skips.log` 记一行；放回。「营业时间停定时器 2 小时」那个条件没在真机上等（测试里有） |
+| B9 | 失败信号 | 临时把 `.env` 的 `BACKUP_OSS_ACCESS_KEY_SECRET` 改错跑一次：`backup_failed stage=upload`、`metrics.prom` 的 `last_ok 0`、`consecutive_failures` 加 1、心跳不变；改回后下一次清零 | **通过**：`.env` 的 `BACKUP_OSS_ACCESS_KEY_SECRET` 改错跑两次：`backup_failed stage=upload`，`metrics.prom` `last_ok 0`、`consecutive_failures 2`；改回后 `backup_ok`，`last_ok 1`、`consecutive_failures 0` |
+| B10 | 资源影响 | S10a 压测的 3 年数据量下，压测进行中手动跑 3 次 `backup.sh`：记 `duration_s`、`backup` 容器内存峰值（cgroup `memory.peak`）、备份期间 `/v1/sync` 的 p95 和不备份时的对比、`free -m` 最低值；没有容器被 OOM 杀 | 未做：依赖第 9 项的 3 年数据量压测 |
+| B11 | 云盘自动快照（§9.4） | 负责人 11/22 决定不开（备份靠合规保留的 OSS 备份） | 负责人决定不开 |
 
 ## 监控与告警（S10c，§9.5）
 
@@ -200,22 +203,22 @@ Compose（`deploy/compose.yml`）：
 每一项都人为触发一次，记 Chitu 收到的时间和正文截图（正文里不得有口令、令牌、开通码），然后恢复、记收到「已恢复」。
 | # | 项 | 怎么触发 | 结果 |
 |---|---|---|---|
-| M1 | 通道 | 本机 `deploy/probe/run-probe.sh --test-alert` | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| M2 | 服务存活（本机 + 站点监控） | `docker compose stop api` 25 分钟：本机 `healthz_down`、云监控站点报警各一条；`start` 后两条恢复 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| M3 | CPU / 内存 / 磁盘 80% | ECS 上 `stress-ng --cpu 2 --timeout 20m`；`fallocate` 一个大文件把盘顶过 80%（同时应收到服务器的 `disk_usage`），删掉恢复 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| M4 | 证书 < 48 小时、续期记录 | 正常续期下不会出现（160 小时证书，Caddy 提前续）：用临时的 `PROBE_STATE_DIR`、`PROBE_URL` 指向一个剩 1 天证书的测试站点跑一次 `run-probe.sh`；另外确认 14 天观察期里 `cert-renewals.jsonl` 至少记过一次 `renewed` | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| M5 | 备份心跳 / 失败 / 连续失败 / 跳过 | S10b 的 B9（改错备份密钥跑两次）→ `backup_failed`、`backup_consecutive_failures`；停定时器 2 小时 → `backup_heartbeat_stale`；`mkdir /opt/yuanhui/backup/lock.d` 后跑 `backup.sh` → `backup_skipped` | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| M6 | 门禁跳过、恢复失败 | B8 的 `--skip-backup-gate` → `backup_gate_skipped`；`RESTORE_COMPOSE_DIR=/opt/yuanhui deploy/restore.sh latest --execute`（目标库不空，必然被拒）→ `restore_failed` | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| M7 | 营业时间无同步 | 测试店唯一一台在用的手机关机 3 小时（营业时间内） | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| M8 | 5xx | `docker compose stop postgres` 1 分钟，期间从本机打 25 次 `/healthz`（查库，失败回 503），再 `start` | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| M9 | 快鸟 200 次 | T9 配上 AppCode 之后，测试店用脚本查 200 个不同条码 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| M10 | 登录锁定、注销申请、导出包 | 测试店连输错 5 次密码；测试店申请注销 → 两条（申请、导出包位置）；然后撤回 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| M11 | 被退出手机暂存的账 | 测试手机离线记一笔、在另一台撤销它、它再联网，24 小时后 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
-| M12 | outbox 拉不到 | 本机 `PROBE_SSH_TARGET` 临时改成不存在的主机 30 分钟 | 未做：部署停在首次部署第 1 步（见上「部署实测进度」阻塞 ①） |
+| M1 | 通道 | 本机 `deploy/probe/run-probe.sh --test-alert` | 待配置：告警 webhook 留空、本机探测没装，没有发给 Chitu 的通道 |
+| M2 | 服务存活（本机 + 站点监控） | `docker compose stop api` 25 分钟：本机 `healthz_down`、云监控站点报警各一条；`start` 后两条恢复 | 部分：服务器端没测；本机探测和云监控站点监控都没装（待配置） |
+| M3 | CPU / 内存 / 磁盘 80% | ECS 上 `stress-ng --cpu 2 --timeout 20m`；`fallocate` 一个大文件把盘顶过 80%（同时应收到服务器的 `disk_usage`），删掉恢复 | 未做：云监控没配；`disk_usage` 的 fallocate 测试没做 |
+| M4 | 证书 < 48 小时、续期记录 | 正常续期下不会出现（160 小时证书，Caddy 提前续）：用临时的 `PROBE_STATE_DIR`、`PROBE_URL` 指向一个剩 1 天证书的测试站点跑一次 `run-probe.sh`；另外确认 14 天观察期里 `cert-renewals.jsonl` 至少记过一次 `renewed` | 待配置（本机探测） |
+| M5 | 备份心跳 / 失败 / 连续失败 / 跳过 | S10b 的 B9（改错备份密钥跑两次）→ `backup_failed`、`backup_consecutive_failures`；停定时器 2 小时 → `backup_heartbeat_stale`；`mkdir /opt/yuanhui/backup/lock.d` 后跑 `backup.sh` → `backup_skipped` | **通过**（只到 outbox，通道待配置）：outbox 里 `backup_failed` fire 20:40:48、`backup_consecutive_failures` fire 20:42:49，改回后 20:43:49 两条 resolved；`lock.d` 放活 pid 1 → `backup_skipped`（20:38:48）；首次发布前 `backup_heartbeat_stale` fire 20:31:41，第一次备份后 20:33:41 resolved。正文没有密钥（`grep -c LTAI` = 0） |
+| M6 | 门禁跳过、恢复失败 | B8 的 `--skip-backup-gate` → `backup_gate_skipped`；`RESTORE_COMPOSE_DIR=/opt/yuanhui deploy/restore.sh latest --execute`（目标库不空，必然被拒）→ `restore_failed` | **通过**（只到 outbox）：`backup_gate_skipped` 20:31:41；ECS 上 `restore.sh latest --execute`（目标库非空）被拒 → `restore_failed` 20:38:48 |
+| M7 | 营业时间无同步 | 测试店唯一一台在用的手机关机 3 小时（营业时间内） | 未做：要测试店和真手机 |
+| M8 | 5xx | `docker compose stop postgres` 1 分钟，期间从本机打 25 次 `/healthz`（查库，失败回 503），再 `start` | **通过**（只到 outbox）：停 postgres 期间 25 次 `/healthz` 全 503，`http_5xx_rate` fire 20:39:48（count 25） |
+| M9 | 快鸟 200 次 | T9 配上 AppCode 之后，测试店用脚本查 200 个不同条码 | 未做：T9 AppCode 未配 |
+| M10 | 登录锁定、注销申请、导出包 | 测试店连输错 5 次密码；测试店申请注销 → 两条（申请、导出包位置）；然后撤回 | 未做：要测试店（建测试店是下一步） |
+| M11 | 被退出手机暂存的账 | 测试手机离线记一笔、在另一台撤销它、它再联网，24 小时后 | 未做：要两台测试手机 |
+| M12 | outbox 拉不到 | 本机 `PROBE_SSH_TARGET` 临时改成不存在的主机 30 分钟 | 待配置（本机探测） |
 
 ## 关掉商品图开关时清第三方图（T12）
 1. `.env` 里 `PRODUCT_IMAGES_ENABLED=0`，用当前标签跑 `deploy.sh --execute` 重启 api。
-2. 用 RAM 账号列举并删除 `yuanhui-img` 的 `images/` 前缀（`ossutil rm -r oss://yuanhui-img/images/ -f`）。
+2. 用部署账号列举并删除 `yuanhui-img` 的 `images/` 前缀（`ossutil rm -r oss://yuanhui-img/images/ -f`）。
 3. `rm -rf /data/img/*`（本机缓存）。
 4. 清掉库里的图片状态（不然以后再开开关，库里认为有图、桶里没有）：
    ```sh
