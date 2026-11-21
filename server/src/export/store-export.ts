@@ -13,7 +13,7 @@ import { sql, type Kysely } from "kysely";
 import type { Database } from "../db.ts";
 import { readSnapshot, monthOf, nextMonth, type Q } from "../reports/common.ts";
 import { reportMonthIn } from "../reports/month.ts";
-import { BOM, fenToYuan, plain, row, text } from "./csv.ts";
+import { BOM, barcodeCell, fenToYuan, plain, row, text } from "./csv.ts";
 import { ZipWriter } from "./zip.ts";
 
 export const EXPORT_PAGE_SIZE = 1000;
@@ -93,6 +93,7 @@ export async function writeStoreExport(db: Kysely<Database>, storeId: string, ou
         "  月报.csv  每月一行，和 App 里「本月的账」同一套算法：卖了 = 当月卖出行实收之和（含冲销行）。",
         "",
         "金额单位是元（两位小数）；时间是北京时间。以 ' 开头的文字是为了防止 Excel 把它当公式，' 本身不是内容。",
+        "条码写成 =\"6901234567890\" 的样子，是为了让 Excel 当文字显示、不变成科学计数法；用别的程序读时去掉 =\" 和 \" 就是条码。",
         "",
       ].join("\r\n"),
     ]);
@@ -134,7 +135,7 @@ export async function writeStoreExport(db: Kysely<Database>, storeId: string, ou
         const page = await q.orderBy("b.barcode").limit(pageSize).execute();
         let chunk = "";
         for (const b of page) {
-          chunk += row([text(b.barcode), plain(b.product_id), text(b.name), plain(b.pack_qty), text(b.unit_name), fenToYuan(b.pack_price_fen), plain(shTime(b.deleted_at))]);
+          chunk += row([barcodeCell(b.barcode), plain(b.product_id), text(b.name), plain(b.pack_qty), text(b.unit_name), fenToYuan(b.pack_price_fen), plain(shTime(b.deleted_at))]);
         }
         summary.barcodes += page.length;
         if (chunk) yield chunk;
@@ -164,7 +165,7 @@ export async function writeStoreExport(db: Kysely<Database>, storeId: string, ou
         for (const e of page) {
           chunk += row([
             plain(e.seq), plain(e.id), plain(e.occurred_sh), plain(ENTRY_TYPE[e.type] ?? e.type), plain(e.reverses_entry_id !== null), plain(e.reverses_entry_id),
-            plain(e.product_id), text(e.name_snapshot), text(e.barcode), text(e.unit_name), plain(e.pack_qty), plain(e.pack_count), plain(e.qty_delta),
+            plain(e.product_id), text(e.name_snapshot), barcodeCell(e.barcode), text(e.unit_name), plain(e.pack_qty), plain(e.pack_count), plain(e.qty_delta),
             fenToYuan(e.list_amount_fen), fenToYuan(e.amount_fen), fenToYuan(e.cogs_fen), fenToYuan(e.value_delta_fen), plain(e.cost_missing),
             plain(e.expiry_date as unknown as string | null), plain(e.batch_id), text(e.label), plain(shTime(e.voided_at)),
           ]);

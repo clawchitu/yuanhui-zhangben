@@ -24,6 +24,15 @@ export function text(s: string | null | undefined): string {
   return quote(/^[=+\-@\t\r]/.test(s) ? `'${s}` : s);
 }
 
+/**
+ * 条码：纯数字的写成 ="6901234567890"（CSV 里再按规则转义），Excel 打开当文本显示原样，不变成 6.90123E+12（PR #20 Fable 建议 2）。
+ * 只对纯数字这么写：拼出来的公式只可能是一个数字字符串常量；别的内容照店主文本处理（防公式注入）。
+ */
+export function barcodeCell(s: string | null | undefined): string {
+  if (s === null || s === undefined) return "";
+  return /^[0-9]{1,32}$/.test(s) ? quote(`="${s}"`) : text(s);
+}
+
 /** 服务器生成的值（id、数字、日期、固定的中文词）：只按 CSV 转义 */
 export function plain(v: string | number | bigint | boolean | null | undefined): string {
   if (v === null || v === undefined) return "";

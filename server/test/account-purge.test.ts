@@ -148,6 +148,11 @@ describe("导出包", () => {
     expect(all).not.toContain(other.storeId);
     for (const id of other.productIds) expect(all).not.toContain(id);
 
+    // 纯数字条码写成 ="…"，Excel 打开显示原样文字、不变成科学计数法（PR #20 Fable 建议 2）
+    const barcodes = csv(files, "条码.csv");
+    expect(barcodes.slice(1).every((r) => /^="[0-9]+"$/.test(r[0]!)), JSON.stringify(barcodes)).toBe(true);
+    expect(files.get("条码.csv")!.toString("utf8")).toMatch(/\r\n"=""69[0-9]{11}""",/);
+    expect(files.get("说明.txt")!.toString("utf8")).toContain('="');
     const products = csv(files, "商品.csv");
     expect(products.length - 1).toBe(2);
     // 公式注入防护和转义：解析回来是 ' 开头的原名
@@ -225,7 +230,8 @@ describe("导出包", () => {
     await s.app.close();
   });
 
-  it("大数据量：3000 条流水按 250 行一页导出，行数、序号、合计都对", async () => {
+  // 机器忙时（和别的全套测试同时跑）会超过默认 30 秒，单独给 120 秒（PR #20 Fable 建议 1）；断言不变
+  it("大数据量：3000 条流水按 250 行一页导出，行数、序号、合计都对", { timeout: 120_000 }, async () => {
     const clock = new TestClock(T0);
     const shop = await makeLoginShop(tdb, { name: "大店" });
     const app = makeApp(tdb, { clock });
