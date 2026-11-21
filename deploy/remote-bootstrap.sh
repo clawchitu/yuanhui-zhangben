@@ -40,8 +40,9 @@ if [ "$(cat "$CONF" 2>/dev/null || true)" != "$WANT" ]; then
 fi
 
 # ── 4. 目录和 .env ──
-mkdir -p "$R/opt/yuanhui/caddy" "$R/data/pg" "$R/data/img" "$R/data/caddy/data" "$R/data/caddy/config"
-chown 1000:1000 "$R/data/img"
+mkdir -p "$R/opt/yuanhui/caddy" "$R/data/pg" "$R/data/img" "$R/data/monitor" "$R/data/caddy/data" "$R/data/caddy/config"
+# /data/monitor：api 的监控状态和告警 outbox（S10c），本机探测 ssh 进来读 outbox.jsonl
+chown 1000:1000 "$R/data/img" "$R/data/monitor"
 chmod 700 "$R/opt/yuanhui"
 if [ ! -f "$R/opt/yuanhui/.env" ]; then
   install -m 600 /dev/null "$R/opt/yuanhui/.env"

@@ -43,8 +43,9 @@ backup_gate() {
   if [ -n "$age" ] && [ "$age" -le "$max" ]; then echo "备份门禁：最近一次成功备份在 $((age / 60)) 分钟前"; return 0; fi
   local why="${age:+最近一次成功备份在 $((age / 60)) 分钟前（上限 $((max / 60)) 分钟）}"; why=${why:-没有任何成功的备份记录}
   if [ "$SKIP_GATE" = 1 ]; then
-    mkdir -p "$D/backup"
+    mkdir -p "$D/backup" && chmod 711 "$D/backup"
     printf '%s tag=%s 跳过备份门禁：%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TAG" "$why" >> "$D/backup/gate-skips.log"
+    chmod 644 "$D/backup/gate-skips.log"   # api 容器的监控要读（S10c：gate-skips.log 有新行就告警）
     echo "警告：--skip-backup-gate，跳过备份门禁（${why}），已记入 backup/gate-skips.log" >&2
     return 0
   fi
