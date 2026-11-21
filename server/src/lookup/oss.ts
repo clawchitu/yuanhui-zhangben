@@ -75,7 +75,7 @@ export class LocalDirObjectStore implements ObjectStore {
   constructor(root: string) {
     this.root = root;
   }
-  async put(key: string, body: Buffer) {
+  async put(key: string, body: Buffer, _contentType?: string) {
     await atomicWrite(safeJoin(this.root, key), body);
   }
   async get(key: string) {

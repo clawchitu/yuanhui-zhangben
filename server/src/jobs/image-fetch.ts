@@ -60,7 +60,7 @@ export async function claimDue(d: ImageJobDeps, limit: number): Promise<Claimed[
   const r = await sql<Claimed>`
     UPDATE image_jobs j SET
       attempts = j.attempts + 1,
-      next_try_at = ${now}::timestamptz + make_interval(secs => (CASE WHEN j.attempts = 0 THEN ${RETRY_DELAYS_MS[0]! / 1000} ELSE ${RETRY_DELAYS_MS[1]! / 1000} END))
+      next_try_at = ${now}::timestamptz + make_interval(secs => (CASE WHEN j.attempts = 0 THEN ${RETRY_DELAYS_MS[0]! / 1000}::int ELSE ${RETRY_DELAYS_MS[1]! / 1000}::int END))
     FROM (
       SELECT store_id, product_id FROM image_jobs
       WHERE done_at IS NULL AND attempts < ${MAX_ATTEMPTS} AND next_try_at <= ${now}

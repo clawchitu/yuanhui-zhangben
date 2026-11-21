@@ -108,3 +108,32 @@ describe("KuainiaoClient", () => {
     expect(sourceFromConfig(testConfig({ kuainiao: { appCode: "x", endpoint: "https://h.example/x" } }))).toBeInstanceOf(KuainiaoClient);
   });
 });
+
+describe("scripts/barcode-trial.ts", () => {
+  it("按类别算命中率和有图率；有图率 < 50% 提示降级；一次最多 30 个", async () => {
+    const { parseItems, runTrial, summarize, MAX_TRIAL } = await import("../scripts/barcode-trial.ts");
+    const items = parseItems([], "# 注释\n6901 烟\n6902 烟\n6903 日用\n6904:本地\n");
+    expect(items).toEqual([
+      { barcode: "6901", category: "烟" },
+      { barcode: "6902", category: "烟" },
+      { barcode: "6903", category: "日用" },
+      { barcode: "6904", category: "本地" },
+    ]);
+    const src = {
+      name: "fake",
+      lookup: async (b: string) => {
+        if (b === "6901") return { kind: "not_found" as const, raw: {} };
+        if (b === "6904") throw new SourceError("timeout", "超时");
+        return { kind: "found" as const, hit: { name: `n${b}`, ...(b === "6903" ? { imageUrl: "https://x.example/a.jpg" } : {}) }, raw: {} };
+      },
+    };
+    const rows = await runTrial(src, items);
+    expect(rows.map((r) => [r.found, r.hasImage])).toEqual([[false, false], [true, false], [true, true], [false, false]]);
+    const text = summarize(rows);
+    expect(text).toContain("| 烟 | 1/2（50%） | 0/2（0%） |");
+    expect(text).toContain("| 合计 | 2/4（50%） | 1/4（25%） |");
+    expect(text).toContain("降级到第二版");
+    expect(() => parseItems(Array.from({ length: MAX_TRIAL + 1 }, (_, i) => String(i)))).toThrow();
+    expect(() => parseItems(["../x"])).toThrow();
+  });
+});
