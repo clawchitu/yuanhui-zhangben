@@ -149,11 +149,19 @@ export function readCert(host: string, port = 443, timeoutMs = 10_000): Promise<
   });
 }
 
+/**
+ * 远端读 outbox 的命令：文件还没有（服务器还没发过告警）算拉到了空的；文件在但读不了（权限不对、是目录……）要失败，
+ * 让连续拉不到的 outbox_unreachable 能响（以前 `|| true` 把读失败也当成功，PR #25 Codex 建议）
+ */
+export function outboxTailCmd(path: string): string {
+  return `if [ -e ${path} ]; then tail -n 1000 ${path}; else exit 0; fi`;
+}
+
 function sshCat(target: string, path: string): () => Promise<string> {
   return () =>
     new Promise((resolve, reject) => {
       // BatchMode：没有密钥就失败，不卡在问口令；只读最后 1000 行
-      execFile("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", target, `tail -n 1000 ${path} 2>/dev/null || true`], { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (err, out) =>
+      execFile("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", target, outboxTailCmd(path)], { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (err, out) =>
         err ? reject(new Error("ssh 失败")) : resolve(out),
       );
     });

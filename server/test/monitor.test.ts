@@ -9,7 +9,9 @@ import { LogTap } from "../src/monitor/logtap.ts";
 import { certVerdict, heartbeatVerdict, noSyncVerdict, parseMetrics, readNewLines, recordOpsSample, renewalOverdue, shanghaiAt, THRESHOLDS } from "../src/monitor/checks.ts";
 import { CommandSink, MultiSink, OutboxSink, WebhookSink } from "../src/monitor/sinks.ts";
 import { sinkFromConfig } from "../src/monitor/setup.ts";
-import { forwardOutbox, runProbe, type ProbeDeps } from "../scripts/probe.ts";
+import { forwardOutbox, outboxTailCmd, runProbe, type ProbeDeps } from "../scripts/probe.ts";
+import { spawnSync } from "node:child_process";
+import { chmodSync } from "node:fs";
 import { loadConfig, ConfigError } from "../src/config.ts";
 import { TestClock } from "./helpers/auth.ts";
 import { FakeSink } from "./helpers/monitor.ts";
@@ -478,6 +480,16 @@ describe("本机探测（scripts/probe.ts）", () => {
     const sent = sink.sent[0]!;
     expect(Object.keys(sent.details).sort()).toEqual(["count", "reason"]);
     for (const secret of ["hunter2-pw", "PAIR-839201", tok, "nested"]) expect(JSON.stringify(sent)).not.toContain(secret);
+  });
+  it("远端读 outbox 的命令：文件没有算空、能读就输出、读不了要失败（不再 || true，PR #25 Codex 建议）", () => {
+    const d = tmp();
+    const sh = (p: string) => spawnSync("/bin/sh", ["-c", outboxTailCmd(p)], { encoding: "utf8" });
+    expect(sh(join(d, "none.jsonl"))).toMatchObject({ status: 0, stdout: "" });
+    writeFileSync(join(d, "o.jsonl"), "a\nb\n");
+    expect(sh(join(d, "o.jsonl"))).toMatchObject({ status: 0, stdout: "a\nb\n" });
+    chmodSync(join(d, "o.jsonl"), 0o000);
+    if (process.getuid?.() !== 0) expect(sh(join(d, "o.jsonl")).status).not.toBe(0);
+    chmodSync(join(d, "o.jsonl"), 0o600);
   });
   it("ssh 连续 3 次拉不到 outbox 告警，拉到了恢复", async () => {
     const t = setup();
