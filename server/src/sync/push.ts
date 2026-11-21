@@ -190,6 +190,9 @@ export async function pushOps(db: Kysely<Database>, guard: Guard, input: PushInp
     const device = await readDevice(tx, auth);
     // 注销期间（锁内重新读的状态）：一个都不应用、不留档、不给结果（§14 S04-2）
     if (device.deletePending) return { results: [], device };
+    // 演示店重置撤销的设备（discard_outbox，§4.5）：它的 outbox 属于重置前的那份数据，一个都不应用、不留档，
+    // 不能按被踢设备的补传规则把卖出记进刚种好的数据里（S09）。手机收到 discard_outbox 就丢弃 outbox
+    if (device.revokeReason === "demo_reset") return { results: [], device };
     const results: OpResult[] = [];
     for (const op of input.ops) results.push(await processOpSafely(input.log, tx, guard, device, auth.device.id, op, now, input.config));
     return { results, device };
