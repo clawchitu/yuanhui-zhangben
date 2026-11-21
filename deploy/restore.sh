@@ -43,7 +43,7 @@ on_exit() {
     line=$(printf '{"at":"%s","event":"restore_failed","alert":"restore_failed","stage":"%s","exit_code":%s}' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$STEP" "$rc")
     echo "$line" >&2
     if [ -n "$CD" ]; then
-      mkdir -p "$CD/backup" && echo "$line" >> "$CD/backup/restore-events.log" && chmod 644 "$CD/backup/restore-events.log" || true
+      { mkdir -p "$CD/backup" && chmod 711 "$CD/backup" && echo "$line" >> "$CD/backup/restore-events.log" && chmod 644 "$CD/backup/restore-events.log"; } || true
     fi
   fi
   rm -rf "$W"
