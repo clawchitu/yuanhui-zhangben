@@ -57,16 +57,32 @@ export class ServerMonitor {
   async run(now: Date): Promise<void> {
     const a = this.d.alerter;
     await a.flush();
+    // 每段各自 try：一段出错（某条查询、某个文件权限不对）不连累后面几段；出错的段自己报一条条件类告警，
+    // 好了发恢复。第一个错误在最后照样抛给 scheduler 记日志（PR #25 Fable 建议 3）
+    const stages: Array<[string, () => Promise<void>]> = [
+      ["log", () => this.logEvents(now)],
+      ["quota", () => this.quota(now)],
+      ["db", () => this.dbChecks(now)],
+      ["disk", () => this.disk()],
+      ...(this.d.backupDir ? ([["backup", () => this.backup(now)]] as Array<[string, () => Promise<void>]>) : []),
+    ];
+    let firstErr: unknown;
     try {
-      await this.logEvents(now);
-      await this.quota(now);
-      await this.dbChecks(now);
-      await this.disk();
-      if (this.d.backupDir) await this.backup(now);
+      for (const [stage, fn] of stages) {
+        let failed = false;
+        try {
+          await fn();
+        } catch (e) {
+          failed = true;
+          firstErr ??= e;
+        }
+        await a.condition(failed, { key: `monitor_check_error:${stage}`, title: "服务器监控有一段检查出错，这段的告警暂时不准", severity: "warning", details: { stage } });
+      }
     } finally {
       a.prune();
       a.save();
     }
+    if (firstErr !== undefined) throw firstErr;
   }
 
   private async logEvents(now: Date): Promise<void> {

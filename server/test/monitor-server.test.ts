@@ -253,6 +253,24 @@ describe("服务器监控", () => {
     for (const key of ["backup_heartbeat_stale", "backup_failed", "backup_consecutive_failures", "backup_lifecycle_stale"]) expect(k2).toContain(`resolved:${key}`);
   });
 
+  it("一段检查出错不连累后面几段：出错段报 monitor_check_error，后面的备份检查照跑；好了发恢复（PR #25 Fable 建议 3）", async () => {
+    let broken = true;
+    const backupDir = mkdtempSync(join(tmpdir(), "yh-monbk-"));
+    const r = rig({
+      backupDir,
+      quotaUsage: () => {
+        if (broken) throw new Error("quota 坏了");
+        return [];
+      },
+    });
+    await expect(r.run()).rejects.toThrow("quota 坏了");
+    expect(r.alerter.firing("monitor_check_error:quota")).toBe(true);
+    expect(r.alerter.firing("monitor_check_error:db")).toBe(false);
+    expect(r.alerter.firing("backup_heartbeat_stale")).toBe(true); // quota 后面的备份段照样跑了（目录里没有成功记录）
+    broken = false;
+    await r.run();
+    expect(r.sink.kinds()).toContain("resolved:monitor_check_error:quota");
+  });
   it("scheduler：配了监控才登记 monitor 任务，每分钟一次", () => {
     const base = { db: tdb.kysely, clock: () => new Date(), productImagesEnabled: false, images: null, archive: null, imageCacheDir: "/tmp" };
     expect(defaultTasks(base).map((t) => t.name)).not.toContain("monitor");
