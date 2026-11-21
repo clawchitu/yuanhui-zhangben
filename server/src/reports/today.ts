@@ -4,7 +4,7 @@ import { sql, type Kysely } from "kysely";
 import type { Database } from "../db.ts";
 import { int } from "../sync/projection.ts";
 import { shouldRemind } from "../ledger/lots.ts";
-import { RECORD_COUNT_SQL, addDay, dayStart, readSnapshot, today, totals, type Q } from "./common.ts";
+import { RECORD_COUNT_SQL, addDay, dayStart, readSnapshot, today, totals, type Bound, type Q } from "./common.ts";
 
 /** 卖得最好：设计稿 09 列 3 个 */
 export const TOP_SELLERS = 3;
@@ -31,7 +31,7 @@ export interface ReportToday {
 }
 
 /** 卖得最好：按卖出个数（基本单位，Σ −qty_delta，含冲销行，所以当天撤掉的不算），并列时按金额、再按商品 id */
-async function topSellers(db: Q, storeId: string, from: Date, to: Date): Promise<ProductAmount[]> {
+async function topSellers(db: Q, storeId: string, from: Bound, to: Bound): Promise<ProductAmount[]> {
   const r = await sql<{ product_id: string; name: string; qty: string; amount: string }>`
     SELECT e.product_id, p.name, (-SUM(e.qty_delta))::text AS qty, SUM(e.amount_fen)::text AS amount
     FROM entries e JOIN products p ON p.store_id = e.store_id AND p.id = e.product_id

@@ -1,21 +1,21 @@
 // 报表公共部分（§5.3）：上海时区的日 / 月界线、按时间段对流水求和的那一条 SQL。
 // 所有数字都只由 entries 求和得出（不读商品投影），因此「报表 = 从流水按定义重算」是逐分成立的。
-import { sql, type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type RawBuilder, type Transaction } from "kysely";
 import type { Database } from "../db.ts";
 import { shanghaiDay } from "../auth/guard.ts";
 import { int } from "../sync/projection.ts";
 
 export type Q = Kysely<Database> | Transaction<Database>;
 
-/** 上海没有夏令时，一天恒为 24 小时 */
 export const DAY_MS = 86_400_000;
 
-/** 合法的日历日 YYYY-MM-DD（2026-02-30 这种不合法）；年份限 2000–2999，防止 Date 越界 */
+/**
+ * 合法的日历日 YYYY-MM-DD（2026-02-30 这种不合法）。年份 0001–9999：入账只按「存不存得下」判，
+ * 1970 年、公元 1 年的流水都照收（§14 S05-4），查询要覆盖全部能入账的日子（§14 S07-8，Codex 第一轮 1）。
+ */
 export function isValidDay(s: string): boolean {
   const m = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(s);
-  if (!m) return false;
-  const y = Number(m[1]);
-  if (y < 2000 || y > 2999) return false;
+  if (!m || m[1] === "0000") return false;
   const d = new Date(`${s}T00:00:00Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }
@@ -24,19 +24,29 @@ export function isValidMonth(s: string): boolean {
   return /^[0-9]{4}-(0[1-9]|1[0-2])$/.test(s) && isValidDay(`${s}-01`);
 }
 
-/** 上海时间某一天 00:00 的时刻 */
-export function dayStart(day: string): Date {
-  return new Date(`${day}T00:00:00+08:00`);
+/**
+ * 上海时间某一天 00:00 的时刻，由 Postgres 按 Asia/Shanghai 换算（SQL 片段，直接放进 WHERE）。
+ * 与归日用的 `occurred_at AT TIME ZONE 'Asia/Shanghai'` 是同一份时区数据，所以「列表里的日期」和「按日期查」恒一致：
+ * 1986–1991 年上海有夏令时、1901 年以前是地方平时，固定 +08:00 在那些年份会和归日对不上。
+ * day 可以是 10000-01-01（9999-12-31 的下一天），Postgres 收得下。
+ */
+export function dayStart(day: string): RawBuilder<Date> {
+  return sql<Date>`((${day}::date)::timestamp AT TIME ZONE 'Asia/Shanghai')`;
 }
+export type Bound = RawBuilder<Date>;
 
-/** day + n 天（日历日） */
+/** 归日：流水的 occurred_at 在上海是哪一天（与 dayStart 同一口径） */
+export const DAY_OF_SQL = sql`to_char((occurred_at AT TIME ZONE 'Asia/Shanghai')::date, 'YYYY-MM-DD')`;
+
+/** day + n 天（日历日）；年份补足 4 位，9999-12-31 的下一天写成 10000-01-01 */
 export function addDay(day: string, n: number): string {
-  return new Date(Date.parse(`${day}T00:00:00Z`) + n * DAY_MS).toISOString().slice(0, 10);
+  const d = new Date(Date.parse(`${day}T00:00:00Z`) + n * DAY_MS);
+  return `${String(d.getUTCFullYear()).padStart(4, "0")}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
 export function nextMonth(month: string): string {
   const [y, m] = month.split("-").map(Number) as [number, number];
-  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+  return m === 12 ? `${String(y + 1).padStart(4, "0")}-01` : `${month.slice(0, 4)}-${String(m + 1).padStart(2, "0")}`;
 }
 
 export const today = shanghaiDay;
@@ -105,22 +115,22 @@ function toTotals(r: TotalsRow): Totals {
   };
 }
 
-export async function totals(db: Q, storeId: string, from: Date, to: Date): Promise<Totals> {
+export async function totals(db: Q, storeId: string, from: Bound, to: Bound): Promise<Totals> {
   const r = await sql<TotalsRow>`SELECT ${TOTALS_SELECT} FROM entries
     WHERE store_id = ${storeId} AND occurred_at >= ${from} AND occurred_at < ${to}`.execute(db);
   return toTotals(r.rows[0]!);
 }
 
 /** 按上海日期分组的合计（只返回有流水的日子） */
-export async function totalsByDay(db: Q, storeId: string, from: Date, to: Date): Promise<Map<string, Totals>> {
-  const r = await sql<TotalsRow & { day: string }>`SELECT to_char((occurred_at AT TIME ZONE 'Asia/Shanghai')::date, 'YYYY-MM-DD') AS day, ${TOTALS_SELECT}
+export async function totalsByDay(db: Q, storeId: string, from: Bound, to: Bound): Promise<Map<string, Totals>> {
+  const r = await sql<TotalsRow & { day: string }>`SELECT ${DAY_OF_SQL} AS day, ${TOTALS_SELECT}
     FROM entries WHERE store_id = ${storeId} AND occurred_at >= ${from} AND occurred_at < ${to}
     GROUP BY 1`.execute(db);
   return new Map(r.rows.map((row) => [row.day, toTotals(row)]));
 }
 
 /** 某一时刻之前（不含）全部流水的 value_delta 之和 = 那一刻的店里货值（I2 对全部商品求和） */
-export async function stockValueBefore(db: Q, storeId: string, t: Date): Promise<number> {
+export async function stockValueBefore(db: Q, storeId: string, t: Bound): Promise<number> {
   const r = await sql<{ v: string }>`SELECT COALESCE(SUM(value_delta_fen), 0)::text AS v FROM entries
     WHERE store_id = ${storeId} AND occurred_at < ${t}`.execute(db);
   return int(r.rows[0]!.v);

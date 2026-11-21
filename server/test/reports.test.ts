@@ -376,7 +376,8 @@ describe("权限与参数", () => {
     // 将来的月份：柱状图为空；过去的闰年 2 月：29 天
     expect((await s.get("/v1/reports/month?month=2026-12")).daily).toEqual([]);
     expect((await s.get("/v1/reports/month?month=2024-02")).daily).toHaveLength(29);
-    for (const url of ["/v1/reports/today?date=2026-02-30", "/v1/reports/today?date=2026-11-5", "/v1/reports/month?month=2026-13", "/v1/reports/month?month=1999-12",
+    for (const url of ["/v1/reports/today?date=2026-02-30", "/v1/reports/today?date=2026-11-5", "/v1/reports/month?month=2026-13", "/v1/reports/month?month=0000-12",
+      "/v1/reports/today?date=0000-01-01", "/v1/entries/days?before=10000-01-01",
       "/v1/entries", "/v1/entries?date=x", "/v1/entries/days?limit=0", "/v1/entries/days?limit=32", "/v1/entries/days?before=2026-11-31"]) {
       const res = await s.app.inject({ method: "GET", url, headers: bearer(s.boss.token) });
       expect([res.statusCode, res.json().code], url).toEqual([400, "invalid"]);
@@ -389,6 +390,53 @@ describe("权限与参数", () => {
     expect((await s.get("/v1/entries?date=2026-11-19")).entries.map((e: any) => e.type)).toEqual(["stock_in", "sale"]);
     await s.app.close();
     await other.app.close();
+  });
+});
+
+describe("返修（PR #18 Codex / Fable 第一轮）", () => {
+  it("历史日期（Codex 1）：1970 年、公元 1 年的流水能按日期查明细、日报、月报，并能当 07c 的翻页游标；夏令时那几年按上海当地时间归日", async () => {
+    const s = await setup();
+    const a = await s.product({ price: 300, name: "a" });
+    // §14 S05-4：只要存得下就照收，1970 年、公元 1 年都入账
+    const y1 = saleOp([{ pid: a, n: 1, price: 100 }], SH("0001-01-01T12:00:00"));
+    const y1970 = saleOp([{ pid: a, n: 2, price: 300 }], SH("1970-01-02T10:00:00"));
+    // 1988-07-02 00:30 上海夏令时（UTC+9）= UTC 07-01 15:30；按上海当地时间算 7 月 2 日
+    const dst = saleOp([{ pid: a, n: 1, price: 500 }], "1988-07-02T00:30:00+09:00");
+    await s.send(y1.op, y1970.op, dst.op);
+    const days = (await s.get("/v1/entries/days?before=2026-11-20&limit=31")).days;
+    expect(days).toEqual([
+      { date: "1988-07-02", count: 1, amount_fen: 500 },
+      { date: "1970-01-02", count: 1, amount_fen: 600 },
+      { date: "0001-01-01", count: 1, amount_fen: 100 },
+    ]);
+    // 每一天都能用列表给出的日期查明细和日报，月报也包含它
+    for (const d of days) {
+      const es = (await s.get(`/v1/entries?date=${d.date}`)).entries;
+      expect(es.map((e: any) => e.amount_fen), d.date).toEqual([d.amount_fen]);
+      expect((await s.get(`/v1/reports/today?date=${d.date}`, "ReportToday")).sold_fen, d.date).toBe(d.amount_fen);
+      const m = await s.get(`/v1/reports/month?month=${d.date.slice(0, 7)}`, "ReportMonth");
+      expect([m.sold_fen, m.daily.reduce((x: number, y: any) => x + y.sold_fen, 0)], d.date).toEqual([d.amount_fen, d.amount_fen]);
+    }
+    expect((await s.get("/v1/entries?date=1988-07-01")).entries).toEqual([]);
+    // 翻页：游标落在 1970、公元 1 年也能继续
+    const got: any[] = [];
+    let before = "2026-11-20";
+    for (;;) {
+      const page = (await s.get(`/v1/entries/days?before=${before}&limit=1`)).days;
+      got.push(...page);
+      if (page.length < 1) break;
+      before = page[0].date;
+    }
+    expect(got).toEqual(days);
+    // 月初货值：1970-02 的月初 = 之前全部流水（两笔卖出，进价未知、货值 0）
+    const feb = await s.get("/v1/reports/month?month=1970-02", "ReportMonth");
+    expect([feb.reconciliation.stock_value_start_fen, feb.daily.length]).toEqual([0, 28]);
+    // 合法范围的两头：公元 1 年 1 月、9999 年 12 月都能查（将来的月份柱状图为空）
+    expect((await s.get("/v1/reports/month?month=0001-01", "ReportMonth")).sold_fen).toBe(100);
+    expect((await s.get("/v1/reports/month?month=9999-12", "ReportMonth")).daily).toEqual([]);
+    expect((await s.get("/v1/reports/today?date=9999-12-31", "ReportToday")).sold_fen).toBe(0);
+    expect((await s.get("/v1/entries/days?before=0001-01-01")).days).toEqual([]);
+    await s.app.close();
   });
 });
 

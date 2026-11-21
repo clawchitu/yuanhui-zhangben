@@ -3,7 +3,7 @@
 import { sql, type Kysely } from "kysely";
 import type { Database } from "../db.ts";
 import { batchOut, entryOut, int } from "../sync/projection.ts";
-import { RECORD_COUNT_SQL, addDay, dayStart, readSnapshot } from "./common.ts";
+import { DAY_OF_SQL, RECORD_COUNT_SQL, addDay, dayStart, readSnapshot } from "./common.ts";
 
 export async function entriesOfDay(db: Kysely<Database>, storeId: string, date: string) {
   const from = dayStart(date);
@@ -43,7 +43,7 @@ export async function entriesOfDay(db: Kysely<Database>, storeId: string, date: 
 export async function entryDays(db: Kysely<Database>, storeId: string, before: string, limit: number) {
   const to = dayStart(before);
   const r = await sql<{ day: string; n: number; amount: string }>`
-    SELECT to_char((occurred_at AT TIME ZONE 'Asia/Shanghai')::date, 'YYYY-MM-DD') AS day,
+    SELECT ${DAY_OF_SQL} AS day,
            ${RECORD_COUNT_SQL} AS n,
            COALESCE(SUM(amount_fen) FILTER (WHERE type = 'sale'), 0)::text AS amount
     FROM entries WHERE store_id = ${storeId} AND occurred_at < ${to}
