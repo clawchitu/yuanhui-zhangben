@@ -1,5 +1,5 @@
 // 账号（§7）：改密码、申请注销、撤回注销。
-// 本段只做申请、撤回和「注销期间禁止写账与开通」（guard 的 delete_pending）；7 天后真正删除和导出在 S09。
+// 申请时为非演示店登记导出任务；导出包生成、7 天后真正删除在 jobs/account-purge.ts（S09）。
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authOf } from "../auth/plugin.ts";
 import { hashPassword, PASSWORD_MAX, PASSWORD_MIN } from "../auth/password.ts";
@@ -86,6 +86,17 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
         const at = acct.delete_requested_at ?? now;
         if (!acct.delete_requested_at) {
           await trx.updateTable("accounts").set({ delete_requested_at: at }).where("id", "=", a.account.id).execute();
+          // 非演示店：同一事务里登记导出任务（jobs/account-purge.ts 生成导出包、告警转交黄总，S09）。
+          // 撤回后又申请是新的一次：同一行重置（旧包由新包生成成功后删掉，或由撤回清理删掉）
+          if (!a.store.isDemo) {
+            await trx
+              .insertInto("export_jobs")
+              .values({ store_id: a.store.id, requested_at: at, next_try_at: now })
+              .onConflict((oc) =>
+                oc.column("store_id").doUpdateSet({ requested_at: at, next_try_at: now, object_key: null, done_at: null, attempts: 0, last_error: null, cancelled_at: null }),
+              )
+              .execute();
+          }
         }
         await trx
           .updateTable("devices")
@@ -113,7 +124,19 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     if (!at || req.receivedAt.getTime() - at.getTime() > DELETE_GRACE_MS) {
       return sendError(reply, 409, "not_delete_pending", { message: at ? "已经超过 7 天，不能撤回" : "账号不在注销中" });
     }
-    await db.updateTable("accounts").set({ delete_requested_at: null }).where("id", "=", a.account.id).execute();
+    // 条件更新：和到期清除（锁账号行后重查）不会两边都成立；同一事务里把导出任务标成撤回（定时任务删掉已生成的包）
+    const ok = await db.transaction().execute(async (trx) => {
+      const r = await trx
+        .updateTable("accounts")
+        .set({ delete_requested_at: null })
+        .where("id", "=", a.account.id)
+        .where("delete_requested_at", "=", at)
+        .executeTakeFirst();
+      if (Number(r.numUpdatedRows) !== 1) return false;
+      await trx.updateTable("export_jobs").set({ cancelled_at: req.receivedAt }).where("store_id", "=", a.store.id).execute();
+      return true;
+    });
+    if (!ok) return sendError(reply, 409, "not_delete_pending", { message: "账号不在注销中" });
     return reply.code(204).send();
   });
 }
