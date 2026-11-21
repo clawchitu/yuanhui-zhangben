@@ -24,7 +24,6 @@ PREV_IMAGE=$(envval API_IMAGE)
 echo "上一个标签：${PREV:-（无）} → 新标签：$TAG"
 
 healthy() {
-
   for _ in $(seq 1 30); do
     "${C[@]}" exec -T api node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))" && return 0
     sleep 2

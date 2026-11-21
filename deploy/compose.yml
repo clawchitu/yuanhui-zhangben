@@ -1,34 +1,66 @@
-# 生产 Compose（§9.1）：caddy、api、postgres。只有 caddy 映射端口到公网（80、443）；
-# api 不映射任何端口，只在内部网络 yh 上对 caddy 可达；postgres 同样不出网（§14 S03-6）。
-# caddy 固定地址 172.30.0.2，api 只信这个地址给的 X-Forwarded-For（TRUSTED_PROXY）。
+# 生产 Compose（§9.1）：caddy、api、postgres，外加只在发布时用的 migrate。
+# 网络拆成两个（Codex 7）：
+#   edge（172.30.0.0/24）：caddy、api。只有 caddy 映射端口到公网（80、443/tcp）；api 不映射任何端口；
+#     api 要连 OSS、快鸟，出网走这个网络。
+#   db（172.30.1.0/24，internal: true）：api、postgres、migrate。不出网，caddy 不在上面、连不到数据库。
+# 固定地址：caddy 172.30.0.2（api 只信这个地址给的 X-Forwarded-For，TRUSTED_PROXY）、api 172.30.0.3；
+# 动态分配限制在 ip_range（.128/25）里，和固定地址错开（§14 S10a-1）。
+# 镜像一律从 ACR 拉（ECS 拉不动 Docker Hub），三个镜像变量都必填，不给 Docker Hub 默认值（Fable 必须改 4）。
+# 不开 443/udp（HTTP/3，§14 S10a-5）。
 name: yuanhui
+
+x-logging: &logging
+  # json-file 默认不限大小，Caddy 访问日志和 api 日志会写满系统盘（Fable 必须改 5）
+  driver: json-file
+  options: { max-size: "20m", max-file: "5" }
+
 networks:
-  yh:
+  edge:
     ipam:
       config:
         - subnet: 172.30.0.0/24
+          ip_range: 172.30.0.128/25
+  db:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.1.0/24
+          ip_range: 172.30.1.128/25
+
+x-api-env: &api-env
+  # 口令原样拼进连接串，所以只许字母数字（openssl rand -hex 24 生成），remote-deploy.sh 发布前检查（Codex 8、Fable 必须改 9）
+  DATABASE_URL: postgres://yuanhui:${POSTGRES_PASSWORD:?}@postgres:5432/yuanhui
+
 services:
   caddy:
-    image: ${CADDY_IMAGE:-caddy:2.10.2}
+    image: ${CADDY_IMAGE:?填 ACR 上的 caddy:2.10.2，见 deploy/.env.example}
     restart: unless-stopped
-    ports: ["80:80", "443:443", "443:443/udp"]
+    ports: ["80:80", "443:443"]
+    mem_limit: 128m
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
     environment:
       ACME_EMAIL: ${ACME_EMAIL:?}
       PUBLIC_IP: ${PUBLIC_IP:?}
     volumes:
-      - ./Caddyfile.ip:/etc/caddy/Caddyfile:ro
+      # 挂目录不挂单个文件：换文件（新 inode）后容器里也看得到，deploy 再 caddy reload
+      - ./caddy:/etc/caddy:ro
       - /data/caddy/data:/data
       - /data/caddy/config:/config
     networks:
-      yh: { ipv4_address: 172.30.0.2 }
+      edge: { ipv4_address: 172.30.0.2 }
     depends_on: [api]
   api:
     image: ${API_IMAGE:?}
     restart: unless-stopped
+    # 上限是真的 512 MB：不许再用 swap 顶（§14 S10a-7）
     mem_limit: 512m
+    memswap_limit: 512m
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
     # 不设 UV_THREADPOOL_SIZE（§14 T2-3）
     environment:
-      DATABASE_URL: postgres://yuanhui:${POSTGRES_PASSWORD:?}@postgres:5432/yuanhui
+      <<: *api-env
       HOST: 0.0.0.0
       PORT: "3000"
       TRUST_PROXY: "1"
@@ -50,12 +82,25 @@ services:
       # 宿主目录由 bootstrap-ecs.sh 建好并 chown 1000:1000（镜像里 node 用户）
       - /data/img:/data/img
     networks:
-      yh: { ipv4_address: 172.30.0.3 }
+      edge: { ipv4_address: 172.30.0.3 }
+      db: {}
+    depends_on:
+      postgres: { condition: service_healthy }
+  # 只在发布时由 remote-deploy.sh 跑：docker compose run --rm migrate。不在 edge 上、没有固定地址（Codex 2）
+  migrate:
+    profiles: [tools]
+    image: ${API_IMAGE:?}
+    command: ["node", "scripts/migrate.ts"]
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+    environment: *api-env
+    networks: [db]
     depends_on:
       postgres: { condition: service_healthy }
   postgres:
-    image: ${POSTGRES_IMAGE:-postgres:16}
+    image: ${POSTGRES_IMAGE:?填 ACR 上的 postgres:16，见 deploy/.env.example}
     restart: unless-stopped
+    logging: *logging
     command: ["postgres", "-c", "shared_buffers=256MB", "-c", "password_encryption=scram-sha-256"]
     environment:
       POSTGRES_USER: yuanhui
@@ -64,8 +109,7 @@ services:
       POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
     volumes:
       - /data/pg:/var/lib/postgresql/data
-    networks:
-      yh: { ipv4_address: 172.30.0.4 }
+    networks: [db]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U yuanhui -d yuanhui"]
       interval: 5s
