@@ -80,9 +80,20 @@ services:
       OSS_ARCHIVE_BUCKET: ${OSS_ARCHIVE_BUCKET:-}
       OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
       OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      # 监控与告警（S10c，§9.5）：检查任务每分钟跑一次，告警写 /data/monitor/outbox.jsonl，本机探测（deploy/probe/）ssh 拉回去发给 Chitu。
+      # 备份目录只读挂进来看 metrics.prom、gate-skips.log、restore-events.log；磁盘用量看 /data 所在的盘。
+      MONITOR_DIR: /data/monitor
+      MONITOR_BACKUP_DIR: /backup
+      MONITOR_DISK_PATH: /data/monitor
+      # 可选：再直接推一份（https）。留空 = 只走 outbox
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_WEBHOOK_TOKEN: ${ALERT_WEBHOOK_TOKEN:-}
     volumes:
       # 宿主目录由 bootstrap-ecs.sh 建好并 chown 1000:1000（镜像里 node 用户）
       - /data/img:/data/img
+      - /data/monitor:/data/monitor
+      # backup.sh 把 backup/ 设成 711、要读的几个文件 644：node 用户能按名字读、列不了目录（work.* 里的明文 dump 是 700）
+      - ./backup:/backup:ro
     networks:
       edge: { ipv4_address: 172.30.0.3 }
       db: {}

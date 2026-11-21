@@ -44,6 +44,8 @@ mkdir -p "$R/opt/yuanhui/caddy" "$R/data/pg" "$R/data/img" "$R/data/monitor" "$R
 # /data/monitor：api 的监控状态和告警 outbox（S10c），本机探测 ssh 进来读 outbox.jsonl
 chown 1000:1000 "$R/data/img" "$R/data/monitor"
 chmod 700 "$R/opt/yuanhui"
+# backup/ 只读挂进 api（S10c 监控）：711 = 按名字读、列不了目录。先建好，免得 Compose 替它建成 755
+mkdir -p "$R/opt/yuanhui/backup" && chmod 711 "$R/opt/yuanhui/backup"
 if [ ! -f "$R/opt/yuanhui/.env" ]; then
   install -m 600 /dev/null "$R/opt/yuanhui/.env"
   echo "已建空的 /opt/yuanhui/.env，按 deploy/.env.example 手工填写"

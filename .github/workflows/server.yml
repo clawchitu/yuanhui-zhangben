@@ -68,6 +68,8 @@ jobs:
           cp deploy/.env.example /tmp/ci.env
           sed -i 's/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=0123456789abcdef0123/; s/^ACME_EMAIL=$/ACME_EMAIL=ci@example.invalid/; s/^API_IMAGE=$/API_IMAGE=yuanhui-api:ci/; s#^CADDY_IMAGE=$#CADDY_IMAGE=registry.invalid/yuanhui/caddy:2.10.2#; s#^POSTGRES_IMAGE=$#POSTGRES_IMAGE=registry.invalid/yuanhui/postgres:16#' /tmp/ci.env
           docker compose -f deploy/compose.yml --env-file /tmp/ci.env config -q
+          # S10c：api 跑监控（MONITOR_DIR）、备份目录只读挂进去、/data/monitor 可写
+          docker compose -f deploy/compose.yml --env-file /tmp/ci.env config --format json | jq -e '.services.api.environment.MONITOR_DIR == "/data/monitor" and .services.api.environment.MONITOR_BACKUP_DIR == "/backup" and ([.services.api.volumes[] | select(.target == "/backup") | .read_only] == [true]) and ([.services.api.volumes[] | select(.target == "/data/monitor") | .read_only // false] == [false])'
           # 首次发布：.env 的 API_IMAGE 按 .env.example 留空。真 Compose 不带新镜像必须报错（替身 docker 照此行为），
           # 带上 remote-deploy.sh 的写法 API_IMAGE=<新镜像> 必须通过，config 和只起 postgres 都一样（PR #22 第二轮）
           sed 's/^API_IMAGE=.*/API_IMAGE=/' /tmp/ci.env > /tmp/ci-first.env

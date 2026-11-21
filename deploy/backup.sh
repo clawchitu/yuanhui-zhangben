@@ -24,6 +24,7 @@ chmod 711 "$S"
 t0=$(date +%s)
 stage=lock
 W=""
+lc_stale=""   # 这次查到的生命周期状态；空 = 没查到，沿用上一次
 json() { printf '{"at":"%s","event":"%s"%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:-}"; }
 # 状态文件：上一次成功的时间保留；失败次数连续累加
 prev() { sed -n "s/^yuanhui_backup_$1 //p" "$S/metrics.prom" 2>/dev/null | tail -1; }
@@ -31,7 +32,7 @@ write_state() { # write_state <ok 0|1> <backup_id> <dump_bytes>
   local ok=$1 id=$2 bytes=$3 now dur last fails skipped stale
   skipped=$(prev last_skip_timestamp_seconds || true)
   # 生命周期：这次上传后查到了就用这次的，没查到（失败）沿用上一次的
-  stale=${LIFECYCLE_STALE:-$(prev lifecycle_stale || true)}
+  stale=${lc_stale:-$(prev lifecycle_stale || true)}
   now=$(date +%s); dur=$((now - t0))
   last=$(cat "$S/last-success" 2>/dev/null || echo 0)
   if [ "$ok" = 1 ]; then fails=0; last=$now; else fails=$(( $(prev consecutive_failures || echo 0) + 1 )); fi
@@ -126,7 +127,7 @@ bytes=$(sed -n 's/.*"dump_bytes":\([0-9]*\).*/\1/p' "$W/upload.out" | head -1)
 [ -n "$id" ] || fail
 # 生命周期没生效（最旧的一份超过 36 天）：backup.ts 打 alert=backup_lifecycle_stale，原样转出来
 grep -h '"event":"backup_status"' "$W/upload.out" || true
-if grep -q '"alert":"backup_lifecycle_stale"' "$W/upload.out"; then LIFECYCLE_STALE=1; else LIFECYCLE_STALE=0; fi
+if grep -q '"alert":"backup_lifecycle_stale"' "$W/upload.out"; then lc_stale=1; elif grep -q '"event":"backup_status"' "$W/upload.out"; then lc_stale=0; fi
 
 stage=finish
 date +%s > "$S/last-success.tmp" && chmod 644 "$S/last-success.tmp" && mv "$S/last-success.tmp" "$S/last-success"

@@ -26,6 +26,9 @@ check "sshd 配置禁口令" grep -qx "PasswordAuthentication no" "$T/root/etc/s
 check "sshd 配置校验过再重载" grep -q "systemctl reload ssh" "$T/log"
 check "ufw 没有 443/udp" bash -c "! grep -q udp '$T/state/ufw'"
 check "ufw 放了 443/tcp" grep -qx 443/tcp "$T/state/ufw"
+check "建了 /data/monitor（S10c 监控状态和告警 outbox）" [ -d "$T/root/data/monitor" ]
+check "预先建好 /opt/yuanhui/backup、711" [ "$(stat -c %a "$T/root/opt/yuanhui/backup" 2>/dev/null || stat -f %Lp "$T/root/opt/yuanhui/backup")" = 711 ]
+check "/data/monitor 交给容器里的 node 用户（1000）" grep -q "chown 1000:1000 .*/data/img .*/data/monitor" "$T/log"
 t "再跑一次（幂等）：fstab 仍只有一行，不再重载 sshd"
 : > "$FAKE_LOG"; boot --execute
 check "退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
