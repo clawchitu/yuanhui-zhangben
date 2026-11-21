@@ -137,8 +137,10 @@ export class ServerMonitor {
       const v = noSyncVerdict(eff, now);
       // 打烊（21:00 起）和次日 8:00–11:00 判定是「不报」，但不等于恢复了：告警以后没真的同步过就留着，
       // 不发「已恢复」也不提醒；次日 11:00 还没同步再按 6 小时规则提醒（PR #25 Fable 建议 7）
+      // 「已恢复」只认真同步：api 重启后 startedAt 晚于告警开始时间，但那不是同步，不能拿它当恢复（S10 部署实测顺手修）
       const cur = this.d.alerter.state.conditions[key];
-      if (!v.active && cur && eff.getTime() < Date.parse(cur.since)) continue;
+      const synced = this.d.syncSeen.get(s.id);
+      if (!v.active && cur && !(synced && synced.getTime() >= Date.parse(cur.since))) continue;
       await this.d.alerter.condition(v.active, { key, title: "营业时间内超过 3 小时没有任何设备同步成功（店里断网或 App 出问题）", severity: "warning", details: { store_id: s.id, ...v.details } });
     }
     for (const k of Object.keys(this.d.alerter.state.conditions)) {
@@ -230,7 +232,7 @@ export class ServerMonitor {
     });
     await a.condition(m.yuanhui_backup_lifecycle_stale === 1, {
       key: "backup_lifecycle_stale",
-      title: "最旧的备份超过 36 天：OSS 生命周期规则没生效，「35 天内彻底清除」不成立",
+      title: "最旧的备份超过 38 天：OSS 生命周期规则没生效，「35 天内彻底清除」不成立",
       severity: "critical",
     });
 

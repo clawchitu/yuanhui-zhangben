@@ -5,9 +5,10 @@
 //   node scripts/restore.ts finish --manifest <文件> [--execute]       比对清单 → 重放删除记录 → 再比对 → 换 epoch、标记改「已恢复」；不带 --execute 只比对、列出要删的店
 //   node scripts/restore.ts deletions [--manifest <文件>]               列出全部删除记录；带清单时标出备份里有、恢复时会被删掉的店（restore_will_delete）
 //   node scripts/restore.ts clear-marker                               整机重建：恢复完、api 指过去之前清掉「已恢复」标记
-// 环境变量：DATABASE_URL（目标库，prepare / finish）、BACKUP_PASSPHRASE（fetch）、备份存储见 src/backup/store.ts
+// 环境变量：DATABASE_URL（目标库，prepare / finish）、BACKUP_PASSPHRASE（fetch）、备份存储见 src/backup/store.ts。
+//   OSS 跑法必须设 BACKUP_OSS_ARCHIVE_BUCKET（restoreStoreFromEnv），没设退出码 2；fetch 先打一行 restore_source（两个前缀各从哪个桶读）
 import { createDb } from "../src/db.ts";
-import { backupStoreFromEnv } from "../src/backup/store.ts";
+import { RestoreConfigError, backupStoreSource, restoreStoreFromEnv } from "../src/backup/store.ts";
 import { clearMarker, fetchBackup, finishRestore, listDeletions, prepareTarget, readManifest, resolveBackup } from "../src/backup/restore.ts";
 
 const log = (o: object) => console.log(JSON.stringify({ at: new Date().toISOString(), ...o }));
@@ -35,7 +36,8 @@ const withDb = async <T>(fn: (db: ReturnType<typeof createDb>) => Promise<T>) =>
 
 try {
   if (cmd === "fetch") {
-    const store = backupStoreFromEnv();
+    const store = restoreStoreFromEnv();
+    log({ event: "restore_source", ...backupStoreSource() });
     const id = await resolveBackup(store, need(arg("--backup"), "--backup"));
     const { manifest } = await fetchBackup(store, id, process.env.BACKUP_PASSPHRASE ?? "", need(arg("--out"), "--out"));
     log({ event: "restore_fetched", backup_id: id, taken_at: manifest.taken_at, stores: Object.keys(manifest.stores).length, dump_bytes: manifest.dump?.bytes });
@@ -44,14 +46,14 @@ try {
     log({ event: "restore_target", state: r, dry_run: !execute });
   } else if (cmd === "finish") {
     const manifest = await readManifest(need(arg("--manifest"), "--manifest"));
-    const r = await withDb((db) => finishRestore(db.kysely, backupStoreFromEnv(), manifest, { dryRun: !execute }));
+    const r = await withDb((db) => finishRestore(db.kysely, restoreStoreFromEnv(), manifest, { dryRun: !execute }));
     log({ event: execute ? "restore_done" : "restore_checked", ...r });
     // 备份里有、被删掉的店单独一行，人工核对：元辉店的 id 不许在里面（Fable 建议 2）
     log({ event: execute ? "restore_deleted_stores" : "restore_will_delete", store_ids: r.replayed });
   } else if (cmd === "deletions") {
     const mf = arg("--manifest");
     const inBackup = mf ? new Set(Object.keys((await readManifest(mf)).stores)) : null;
-    const all = await listDeletions(backupStoreFromEnv());
+    const all = await listDeletions(restoreStoreFromEnv());
     for (const d of all) log({ event: "deletion", store_id: d.storeId, purged_at: d.purgedAt.toISOString(), ...(inBackup ? { in_backup: inBackup.has(d.storeId) } : {}) });
     if (inBackup) log({ event: "restore_will_delete", store_ids: all.filter((d) => inBackup.has(d.storeId)).map((d) => d.storeId) });
   } else if (cmd === "clear-marker") {
@@ -60,6 +62,10 @@ try {
     need(undefined, "子命令：fetch | prepare | finish | deletions | clear-marker");
   }
 } catch (e) {
+  if (e instanceof RestoreConfigError) {
+    console.error(JSON.stringify({ at: new Date().toISOString(), event: "restore_usage", alert: "restore_failed", message: e.message }));
+    process.exit(2);
+  }
   console.error(JSON.stringify({ at: new Date().toISOString(), event: `restore_${cmd}_failed`, alert: "restore_failed", message: (e as Error).message }));
   process.exit(1);
 }

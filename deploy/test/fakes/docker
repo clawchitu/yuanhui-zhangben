@@ -81,6 +81,9 @@ pg_restore_run() { # 只认 --list，或 -U/-d（忽略，改写 FAKE_RESTORE_DB
 }
 case "${1:-}" in
   pull) [ "${FAKE_PULL_FAIL:-0}" = 1 ] && exit 1; exit 0 ;;
+  load) touch "$S/loaded"; exit 0 ;;
+  # 本机有没有这个镜像：只有 docker load 过才算有（FAKE_IMAGE_PRESENT=1 强制算有）
+  image) [ "${2:-}" = inspect ] && { [ -f "$S/loaded" ] || [ "${FAKE_IMAGE_PRESENT:-0}" = 1 ]; exit; }; exit 0 ;;
   exec) shift; [ "${1:-}" = -T ] && shift; c=$1; shift
         case "$c" in *api*) api_exec "$@"; exit ;; *caddy*) caddy_cmd "$@"; exit ;; esac; exit 0 ;;
   run) shift; for a in "$@"; do case "$a" in caddy|*caddy:*|*/caddy*) caddy_cmd "$@"; exit ;; esac; done; exit 0 ;;

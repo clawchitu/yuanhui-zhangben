@@ -267,6 +267,8 @@ export interface StorePurgesTable {
   objects_cleared_at: Ts | null;
   attempts: Generated<number>;
   last_error: string | null;
+  /** 失败退避：这个时间之前不重试；空 = 随时可试（0003） */
+  next_try_at: Ts | null;
 }
 
 export interface ObjectDiscardsTable {

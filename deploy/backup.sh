@@ -10,7 +10,7 @@
 # 退出码：0 成功；1 失败；2 已有一次在跑（不重叠；跳过也记进 backup/skips.log 和 metrics.prom，S10c 看得见）。
 # S10c：api 容器（node 用户 1000）只读挂 backup/ 看 metrics.prom、gate-skips.log、restore-events.log，所以 backup/ 是 711
 #   （能按名字读、不能列目录），这几个文件 644；明文 dump 在 work.*（mktemp，700）里，不受影响。
-#   metrics.prom 多一项 yuanhui_backup_lifecycle_stale（最旧的一份超过 36 天 = 生命周期没生效，§14 T26）。
+#   metrics.prom 多一项 yuanhui_backup_lifecycle_stale（最旧的一份超过 38 天 = 生命周期没生效，§14 T26）。
 # 锁（backup/lock.d，里面记 pid）：拿锁的进程已经不在（kill -9、OOM、强制重启），或者锁超过 16 分钟
 #   （service 的 TimeoutStartSec=900 保证一次跑不过 15 分钟）都算残留，清掉再拿；拿到锁后清掉上一次残留的 backup/work.*（里面是明文 dump）。
 set -euo pipefail
@@ -125,7 +125,7 @@ if [ "$(id -u)" = 0 ]; then chown 1000:1000 "$W/db.dump"; fi
 id=$(sed -n 's/.*"event":"backup_uploaded","backup_id":"\([^"]*\)".*/\1/p' "$W/upload.out" | head -1)
 bytes=$(sed -n 's/.*"dump_bytes":\([0-9]*\).*/\1/p' "$W/upload.out" | head -1)
 [ -n "$id" ] || fail
-# 生命周期没生效（最旧的一份超过 36 天）：backup.ts 打 alert=backup_lifecycle_stale，原样转出来
+# 生命周期没生效（最旧的一份超过 38 天）：backup.ts 打 alert=backup_lifecycle_stale，原样转出来
 grep -h '"event":"backup_status"' "$W/upload.out" || true
 if grep -q '"alert":"backup_lifecycle_stale"' "$W/upload.out"; then lc_stale=1; elif grep -q '"event":"backup_status"' "$W/upload.out"; then lc_stale=0; fi
 
