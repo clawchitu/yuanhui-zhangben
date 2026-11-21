@@ -25,7 +25,11 @@ CREATE TABLE export_jobs (
   -- 只记原因代码，不记业务数据
   last_error    text,
   cancelled_at  timestamptz,
-  CHECK ((done_at IS NULL) = (object_key IS NULL))
+  -- 生成和清理分开记（PR #20 Codex 4）：done_at 是这一版的包生成好了；stale_cleared_at 是 exports/<店>/ 里比这一版更早的包删完了。
+  -- 清理失败只让 stale_cleared_at 留空、下一轮单独重试，不碰已完成的包
+  stale_cleared_at timestamptz,
+  CHECK ((done_at IS NULL) = (object_key IS NULL)),
+  CHECK (stale_cleared_at IS NULL OR done_at IS NOT NULL)
 );
 
 -- 已清除的店：只记店 id 和时间（不含任何业务数据），用来在库里的行删掉之后继续重试删除记录、OSS 和本机缓存的清理。

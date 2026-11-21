@@ -373,6 +373,85 @@ describe("导出包", () => {
     ).toBe(null);
   });
 
+  it("旧任务清理旧包时又撤回、重新申请、新包已生成：旧任务只删它那一版之前的包，不删新包（PR #20 Codex 3）", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "新旧包店");
+    const req = async () => {
+      const t = await login(s.app, s.username);
+      expect((await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } })).statusCode).toBe(200);
+    };
+    const cancel = async () => {
+      const t = await login(s.app, s.username);
+      expect((await s.app.inject({ method: "POST", url: "/v1/account/delete-cancel", headers: bearer(t.token) })).statusCode).toBe(204);
+    };
+    await req();
+    const archive = new MemoryObjectStore();
+    const realList = archive.list.bind(archive);
+    let newer: string | undefined;
+    // 旧任务写完「完成」、进入旧包清理时：撤回 → 重新申请 → 新任务（另一个进程，直接用底层的列举）生成新包
+    const oldView = Object.create(archive) as MemoryObjectStore;
+    oldView.list = async (prefix) => {
+      if (newer === undefined) {
+        newer = "";
+        clock.advance(60_000);
+        await cancel();
+        clock.advance(60_000);
+        await req();
+        const plain = Object.create(archive) as MemoryObjectStore;
+        plain.list = realList;
+        const [r] = await runExportJobs(deps(clock, { archive: plain }));
+        expect(r?.result).toBe("done");
+        newer = r!.object_key!;
+      }
+      return realList(prefix);
+    };
+    const [old] = await runExportJobs(deps(clock, { archive: oldView }));
+    expect(old?.result).toBe("done");
+    expect(newer).toMatch(/^exports\//);
+    // 新包还在、库里指着它；旧包由新任务的清理删掉
+    expect(await realList(storePrefix("exports", s.storeId))).toEqual([newer]);
+    const j = await tdb.kysely.selectFrom("export_jobs").selectAll().where("store_id", "=", s.storeId).executeTakeFirstOrThrow();
+    expect(j.object_key).toBe(newer);
+    await s.app.close();
+  });
+
+  it("清理旧包失败：已完成的新包留着、任务算完成、告警照发；旧包下一轮单独重试删掉（PR #20 Codex 4）", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "清旧包失败店");
+    const req = async () => {
+      const t = await login(s.app, s.username);
+      expect((await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } })).statusCode).toBe(200);
+    };
+    const archive = new MemoryObjectStore();
+    await req();
+    const [first] = await runExportJobs(deps(clock, { archive }));
+    // 撤回后马上又申请（撤回清理还没轮到）：第一份包留在 exports/ 里
+    clock.advance(60_000);
+    const t = await login(s.app, s.username);
+    expect((await s.app.inject({ method: "POST", url: "/v1/account/delete-cancel", headers: bearer(t.token) })).statusCode).toBe(204);
+    clock.advance(60_000);
+    await req();
+    const realList = archive.list.bind(archive);
+    let broken = true;
+    archive.list = async (p) => {
+      if (broken) throw Object.assign(new Error("列举超时"), { code: "RequestTimeout" });
+      return realList(p);
+    };
+    const sink = logSink();
+    const [second] = await runExportJobs(deps(clock, { archive, log: sink.log }));
+    expect(second?.result).toBe("done");
+    expect(sink.lines.find((l) => l.obj.alert === "account_delete_export")?.obj.object_key).toBe(second!.object_key);
+    const j = await tdb.kysely.selectFrom("export_jobs").selectAll().where("store_id", "=", s.storeId).executeTakeFirstOrThrow();
+    expect([j.object_key, j.done_at?.getTime()]).toEqual([second!.object_key, clock.t]);
+    expect(archive.objects.has(second!.object_key!)).toBe(true);
+    expect(archive.objects.has(first!.object_key!)).toBe(true);
+    // 下一轮：只重试清理（不重新生成），删掉旧包、留着新包
+    broken = false;
+    expect(await runExportJobs(deps(clock, { archive }))).toEqual([]);
+    expect(await realList(storePrefix("exports", s.storeId))).toEqual([second!.object_key]);
+    await s.app.close();
+  });
+
   it("两个进程同时跑导出任务：只生成一份", async () => {
     const clock = new TestClock(T0);
     const s = await shopWithBooks(clock, "并发导出店");

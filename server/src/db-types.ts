@@ -257,6 +257,7 @@ export interface ExportJobsTable {
   next_try_at: Ts;
   last_error: string | null;
   cancelled_at: Ts | null;
+  stale_cleared_at: Ts | null;
 }
 
 export interface StorePurgesTable {

@@ -103,7 +103,7 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
               .insertInto("export_jobs")
               .values({ store_id: a.store.id, requested_at: at, next_try_at: now })
               .onConflict((oc) =>
-                oc.column("store_id").doUpdateSet({ requested_at: at, next_try_at: now, object_key: null, done_at: null, attempts: 0, last_error: null, cancelled_at: null }),
+                oc.column("store_id").doUpdateSet({ requested_at: at, next_try_at: now, object_key: null, done_at: null, attempts: 0, last_error: null, cancelled_at: null, stale_cleared_at: null }),
               )
               .execute();
           }

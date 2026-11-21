@@ -21,7 +21,7 @@ const SPEC = specFromPlan();
 // 字段以 migrations/0002_demo_and_deletion.sql 为准，在这里手抄一份做结构回归保护（多了、少了都会红）
 const S09_TABLES: Record<string, string[]> = {
   demo_stores: ["store_id", "review_password_hash", "seeded_at", "next_reset_at"],
-  export_jobs: ["store_id", "requested_at", "object_key", "done_at", "attempts", "next_try_at", "last_error", "cancelled_at"],
+  export_jobs: ["store_id", "requested_at", "object_key", "done_at", "attempts", "next_try_at", "last_error", "cancelled_at", "stale_cleared_at"],
   store_purges: ["store_id", "purged_at", "objects_cleared_at", "attempts", "last_error"],
 };
 

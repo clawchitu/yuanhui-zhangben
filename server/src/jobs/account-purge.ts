@@ -3,7 +3,9 @@
 // 1. 导出包（runExportJobs）：申请注销时（routes/account.ts，同一事务）为非演示店插一行 export_jobs。这里一次领一个到期的任务
 //    （FOR UPDATE SKIP LOCKED，attempts + 1、next_try_at 推后当租约），生成 CSV 压缩包（export/store-export.ts）写到临时文件，
 //    上传到存档桶的 exports/<店>/，再按「还是领到时那一次申请、没被撤回」条件写回；条件不成立（期间撤回或撤回后又申请）就删掉刚传的包。
-//    成功后删掉 exports/<店>/ 下别的旧包，并打一条告警日志（附包的位置），由 Chitu 转交黄总。失败只记原因代码、按次数退避重试。
+//    写回成功先打一条告警日志（附包的位置），由 Chitu 转交黄总；再删 exports/<店>/ 下比这一版更早的旧包（clearStaleExports，
+//    只删键里申请时间更早的、开始前在任务行锁里复查版本；失败只让 stale_cleared_at 留空、下一轮单独重试，不碰已完成的包）。
+//    生成、上传、写回失败只记原因代码、按次数退避重试。
 //    撤回注销记 cancelled_at：这里锁住那一行、删掉 exports/<店>/ 下的包、再删行（锁住期间重新申请会等着，不会删到新包）。
 // 2. 到期清除（runAccountPurges）：delete_requested_at 已过 7 天（恰好 7 天整仍可撤回，所以是严格大于）的非演示店。
 //    每家店一个事务、拿店铺锁（withStoreLock）和账号行锁（FOR UPDATE，和登录、兑码、申请注销的 FOR NO KEY UPDATE 冲突）后锁内重查，
@@ -67,9 +69,16 @@ function reason(e: unknown): string {
 
 export type ExportOutcome = { store_id: string; result: "done" | "superseded" | "failed"; object_key?: string };
 
+/** 导出包键里的申请时间（毫秒）；不是导出包键返回 null */
+export function exportKeyRequestedAt(key: string): number | null {
+  const m = /^exports\/[0-9a-f-]{36}\/([0-9]{13})-[0-9a-f]{16}\.zip$/.exec(key);
+  return m ? Number(m[1]) : null;
+}
+
 /** 处理一个到期的导出任务；没有就返回 null */
 export async function runOneExportJob(d: AccountJobDeps): Promise<ExportOutcome | null> {
   if (!d.archive) return null;
+  const archive = d.archive;
   const now = d.clock();
   const claimed = await sql<{ store_id: string; requested_at: Date; attempts: number }>`
     UPDATE export_jobs j SET attempts = j.attempts + 1, next_try_at = ${new Date(now.getTime() + EXPORT_LEASE_MS)}
@@ -86,6 +95,7 @@ export async function runOneExportJob(d: AccountJobDeps): Promise<ExportOutcome 
   const storeId = job.store_id;
   const requestedAt = new Date(job.requested_at);
   let key: string | null = null;
+  let superseded = false;
   const dir = await mkdtemp(path.join(tmpdir(), "yh-export-"));
   try {
     const file = path.join(dir, "export.zip");
@@ -98,26 +108,19 @@ export async function runOneExportJob(d: AccountJobDeps): Promise<ExportOutcome 
       await closed;
     }
     key = exportKey(storeId, requestedAt, randomBytes(8).toString("hex"));
-    await d.archive.put(key, await readFile(file), "application/zip");
+    await archive.put(key, await readFile(file), "application/zip");
     await d.afterExportUpload?.();
     const w = await d.db
       .updateTable("export_jobs")
-      .set({ object_key: key, done_at: d.clock(), last_error: null })
+      .set({ object_key: key, done_at: d.clock(), last_error: null, stale_cleared_at: null })
       .where("store_id", "=", storeId)
       .where("requested_at", "=", requestedAt)
       .where("cancelled_at", "is", null)
       .where("done_at", "is", null)
       .executeTakeFirst();
-    if (Number(w.numUpdatedRows) !== 1) {
-      // 生成期间撤回了（或撤回后又申请，那是新的一次，会重新生成）：这个包不该留
-      await d.archive.delete(key);
-      return { store_id: storeId, result: "superseded" };
-    }
-    // 同一家店以前的包（撤回后又申请留下的）删掉，只留这一份
-    for (const k of await d.archive.list(storePrefix("exports", storeId))) if (k !== key) await d.archive.delete(k);
-    d.log?.warn({ alert: "account_delete_export", store_id: storeId, object_key: key }, "账号注销申请：导出包已生成，请转交黄总");
-    return { store_id: storeId, result: "done", object_key: key };
+    superseded = Number(w.numUpdatedRows) !== 1;
   } catch (e) {
+    // 只到「写回完成」为止的失败走这里：包还没算完成，删掉刚传的、按次数退避
     const code = reason(e);
     await d.db
       .updateTable("export_jobs")
@@ -126,12 +129,75 @@ export async function runOneExportJob(d: AccountJobDeps): Promise<ExportOutcome 
       .where("requested_at", "=", requestedAt)
       .where("done_at", "is", null)
       .execute();
-    if (key) await d.archive.delete(key).catch(() => {});
+    if (key) await archive.delete(key).catch(() => {});
     (job.attempts >= 3 ? d.log?.error : d.log?.warn)?.call(d.log, { alert: job.attempts >= 3 ? "account_delete_export_failed" : undefined, store_id: storeId, code, attempts: job.attempts }, "导出包生成失败");
     return { store_id: storeId, result: "failed" };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+  if (superseded) {
+    // 生成期间撤回了（或撤回后又申请，那是新的一次，会重新生成）：这个包不该留。删不掉也不要紧：
+    // 它的键带着这一版的申请时间，新一版完成后的旧包清理、撤回清理都会删它
+    await archive.delete(key).catch((e) => d.log?.warn({ store_id: storeId, code: reason(e) }, "作废的导出包删除失败，留给之后的清理"));
+    return { store_id: storeId, result: "superseded" };
+  }
+  // 完成了就先通知（不等旧包清理）；旧包清理单独做、单独重试，失败不碰这个已完成的包（PR #20 Codex 4）
+  d.log?.warn({ alert: "account_delete_export", store_id: storeId, object_key: key }, "账号注销申请：导出包已生成，请转交黄总");
+  await clearStaleExports(d, storeId);
+  return { store_id: storeId, result: "done", object_key: key };
+}
+
+/**
+ * 已完成的导出任务：删掉 exports/<店>/ 里比这一版更早的包（撤回后又申请留下的），删完记 stale_cleared_at。
+ * 只删键里申请时间早于这一版的（PR #20 Codex 3）：清理期间又撤回、重新申请、新包生成好了，新包的申请时间更晚，不会被删。
+ * 开始前在任务行锁里复查版本：已经不是这一版（撤回了、又申请了）就不清，交给新的那一版。
+ * 失败只记日志，stale_cleared_at 留空，下一轮 runExportJobs 接着来。storeId 不给就清所有待清的（最多 limit 家）。
+ */
+export async function clearStaleExports(d: AccountJobDeps, storeId?: string, limit = 20): Promise<string[]> {
+  if (!d.archive) return [];
+  const archive = d.archive;
+  let q = d.db
+    .selectFrom("export_jobs")
+    .select(["store_id", "requested_at", "object_key"])
+    .where("done_at", "is not", null)
+    .where("stale_cleared_at", "is", null)
+    .where("cancelled_at", "is", null);
+  if (storeId) q = q.where("store_id", "=", storeId);
+  const rows = await q.orderBy("store_id").limit(limit).execute();
+  const out: string[] = [];
+  for (const r of rows) {
+    const version = new Date(r.requested_at);
+    try {
+      const still = await d.db.transaction().execute(async (trx) => {
+        const cur = await trx
+          .selectFrom("export_jobs")
+          .select("store_id")
+          .where("store_id", "=", r.store_id)
+          .where("requested_at", "=", version)
+          .where("done_at", "is not", null)
+          .where("cancelled_at", "is", null)
+          .forUpdate()
+          .executeTakeFirst();
+        return !!cur;
+      });
+      if (!still) continue;
+      for (const k of await archive.list(storePrefix("exports", r.store_id))) {
+        const at = exportKeyRequestedAt(k);
+        if (at !== null && at < version.getTime() && k !== r.object_key) await archive.delete(k);
+      }
+      const w = await d.db
+        .updateTable("export_jobs")
+        .set({ stale_cleared_at: d.clock() })
+        .where("store_id", "=", r.store_id)
+        .where("requested_at", "=", version)
+        .where("done_at", "is not", null)
+        .executeTakeFirst();
+      if (Number(w.numUpdatedRows) === 1) out.push(r.store_id);
+    } catch (e) {
+      d.log?.warn({ store_id: r.store_id, code: reason(e) }, "旧导出包清理失败，下一轮重试");
+    }
+  }
+  return out;
 }
 
 /** 撤回了的导出任务：删掉 exports/<店>/ 下的包，再删这一行。锁住那一行做，期间重新申请的会等着 */
@@ -171,6 +237,8 @@ export async function runExportJobs(d: AccountJobDeps, limit = 10): Promise<Expo
     return [];
   }
   await clearCancelledExports(d);
+  // 上一轮没清完的旧包单独重试（不重新生成）
+  await clearStaleExports(d);
   const out: ExportOutcome[] = [];
   for (let i = 0; i < limit; i++) {
     const r = await runOneExportJob(d);
