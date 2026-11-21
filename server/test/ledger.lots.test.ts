@@ -372,7 +372,8 @@ describe("expiry.json dispose / undo 经 /v1/sync", () => {
 
 describe("收银员（§4.2 按角色裁剪、§6）", () => {
   it("收银员发 expiry_dispose / lot_snooze 被拒 forbidden；拉取里没有批次、没有损耗 / 退货 / 盘点流水、没有批次相关的键；家用全有", async () => {
-    const { shop, app, boss, send, newProduct } = await setup();
+    // 冻结在 AT 那天：用真实时钟的话一过上海 11-22 零点，收银员 2 天的流水窗口（§4.2）就不含 AT 的卖出了
+    const { shop, app, boss, send, newProduct } = await setup("2026-11-20");
     const db = S(shop.storeId);
     const cas = await pair(app, boss.token, "cashier", "小王");
     const pid = await newProduct();

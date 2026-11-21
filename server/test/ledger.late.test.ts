@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
-import { login, makeApp, makeLoginShop, pair } from "./helpers/auth.ts";
+import { login, makeApp, makeLoginShop, pair, TestClock } from "./helpers/auth.ts";
 import { op, pullAll, syncOk, upsertFull } from "./helpers/sync.ts";
 import { assertDbLedger } from "./helpers/ledger.ts";
 
@@ -20,7 +20,9 @@ const T_AFTER = "2026-11-20T01:45:00Z";
 
 async function setup() {
   const shop = await makeLoginShop(tdb);
-  const app = makeApp(tdb);
+  // 冻结服务器时钟（TestClock 默认 2026-11-20T02:00Z）：流水时间写死在 11-20，用真实时钟的话一过上海 11-22 零点，
+  // 收银员拉取的 2 天窗口（§4.2）就把这些卖出排除在外，测试随日期失效
+  const app = makeApp(tdb, { clock: new TestClock() });
   const boss = await login(app, shop.username);
   const send = async (...ops: ReturnType<typeof op>[]) => (await syncOk(app, boss.token, { epoch: shop.epoch, ops, pull: false })).results;
   const newProduct = async () => {
