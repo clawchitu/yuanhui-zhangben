@@ -201,13 +201,14 @@ final class S16UITests: XCTestCase {
         XCTAssertLessThanOrEqual(e.frame.maxY, w.maxY + 0.5, "\(what) 出了屏幕底 \(e.frame)", file: file, line: line)
     }
 
-    /// 页边距：容器（价签、各行）的辅助功能外框比画出来的框每边外扩 3pt（实测：价签画在 20…370，外框 17…373），
-    /// 所以按 17pt 核对，误差 1pt——出了 1pt 就是真的没留够 20pt 边距（Codex ③）
+    /// 页边距：容器（价签、各行）左右各留 20pt。辅助功能外框在 iPhone 17 上就是画出来的框（20…）；
+    /// 在 iPhone 13 上每边外扩 3pt（价签画在 20…370，外框 17…373）。所以允许 17…20（误差 1pt），出了这个范围就是没留够边距（Codex ③）
     private func assertPageMargins(_ app: XCUIApplication, _ e: XCUIElement, _ what: String,
                                    file: StaticString = #filePath, line: UInt = #line) {
         let w = app.windows.firstMatch.frame
-        XCTAssertEqual(e.frame.minX, w.minX + 17, accuracy: 1, "\(what) 左边距 \(e.frame)", file: file, line: line)
-        XCTAssertEqual(e.frame.maxX, w.maxX - 17, accuracy: 1, "\(what) 右边距 \(e.frame)", file: file, line: line)
+        let left = e.frame.minX - w.minX, right = w.maxX - e.frame.maxX
+        XCTAssertTrue((16...21).contains(left), "\(what) 左边距 \(left)：\(e.frame)", file: file, line: line)
+        XCTAssertTrue((16...21).contains(right), "\(what) 右边距 \(right)：\(e.frame)", file: file, line: line)
     }
 
     /// 两个元素不重叠
