@@ -26,7 +26,12 @@
 
 ## 3. OSS 两个桶（上海，私有，§9.1）
 - [ ] `yuanhui-img`：商品图，只放 `images/`。
-- [ ] `yuanhui-backup`：`exports/`、`deletions/`、`backups/`。生命周期在 S10b 配，35 天只作用于 `backups/` 前缀，`exports/`、`deletions/` 怎么过期单独定（§14 T21）。
+- [ ] `yuanhui-backup`：`exports/`、`deletions/`、`backups/`、`heartbeat/`。生命周期规则（S10b，§14 T21），在桶的「生命周期」页配，**规则只按前缀，不选「整个桶」**：
+  - `backups/`：最后修改时间 **35 天**后删除；同一条规则里「碎片」（未完成的分片上传）7 天后删除。这条是「注销后 7 + 35 天内彻底清除」的依据（§9.4），备份账号自己删不了备份。
+  - `exports/`：**30 天**后删除，只作兜底（代码在到期清除和撤回时已经删导出包，这条防残留；导出包只在注销的 7 天内交给黄总用）。
+  - `deletions/`：**不配生命周期，永久保留**。删除记录只有店 id 和时间、不含业务数据；它必须活得比任何可能含这家店的备份都久，不过期最简单。
+  - `heartbeat/`：不配（一个对象，每次覆盖）。
+  - 配好后用主账号 `ossutil lifecycle --method get oss://yuanhui-backup` 导出一份，贴进部署实测 PR。
 - [ ] 两个桶都**私有**（关公共读写），**都不开版本控制**：开了的话「删除」只是加删除标记，注销后彻底清除的承诺就不成立（§14 T21）。建好后在「版本控制」页确认是「未开通」。
 - [ ] 桶名全局唯一。`yuanhui-img` / `yuanhui-backup` 被别人占了就换名（如加后缀 `-yh01`），然后**同步改**：下面 RAM 策略里的桶名、`/opt/yuanhui/.env` 的 `OSS_BUCKET` / `OSS_ARCHIVE_BUCKET`、本文件和 runbook 里的桶名。
 - [ ] ECS 走内网 endpoint，`.env` 里写完整地址、带 `https://`：`OSS_ENDPOINT=https://oss-cn-shanghai-internal.aliyuncs.com`（裸域名启动时会被拒绝）。
@@ -48,7 +53,20 @@
   - `ossutil cp x oss://yuanhui-img/other/x` → 403；`ossutil cp x oss://yuanhui-backup/backups/x` → 403；`ossutil ls oss://yuanhui-backup/backups/` → 403；
   - `ossutil cp x oss://yuanhui-backup/deletions/test.json` 成功，`ossutil rm oss://yuanhui-backup/deletions/test.json` → 403（再用主账号删掉这个测试对象）；
   - `images/`、`exports/` 下读、写、删、列举各成功一次。
-- [ ] 备份用另一个账号（S10b，§14 T21），不和 `yuanhui-api` 共用。
+- [ ] 备份用另一个账号 `yuanhui-backup`（S10b，§14 T21），不和 `yuanhui-api` 共用，只开 AccessKey。**没有任何 `oss:DeleteObject`**：`backups/` 只写不删（删除靠上面的生命周期），`deletions/` 只读和列举（重放删除记录用），心跳对象读写。恢复也用这组凭据（读 `backups/`、列举 `deletions/`）：
+```json
+{"Version":"1","Statement":[
+ {"Effect":"Allow","Action":["oss:GetObject","oss:PutObject","oss:ListParts","oss:AbortMultipartUpload"],
+  "Resource":["acs:oss:*:*:yuanhui-backup/backups/*"]},
+ {"Effect":"Allow","Action":["oss:GetObject","oss:PutObject"],"Resource":["acs:oss:*:*:yuanhui-backup/heartbeat/backup.json"]},
+ {"Effect":"Allow","Action":["oss:GetObject"],"Resource":["acs:oss:*:*:yuanhui-backup/deletions/*"]},
+ {"Effect":"Allow","Action":["oss:ListObjects","oss:ListMultipartUploads"],"Resource":["acs:oss:*:*:yuanhui-backup"],
+  "Condition":{"StringLike":{"oss:Prefix":["backups/*","deletions/*"]}}}]}
+```
+  - AccessKey 写进 ECS `/opt/yuanhui/.env` 的 `BACKUP_OSS_ACCESS_KEY_ID` / `BACKUP_OSS_ACCESS_KEY_SECRET`（compose 只把它们给 `backup` 服务，api 容器拿不到）。
+  - 负测（结果写进部署实测 PR）：`ossutil rm oss://yuanhui-backup/backups/<任一>` → 403；`ossutil cp x oss://yuanhui-backup/deletions/x.json` → 403；`ossutil cp x oss://yuanhui-img/images/x` → 403；`ossutil ls oss://yuanhui-backup/exports/` → 403；`backups/` 写、读、列举和 `deletions/` 列举、读各成功一次。
+  - **加密口令 `BACKUP_PASSPHRASE`（`openssl rand -base64 32`）**存在部署机（这台 Mac）的钥匙串（`security add-generic-password -s yuanhui-backup-passphrase -a yuanhui -w`，AccessKey 存 `-s yuanhui-backup-oss`），另给 Haoqiang 一份存进他 iPhone 的「密码」App，再抄一份纸质；Haoqiang 确认阿里云主账号登录和二次验证在他手里。步骤见 `docs/runbook.md`「口令保管」（§14 S10b-10）。
+- [ ] 云盘自动快照策略（每周、留 4 份）挂到 ECS 的系统盘 / 数据盘上，验收见 runbook B11。
 - [ ] AccessKey 只写进 ECS `/opt/yuanhui/.env`（600）和 Mac 钥匙串，不进仓库、不进 CI。
 
 ## 5. ACR（个人版，上海）
