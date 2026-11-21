@@ -329,7 +329,7 @@ check "B 之后 release-current 是 B（实际 $(rcur)）" [ "$(rcur)" = "$NEW" 
 # 原样取 A 失败时打印的补救命令（含前面的环境变量），在仓库根目录的位置上跑
 fix=$(grep -o '\(ECS_HOST=[^ ]* \)\{0,1\}deploy/release-tag\.sh [^（ ]*' "$T/outA" | head -1)
 check "A 的输出里有补救命令（实际「${fix}」）" [ -n "$fix" ]
-ok() { (cd "$HERE/../.." && PATH="$HERE/fakes:$PATH" eval "env $fix") > "$T/out" 2>&1; echo $? > "$T/rc"; }; ok
+(cd "$HERE/../.." && PATH="$HERE/fakes:$PATH" eval "env $fix") > "$T/out" 2>&1; echo $? > "$T/rc"
 check "照 A 的提示补救：退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
 check "补救后 release-current 仍是 B（实际 $(rcur)），线上也是 B（$(tag)）" [ "$(rcur)" = "$NEW" ] && [ "$(tag)" = "$NEW" ]
 PATH="$HERE/fakes:$PATH" ECS_HOST=root@47.117.184.253 bash "$HERE/../release-tag.sh" "$OLD" > "$T/out" 2>&1; echo $? > "$T/rc"
