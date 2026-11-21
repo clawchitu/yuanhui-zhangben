@@ -59,6 +59,73 @@ describe("parseKuainiao", () => {
     expect(formatError({ name: "QuotaExhausted" })).toBe("format");
     expect(formatError({ data: { goodsName: "示例" } })).toBe("format");
   });
+  // 白名单（PR #19 第二轮审核）：只有严格匹配 SUCCESS_SHAPES 里某一种形态的才是商品，其余一切按 format（不缓存）
+  it("嵌套体里的错误／状态字段（Codex 第二轮列举）→ format", () => {
+    expect(formatError({ code: 0, data: { success: false, name: "QuotaExhausted" } })).toBe("format");
+    expect(formatError({ code: 0, data: { success: false, goodsName: "QuotaExhausted" } })).toBe("format");
+    expect(formatError({ code: 0, data: { status: 500, goodsName: "系统繁忙" } })).toBe("format");
+    expect(formatError({ code: 0, data: { errCode: 403, goodsName: "x" } })).toBe("format");
+    expect(formatError({ code: 0, data: { error: "quota", goodsName: "x" } })).toBe("format");
+    expect(formatError({ code: 0, data: { error_code: 10001, goodsName: "x" } })).toBe("format");
+    expect(formatError({ code: 0, data: { msg: "额度不足", goodsName: "x" } })).toBe("format");
+    expect(formatError({ code: 0, data: { goodsName: "x", info: { status: 500 } } })).toBe("format");
+    expect(formatError({ status: 0, result: { status: "fail", name: "x" } })).toBe("format");
+    expect(formatError({ showapi_res_code: 0, showapi_res_body: { ret_code: 0, errCode: 403, goodsName: "x" } })).toBe("format");
+    expect(formatError({ showapi_res_code: 0, showapi_res_error: "余额不足", showapi_res_body: { ret_code: 0, goodsName: "x" } })).toBe("format");
+    expect(formatError({ showapi_res_code: 0, showapi_res_body: { goodsName: "x" } })).toBe("format"); // 缺嵌套成功码
+  });
+  it("成功值只认 0：猜的 200 / ok / success 不再算成功（Fable 第二轮列举的形态）", () => {
+    expect(formatError({ status: 0, msg: "fail", result: { title: "余额不足" } })).toBe("format");
+    expect(formatError({ status: 0, msg: "fail", result: { name: "余额不足" } })).toBe("format");
+    expect(formatError({ code: 200, name: "QuotaExhausted" })).toBe("format");
+    expect(formatError({ code: 200, data: { goodsName: "x" } })).toBe("format");
+    expect(formatError({ code: "ok", data: { goodsName: "x" } })).toBe("format");
+    expect(formatError({ status: "success", result: { name: "x" } })).toBe("format");
+    expect(formatError({ code: 0, data: { code: "500", name: "系统繁忙" } })).toBe("format");
+    expect(formatError({ code: 0, data: { code: "500", goodsName: "系统繁忙" } })).toBe("format");
+    expect(formatError({ code: 200, success: "false", name: "x" })).toBe("format");
+  });
+  it("未知形态（多字段、少字段、字段类型不对、形态混搭）→ format", () => {
+    expect(formatError({ code: 0, data: { goodsName: "x" }, extra: 1 })).toBe("format");
+    expect(formatError({ code: 0, data: { goodsName: "x", foo: "bar" } })).toBe("format");
+    expect(formatError({ ok: true, data: { goodsName: "x" } })).toBe("format");
+    expect(formatError({ code: 0, data: [{ goodsName: "x" }] })).toBe("format");
+    expect(formatError({ code: 0, data: { goodsName: { zh: "x" } } })).toBe("format");
+    expect(formatError({ code: 0, data: { goodsName: "x", spec: ["a"] } })).toBe("format");
+    expect(formatError({ code: 0, result: { name: "x" } })).toBe("format"); // A 的码 + B 的体
+    expect(formatError({ status: 0, data: { goodsName: "x" } })).toBe("format"); // B 的码 + A 的体
+    expect(formatError({ code: 0, status: 0, data: { goodsName: "x" } })).toBe("format");
+    expect(formatError({ code: 0, msg: "fail", data: { goodsName: "x" } })).toBe("format");
+    expect(formatError({ code: 0, data: { goodsName: "x" }, success: true })).toBe("format");
+    expect(formatError({ code: true, data: { goodsName: "x" } })).toBe("format");
+    expect(formatError({ code: 0, data: null })).toBe("format");
+    expect(formatError({ code: 0 })).toBe("format");
+    expect(formatError("ok")).toBe("format");
+    expect(formatError([{ code: 0, data: { goodsName: "x" } }])).toBe("format");
+  });
+  it("合法成功形态：码可以是数字 0 或字符串 \"0\"，可选字段可以缺", () => {
+    expect(parseKuainiao({ code: 0, data: { goodsName: "x" } })).toMatchObject({ kind: "found", hit: { name: "x" } });
+    expect(parseKuainiao({ code: "0", msg: "查询成功", data: { code: "6901028075831", goodsName: "x", price: 2 } })).toMatchObject({ kind: "found", hit: { name: "x" } });
+    expect(parseKuainiao({ status: "0", result: { name: "y", images: ["https://img.example-cdn.com/y.jpg"] } })).toMatchObject({
+      kind: "found",
+      hit: { name: "y", imageUrl: "https://img.example-cdn.com/y.jpg" },
+    });
+    expect(parseKuainiao({ showapi_res_code: 0, showapi_res_error: "", showapi_res_body: { ret_code: "0", goodsName: "z" } })).toMatchObject({ kind: "found", hit: { name: "z" } });
+  });
+  it("未知形态的 format 错误同样带原始响应，message 里没有响应内容", () => {
+    const body = { code: 0, data: { success: false, name: `QuotaExhausted ${APPCODE}` } };
+    let e: unknown;
+    try {
+      parseKuainiao(body);
+    } catch (x) {
+      e = x;
+    }
+    expect(e).toBeInstanceOf(SourceError);
+    expect((e as SourceError).kind).toBe("format");
+    expect((e as SourceError).raw).toEqual(body);
+    expect((e as SourceError).message).not.toContain(APPCODE);
+    expect(JSON.stringify(e)).not.toContain(APPCODE);
+  });
   it("format 错误带上原始响应（只给 barcode-trial --record 用，不进 message）", () => {
     let e: unknown;
     try {

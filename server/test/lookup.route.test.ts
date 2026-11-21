@@ -204,8 +204,35 @@ describe("AppCode 不进日志、业务错误不进缓存（PR #19 审核）", (
     expect(lines.join("\n")).not.toContain(APPCODE);
   });
 
+  it("真实客户端 + 合法成功形态：当商品写缓存，第二次不再调外部", async () => {
+    let calls = 0;
+    const f = (async () => {
+      calls++;
+      return Response.json({ code: "0", msg: "查询成功", data: { goodsName: "白名单矿泉水", spec: "550ml", trademark: "示例牌" } });
+    }) as typeof fetch;
+    const app = mk({ source: new KuainiaoClient({ appCode: "x", endpoint: "https://h.example/getBarcode", fetch: f }) });
+    const a = await shop(app);
+    const code = newBarcode();
+    expect((await get(app, a.token, code)).json()).toMatchObject({ found: true, name: "白名单矿泉水", spec: "550ml" });
+    expect((await get(app, a.token, code)).json()).toMatchObject({ found: true, name: "白名单矿泉水" });
+    expect(calls).toBe(1);
+    expect(await tdb.kysely.selectFrom("barcode_catalog").selectAll().where("barcode", "=", code).executeTakeFirst()).toMatchObject({ found: true });
+    await app.close();
+  });
+
   it("HTTP 200 里的业务错误（{code:\"500\"}、{code:403,name:\"QuotaExhausted\"}）：返回没查到，不写缓存，下次还调外部", async () => {
-    for (const body of [{ code: "500", msg: "系统繁忙" }, { code: 403, name: "QuotaExhausted" }, { code: "1", msg: "未查询到该条码信息", data: null }]) {
+    for (const body of [
+      { code: "500", msg: "系统繁忙" },
+      { code: 403, name: "QuotaExhausted" },
+      { code: "1", msg: "未查询到该条码信息", data: null },
+      // 嵌套业务错误（PR #19 第二轮审核）与未知形态
+      { code: 0, data: { success: false, name: "QuotaExhausted" } },
+      { code: 0, data: { status: 500, goodsName: "系统繁忙" } },
+      { code: 0, data: { errCode: 403, goodsName: "x" } },
+      { code: 200, name: "QuotaExhausted" },
+      { code: 0, data: { code: "500", name: "系统繁忙" } },
+      { code: 0, data: { goodsName: "x" }, extra: 1 },
+    ]) {
       let calls = 0;
       const f = (async () => {
         calls++;

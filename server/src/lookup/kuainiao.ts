@@ -2,10 +2,10 @@
 //
 // - 只有服务器调，AppCode 只从环境变量来（config.kuainiao.appCode），不进仓库、不进日志、不进错误信息。
 // - 请求：GET <endpoint>?Code=<条码>，请求头 `Authorization: APPCODE <AppCode>`（旧计划 design/plan.md 记下的格式）。
-// - 响应格式没有实测过（S08 不调真实付费接口）。名称、规格等按「字段名候选表」认，测试用 test/fixtures/kuainiao/ 里的手写样例。
-//   往安全的方向收（PR #19 审核，§14 S08-6）：业务状态不是明确的成功、或认不出名称，一律抛 format（调用方不写缓存），
-//   不当「没查到」。所以真实接口上查不到的条码每次都会重查，有每日额度兜着。「成功」「明确没查到」各凭哪个字段认，
-//   由 T9（S10a）用 scripts/barcode-trial.ts --record 录到的真实响应定下，再收紧候选表、加上「没查到」的负缓存。
+// - 响应格式没有实测过（S08 不调真实付费接口）。名称、规格等按下面的成功形态白名单认，测试用 test/fixtures/kuainiao/ 里的手写样例。
+//   往安全的方向收（PR #19 审核，§14 S08-6）：用成功形态白名单（SUCCESS_SHAPES），响应不严格匹配其中一种就抛 format
+//   （调用方不写缓存），不当「没查到」。所以真实接口上查不到的条码每次都会重查，有每日额度兜着。「成功」「明确没查到」各凭哪个字段认，
+//   由 T9（S10a）用 scripts/barcode-trial.ts --record 录到的真实响应定下，再校准白名单、加上「没查到」的负缓存。
 // - 网关报错头 X-Ca-Error-Message 不可信（可能回显 AppCode），只拿来归成固定分类，内容不进错误信息、不进日志。
 // - 外部服务做成接口（BarcodeSource），测试和演示店都不碰真实接口。
 import type { Config } from "../config.ts";
@@ -50,16 +50,52 @@ export function gatewayErrorClass(header: string | null): "auth" | "quota" | "ot
 /** 响应体上限：正常一条记录几百字节，超过就当格式不对，不往内存里读 */
 export const MAX_RESPONSE_BYTES = 256 * 1024;
 
-const NAME_KEYS = ["goodsName", "goods_name", "name", "productName", "product_name", "title"];
-const SPEC_KEYS = ["spec", "specification", "guige", "standard", "model"];
-const BRAND_KEYS = ["brand", "trademark", "brandName", "brand_name"];
-const IMAGE_KEYS = ["img", "image", "imgurl", "imgUrl", "image_url", "imageUrl", "picture", "pic", "picUrl", "images"];
-const BODY_KEYS = ["data", "result", "showapi_res_body", "body", "goods", "info"];
-/** 顶层的业务状态字段和算「成功」的值。至少要有一个、并且出现的都是成功值，才往下认名称 */
-const STATUS_KEYS = ["code", "status", "showapi_res_code", "ret_code", "error_code", "errcode", "errCode", "resultcode", "result_code"];
-const SUCCESS_VALUES = new Set(["0", "200", "ok", "success"]);
-/** 嵌套体里的业务状态字段（嵌套体里的 code 常常是条码本身，不算状态） */
-const NESTED_STATUS_KEYS = ["ret_code", "showapi_res_code", "error_code", "errcode"];
+/**
+ * 成功形态白名单（PR #19 第二轮审核）。快鸟的真实格式没核对过，这里只收手写样例（test/fixtures/kuainiao/found*.json）
+ * 的三种形态，而且是**严格匹配**：顶层和嵌套体的键必须都在列表里（多一个、少一个必需键都不行），
+ * 成功码只认 0 / "0"，msg 只认几个固定的成功文字，商品字段只能是字符串（价格可以是数字）。
+ * 其余一切形态（含未知字段组合、嵌套里的 status / success / errCode / error 等）一律 format，调用方不写缓存。
+ * 待 T9（S10a）用真实录制件校准：成功形态只留实际出现的那一种，错误响应都补成「不是商品」的测试。
+ */
+interface SuccessShape {
+  /** 顶层：成功码字段 → 必须是成功码 */
+  topCodes: string[];
+  /** 顶层可选的文字字段：出现就必须是成功文字（showapi_res_error 必须是空串） */
+  topMsg?: string;
+  topEmptyError?: string;
+  /** 嵌套体所在的键 */
+  body: string;
+  /** 嵌套体里的成功码字段（必须有，必须是成功码） */
+  bodyCodes: string[];
+  /** 嵌套体里的商品字段 */
+  name: string;
+  spec?: string;
+  brand?: string;
+  image?: string;
+  /** 嵌套体里允许出现、但不用的字段（值必须是字符串，条码字段必须像条码） */
+  barcodeKey?: string;
+  ignored: string[];
+}
+const SUCCESS_SHAPES: SuccessShape[] = [
+  // found.json：{code:"0", msg, data:{code:<条码>, goodsName, spec, trademark, img, manuName, price}}
+  { topCodes: ["code"], topMsg: "msg", body: "data", bodyCodes: [], name: "goodsName", spec: "spec", brand: "trademark", image: "img", barcodeKey: "code", ignored: ["manuName", "price"] },
+  // found-no-image.json：{status:0, msg, result:{barcode, name, specification, brand, images}}
+  { topCodes: ["status"], topMsg: "msg", body: "result", bodyCodes: [], name: "name", spec: "specification", brand: "brand", image: "images", barcodeKey: "barcode", ignored: [] },
+  // found-image-list.json：{showapi_res_code:0, showapi_res_error:"", showapi_res_body:{ret_code:0, goodsName, spec, trademark, img, imgList, manuName, price, code}}
+  {
+    topCodes: ["showapi_res_code"],
+    topEmptyError: "showapi_res_error",
+    body: "showapi_res_body",
+    bodyCodes: ["ret_code"],
+    name: "goodsName",
+    spec: "spec",
+    brand: "trademark",
+    image: "img",
+    barcodeKey: "code",
+    ignored: ["imgList", "manuName", "price"],
+  },
+];
+const SUCCESS_MSGS = new Set(["ok", "success", "成功", "查询成功"]);
 
 // 控制字符、零宽字符、行分隔符、双向控制符
 const CONTROL_CHARS = new RegExp("[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff]", "g");
@@ -88,53 +124,57 @@ function firstImage(v: unknown): string | undefined {
   return pick(v);
 }
 
-function pickKey(o: Record<string, unknown>, keys: string[]): unknown {
-  for (const k of keys) if (o[k] !== undefined && o[k] !== null && o[k] !== "") return o[k];
-  return undefined;
-}
+const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+const isSuccessCode = (v: unknown) => v === 0 || v === "0";
+const isText = (v: unknown) => typeof v === "string";
 
-function statusOk(v: unknown): boolean {
-  return (typeof v === "string" || typeof v === "number") && SUCCESS_VALUES.has(String(v).trim().toLowerCase());
+/** 严格匹配一种成功形态；匹配不上返回 null（不说为什么，调用方统一按 format） */
+function matchShape(top: Record<string, unknown>, sh: SuccessShape): CatalogHit | null {
+  const topAllowed = new Set([...sh.topCodes, sh.body, ...(sh.topMsg ? [sh.topMsg] : []), ...(sh.topEmptyError ? [sh.topEmptyError] : [])]);
+  if (!Object.keys(top).every((k) => topAllowed.has(k))) return null;
+  if (!sh.topCodes.every((k) => isSuccessCode(top[k]))) return null;
+  if (sh.topMsg && sh.topMsg in top && !(isText(top[sh.topMsg]) && SUCCESS_MSGS.has(String(top[sh.topMsg]).trim().toLowerCase()))) return null;
+  if (sh.topEmptyError && sh.topEmptyError in top && top[sh.topEmptyError] !== "") return null;
+  const body = top[sh.body];
+  if (!isObject(body)) return null;
+  const fields = [sh.name, sh.spec, sh.brand, sh.image].filter((k): k is string => !!k);
+  const bodyAllowed = new Set([...sh.bodyCodes, ...fields, ...(sh.barcodeKey ? [sh.barcodeKey] : []), ...sh.ignored]);
+  if (!Object.keys(body).every((k) => bodyAllowed.has(k))) return null;
+  if (!sh.bodyCodes.every((k) => isSuccessCode(body[k]))) return null;
+  // 文字字段只能是字符串（价格可以是数字）；图片字段可以是字符串数组
+  for (const k of [sh.name, sh.spec, sh.brand, ...sh.ignored].filter((k): k is string => !!k)) {
+    if (!(k in body)) continue;
+    const v = body[k];
+    if (!(isText(v) || (k === "price" && typeof v === "number" && Number.isFinite(v)))) return null;
+  }
+  if (sh.image && sh.image in body) {
+    const v = body[sh.image];
+    if (!(isText(v) || (Array.isArray(v) && v.every(isText)))) return null;
+  }
+  if (sh.barcodeKey && sh.barcodeKey in body) {
+    const v = body[sh.barcodeKey];
+    if (!(isText(v) && /^\d{6,14}$/.test(v))) return null;
+  }
+  const name = cleanText(body[sh.name], 200);
+  if (!name) return null;
+  const spec = sh.spec ? cleanText(body[sh.spec], 100) : undefined;
+  const brand = sh.brand ? cleanText(body[sh.brand], 100) : undefined;
+  const imageUrl = sh.image ? firstImage(body[sh.image]) : undefined;
+  return { name, ...(spec ? { spec } : {}), ...(brand ? { brand } : {}), ...(imageUrl ? { imageUrl } : {}) };
 }
 
 /**
- * 从快鸟的 JSON 里认出名称、规格、品牌、图片。
- * 业务状态不是明确的成功、或认不出名称 → 抛 SourceError("format")，不返回 not_found（见文件头；T9 定下判别字段前不做负缓存）。
+ * 从快鸟的 JSON 里认出名称、规格、品牌、图片：只有严格匹配 SUCCESS_SHAPES 里某一种的才是商品。
+ * 其余一切 → 抛 SourceError("format")（原始响应放 raw，不进 message），不返回 not_found（见文件头；T9 定下判别字段前不做负缓存）。
  */
 export function parseKuainiao(json: unknown): SourceResult {
-  const bad = (why: string) => new SourceError("format", `快鸟响应认不出（${why}）`, json);
-  if (json === null || typeof json !== "object" || Array.isArray(json)) throw bad("不是对象");
-  const top = json as Record<string, unknown>;
-  const statuses = STATUS_KEYS.filter((k) => top[k] !== undefined && top[k] !== null && top[k] !== "");
-  if (statuses.length === 0) throw bad("没有业务状态");
-  if (!statuses.every((k) => statusOk(top[k]))) throw bad("业务状态不是成功");
-  if (top.success === false) throw bad("业务状态不是成功");
-  const candidates: Record<string, unknown>[] = [];
-  const visit = (v: unknown, depth: number) => {
-    if (depth > 3 || v === null || typeof v !== "object") return;
-    if (Array.isArray(v)) {
-      if (v.length > 0) visit(v[0], depth + 1);
-      return;
+  if (isObject(json)) {
+    for (const sh of SUCCESS_SHAPES) {
+      const hit = matchShape(json, sh);
+      if (hit) return { kind: "found", hit, raw: json };
     }
-    const o = v as Record<string, unknown>;
-    candidates.push(o);
-    for (const k of BODY_KEYS) if (o[k] !== undefined) visit(o[k], depth + 1);
-  };
-  visit(json, 0);
-  for (const o of candidates.slice(1)) for (const k of NESTED_STATUS_KEYS) if (o[k] !== undefined && o[k] !== null && !statusOk(o[k])) throw bad("业务状态不是成功");
-  for (const o of candidates) {
-    const name = cleanText(pickKey(o, NAME_KEYS), 200);
-    if (!name) continue;
-    const spec = cleanText(pickKey(o, SPEC_KEYS), 100);
-    const brand = cleanText(pickKey(o, BRAND_KEYS), 100);
-    const imageUrl = firstImage(pickKey(o, IMAGE_KEYS));
-    return {
-      kind: "found",
-      hit: { name, ...(spec ? { spec } : {}), ...(brand ? { brand } : {}), ...(imageUrl ? { imageUrl } : {}) },
-      raw: json,
-    };
   }
-  throw bad("没有名称");
+  throw new SourceError("format", "快鸟响应认不出（不是已知的成功形态）", json);
 }
 
 /** 读响应体，超过上限就中止（不信 Content-Length） */
