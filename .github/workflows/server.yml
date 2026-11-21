@@ -58,6 +58,13 @@ jobs:
           FAKE_REAL_COMPOSE=/tmp/real-compose bash deploy/test/deploy.test.sh
           bash deploy/test/bootstrap.test.sh
           bash deploy/test/smoke.test.sh
+          # S10b：backup.sh / restore.sh 跑真脚本（替身 docker 转给本机 node、pg_dump），连 CI 的 Postgres 服务
+          pg_dump --version
+          bash deploy/test/backup.test.sh
+          # 备份定时器的时间表（§9.4：8:00–22:00 每小时、02:30，上海时间）语法和下一次触发时间
+          systemd-analyze calendar --iterations=3 '*-*-* 08..22:00:00 Asia/Shanghai' '*-*-* 02:30:00 Asia/Shanghai'
+          grep -Fxq 'OnCalendar=*-*-* 08..22:00:00 Asia/Shanghai' deploy/yuanhui-backup.timer
+          grep -Fxq 'OnCalendar=*-*-* 02:30:00 Asia/Shanghai' deploy/yuanhui-backup.timer
           cp deploy/.env.example /tmp/ci.env
           sed -i 's/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=0123456789abcdef0123/; s/^ACME_EMAIL=$/ACME_EMAIL=ci@example.invalid/; s/^API_IMAGE=$/API_IMAGE=yuanhui-api:ci/; s#^CADDY_IMAGE=$#CADDY_IMAGE=registry.invalid/yuanhui/caddy:2.10.2#; s#^POSTGRES_IMAGE=$#POSTGRES_IMAGE=registry.invalid/yuanhui/postgres:16#' /tmp/ci.env
           docker compose -f deploy/compose.yml --env-file /tmp/ci.env config -q
@@ -80,6 +87,14 @@ jobs:
           jq -e '[.services.caddy.ports[] | select(.protocol == "udp")] | length == 0' /tmp/compose.json
           jq -e '[.services[] | .logging.options["max-size"]] | all' /tmp/compose.json
           jq -e '.networks.db.internal == true' /tmp/compose.json
+          # 备份凭据和口令只给 backup 服务，api 容器拿不到（§14 T21）
+          docker compose -f deploy/compose.yml --env-file /tmp/ci.env --profile tools config --format json > /tmp/compose-tools.json
+          jq -e '(.services.api.environment | keys | map(select(startswith("BACKUP_"))) | length) == 0' /tmp/compose-tools.json
+          jq -e '.services.backup.environment | has("BACKUP_PASSPHRASE") and has("BACKUP_OSS_ACCESS_KEY_ID")' /tmp/compose-tools.json
+          # backup 服务内存上限也不许靠 swap 顶（S10b-8）；恢复模式默认关、确实传给了 api（PR #23 Codex 4、Fable 必须改 2、7）
+          jq -e '.services.backup.mem_limit == "268435456" and .services.backup.memswap_limit == "268435456"' /tmp/compose-tools.json
+          jq -e '.services.api.environment.RECOVERY_MODE == "0"' /tmp/compose.json
+          RECOVERY_MODE=1 docker compose -f deploy/compose.yml --env-file /tmp/ci.env config --format json | jq -e '.services.api.environment.RECOVERY_MODE == "1"'
           docker run --rm -v "$PWD/deploy:/etc/caddy:ro" -e ACME_EMAIL=ci@example.invalid -e PUBLIC_IP=47.117.184.253 caddy:2.10.2 caddy validate --config /etc/caddy/Caddyfile.ip --adapter caddyfile
       - name: 镜像冒烟：迁移 → 启动 → /healthz 200 → 停库后 503
         working-directory: .

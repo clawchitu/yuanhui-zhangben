@@ -1,0 +1,13 @@
+# §9.4 时间表：每天 8:00–22:00 每小时一次，另加 02:30 一次（上海时间，不依赖 ECS 的系统时区）
+[Unit]
+Description=yuanhui backup schedule
+
+[Timer]
+OnCalendar=*-*-* 08..22:00:00 Asia/Shanghai
+OnCalendar=*-*-* 02:30:00 Asia/Shanghai
+# 关机错过的那一次开机后补跑
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,12 @@
+# 每小时备份（S10b，§9.4）。由 remote-deploy.sh 装到 /etc/systemd/system/，由 yuanhui-backup.timer 触发。
+# 日志：journalctl -u yuanhui-backup；状态和指标：/opt/yuanhui/backup/status.json、metrics.prom（S10c 接告警）
+[Unit]
+Description=yuanhui backup (pg_dump -> encrypt -> OSS)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash /opt/yuanhui/backup.sh
+TimeoutStartSec=900
+Nice=10

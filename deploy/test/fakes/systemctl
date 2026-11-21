@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 测试替身：只记日志。sshd -t 在 FAKE_SSHD_FAIL=1 时失败
+# 测试替身：只记日志。sshd -t 在 FAKE_SSHD_FAIL=1 时失败；systemctl 在 FAKE_SYSTEMCTL_FAIL=1 时失败
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$FAKE_LOG"
 [ "$(basename "$0")" = sshd ] && [ "${FAKE_SSHD_FAIL:-0}" = 1 ] && exit 1
+[ "$(basename "$0")" = systemctl ] && [ "${FAKE_SYSTEMCTL_FAIL:-0}" = 1 ] && exit 1
 exit 0

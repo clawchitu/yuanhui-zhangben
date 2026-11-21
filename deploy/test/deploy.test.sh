@@ -8,6 +8,9 @@ DEPLOY="${DEPLOY_SH:-$HERE/../deploy.sh}"
 REG=registry-vpc.cn-shanghai.aliyuncs.com/yuanhui
 OLD=1111111; NEW=2222222; BAD=3333333
 pass=0; fail=0; T=""
+# 用 UTF-8 区域跑（Mac 的 /bin/bash 3.2 在 UTF-8 下把「$why，」里紧跟的中文字节算进变量名，报 unbound variable；
+# LC_ALL=C 时测不出来，PR #23 Codex 5、Fable 必须改 3）。Mac 上 C.UTF-8 测不出来，先挑 en_US.UTF-8；CI 的 Ubuntu 只有 C.UTF-8
+for _l in en_US.UTF-8 C.UTF-8; do if locale -a 2>/dev/null | grep -ix "$_l" > /dev/null; then export LC_ALL=$_l; break; fi; done
 
 setup() {
   T=$(mktemp -d)
@@ -15,7 +18,10 @@ setup() {
   export FAKE_REMOTE="$T/remote" FAKE_STATE="$T/state" FAKE_LOG="$T/log"
   : > "$FAKE_LOG"
   printf 'POSTGRES_PASSWORD=0123456789abcdef0123\nACME_EMAIL=a@example.invalid\nPUBLIC_IP=47.117.184.253\nCADDY_IMAGE=%s/caddy:2.10.2\nPOSTGRES_IMAGE=%s/postgres:16\nAPI_IMAGE=\n' "$REG" "$REG" > "$T/remote/.env"
-  unset FAKE_PULL_FAIL FAKE_MIGRATE_FAIL FAKE_UP_FAIL_IMAGE FAKE_BAD_IMAGE FAKE_UNHEALTHY_IMAGE FAKE_CADDY_INVALID FAKE_CADDY_RELOAD_FAIL
+  unset FAKE_PULL_FAIL FAKE_MIGRATE_FAIL FAKE_UP_FAIL_IMAGE FAKE_BAD_IMAGE FAKE_UNHEALTHY_IMAGE FAKE_CADDY_INVALID FAKE_CADDY_RELOAD_FAIL FAKE_SYSTEMCTL_FAIL GATE_NOW
+  # 默认有一份刚成功的备份（迁移前门禁放行，S10b、T20）；定时器装进沙盒目录
+  mkdir -p "$T/remote/backup" "$T/units"; date +%s > "$T/remote/backup/last-success"
+  export SYSTEMD_DIR="$T/units"
 }
 # 已经成功发布过 ${OLD}：current-tag、.env、正在跑的容器、上一份 compose.yml / Caddyfile 都是它
 with_prev() {
@@ -146,6 +152,51 @@ setup; with_prev; deploy "$NEW"
 check "退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
 check "没有发出任何命令" [ ! -s "$FAKE_LOG" ]
 check "current-tag 不变" [ "$(tag)" = "$OLD" ]
+
+# ── 迁移前备份门禁（S10b，§14 T20）和备份定时器 ──
+# 上海时间 2026-11-20 10:00（营业时间）和 04:00（非营业时间）
+BIZ=$(( $(date -u -j -f '%Y-%m-%dT%H:%M:%S' 2026-11-20T02:00:00 +%s 2>/dev/null || date -u -d 2026-11-20T02:00:00 +%s) ))
+NIGHT=$((BIZ - 6 * 3600))
+untouched() { [ "$(tag)" = "$OLD" ] && [ "$(envimg)" = "$REG/api:$OLD" ] && [ ! -s "$T/state/migrations" ] && old_conf; }
+
+t "门禁：没有任何成功的备份 → 拒绝，退出码 5，迁移没跑、什么都没动"
+setup; with_prev; rm "$T/remote/backup/last-success"; deploy "$NEW" --execute
+check "退出码 5（实际 $(rc)）" [ "$(rc)" = 5 ]
+check "什么都没动" untouched
+check "没拉镜像" no grep -q "docker pull" "$FAKE_LOG"
+check "提示了跳过开关" grep -q -- "--skip-backup-gate" "$T/out"
+
+t "门禁：营业时间内最近一次备份在 3 小时前 → 拒绝；同样 3 小时、非营业时间 → 放行"
+setup; with_prev; export GATE_NOW=$BIZ; echo $((BIZ - 3 * 3600)) > "$T/remote/backup/last-success"; deploy "$NEW" --execute
+check "营业时间 3 小时：退出码 5（实际 $(rc)）" [ "$(rc)" = 5 ]
+check "什么都没动" untouched
+setup; with_prev; export GATE_NOW=$BIZ; echo $((BIZ - 110 * 60)) > "$T/remote/backup/last-success"; deploy "$NEW" --execute
+check "营业时间 110 分钟：放行（实际 $(rc)）" [ "$(rc)" = 0 ]
+setup; with_prev; export GATE_NOW=$NIGHT; echo $((NIGHT - 3 * 3600)) > "$T/remote/backup/last-success"; deploy "$NEW" --execute
+check "凌晨 4 点、3 小时前：放行（实际 $(rc)）" [ "$(rc)" = 0 ]
+setup; with_prev; export GATE_NOW=$NIGHT; echo $((NIGHT - 7 * 3600)) > "$T/remote/backup/last-success"; deploy "$NEW" --execute
+check "凌晨 4 点、7 小时前：退出码 5（实际 $(rc)）" [ "$(rc)" = 5 ]
+
+t "门禁：--skip-backup-gate 显式跳过，照常发布并记进 gate-skips.log"
+setup; with_prev; rm "$T/remote/backup/last-success"; deploy "$NEW" --execute --skip-backup-gate
+check "退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
+check "current-tag = 新标签" [ "$(tag)" = "$NEW" ]
+check "gate-skips.log 记了标签和原因" grep -q "tag=$NEW 跳过备份门禁：没有任何成功的备份记录" "$T/remote/backup/gate-skips.log"
+check "输出里有警告" grep -q "跳过备份门禁" "$T/out"
+
+t "发布成功后装上 backup.sh 和定时器；systemctl 失败 → 退出码 4，发布本身不回滚"
+setup; with_prev; deploy "$NEW" --execute
+check "backup.sh 装到 /opt/yuanhui" cmp -s "$HERE/../backup.sh" "$T/remote/backup.sh"
+check "两个 unit 装进 systemd 目录" cmp -s "$HERE/../yuanhui-backup.timer" "$T/units/yuanhui-backup.timer"
+check "启用了定时器" grep -q "systemctl enable --now yuanhui-backup.timer" "$FAKE_LOG"
+setup; with_prev; export FAKE_SYSTEMCTL_FAIL=1; deploy "$NEW" --execute
+check "退出码 4（实际 $(rc)）" [ "$(rc)" = 4 ]
+check "current-tag 已是新标签（发布成功）" [ "$(tag)" = "$NEW" ]
+
+t "部署脚本里没有紧贴非 ASCII 字符的 \$变量（Bash 3.2 + UTF-8 下会被读成另一个变量名；一律写成 \${变量}）"
+# shellcheck disable=SC2016
+LC_ALL=C grep -nE '^[^#]*\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' "$HERE"/../*.sh > "$T/out" 2>&1
+check "没有这种写法（见上面的行）" [ ! -s "$T/out" ]
 
 echo "通过 ${pass}，失败 $fail"
 [ "$fail" = 0 ]
