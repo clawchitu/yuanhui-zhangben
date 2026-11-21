@@ -35,7 +35,7 @@ final class DiscountModel {
     static let rejectedHint = "这个数收不了，换一个"
     private(set) var stage: Stage = .input
 
-    static let maxIntegerDigits = 9
+    nonisolated static let maxIntegerDigits = 9
 
     init(basket: Basket) {
         self.basket = basket
@@ -152,7 +152,7 @@ final class DiscountModel {
     }
 
     /// 输入框里的字 → 分。「53」「53.」「53.5」「53.50」「.5」都认；空或只有「.」是 nil
-    static func parseFen(_ s: String) -> Int64? {
+    nonisolated static func parseFen(_ s: String) -> Int64? {
         let parts = s.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count <= 2 else { return nil }
         let intPart = parts[0], frac = parts.count == 2 ? parts[1] : ""

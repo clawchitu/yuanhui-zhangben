@@ -20,8 +20,10 @@ final class SellModel {
 
     /// 页面上方的一句提示（黄条），下一次扫码或几秒后消失
     enum Notice: Equatable {
-        /// 没登记过的码（登记新商品在 S18 接：扫到后去 04a）
+        /// 没登记过、又进不了登记页的码（这台手机不能登记，或条码不合规；能登记的直接去 04a / 04c，§14 S16-3）
         case unknownBarcode(String)
+        /// 收银员临时登记（04c）存好了
+        case quickSaved
         /// 超出 §5.0 上限，篮子没变。原因是店里人看得懂的话（`limitReason`），不是 ShopCore 的内部原因（§14 S16-6）
         case rejected(String)
         /// 记账失败（本地库写不进去），购物篮原样留着
@@ -35,6 +37,7 @@ final class SellModel {
             case .rejected(let why): "加不进去：\(why)"
             case .saveFailed(let why): "没记上，再按一次试试（\(why)）"
             case .paidCleared: "东西变了，刚才抹的零取消了，要抹请再抹一次"
+            case .quickSaved: "已记下，回头让家里人补全"
             }
         }
 
@@ -42,7 +45,19 @@ final class SellModel {
         var seconds: Double { self == .paidCleared ? 8 : 4 }
     }
 
+    /// 这台手机能怎么登记新商品（按能力表）：家用完整登记（04a / 04b / 05），收银员临时登记（04c），都不能就只出黄条
+    enum Registration: Equatable { case none, quick, full }
+
+    /// 扫到没登记的码、要去登记页（`navigationDestination(item:)` 绑它）
+    struct RegisterRequest: Identifiable, Hashable {
+        let code: String
+        var id: String { code }
+    }
+
     let db: LocalDB
+    var registration: Registration
+    /// 正在登记的码；登记页关掉（存好或返回）时清空
+    var registerCode: RegisterRequest?
     private(set) var basket = Basket()
     /// 刚扫的那一行（价签里那一行）
     private(set) var focusId: UUID?
@@ -58,8 +73,9 @@ final class SellModel {
     /// 待传笔数变了（首页顶栏跟着变）
     var onPendingChange: ((Int) -> Void)?
 
-    init(db: LocalDB) {
+    init(db: LocalDB, registration: Registration = .none) {
         self.db = db
+        self.registration = registration
         pendingCount = (try? db.pendingOps().count) ?? 0
     }
 
@@ -108,24 +124,46 @@ final class SellModel {
         notice = nil
         do {
             guard let conv = try db.lookup(barcode: code) else {
-                show(.unknownBarcode(code))
+                // 能登记就直接去登记页（04a / 04c），黄条只留给进不了登记页的情况（§14 S16-3）。仍出低音：这不是认得的码
+                if registration != .none, NewProduct.isRegistrable(code) {
+                    registerCode = RegisterRequest(code: code)
+                } else {
+                    show(.unknownBarcode(code))
+                }
                 return .unknown
             }
-            let reason = limitReason(adding: conv)
-            let i: Int
-            do {
-                i = try basket.add(conv)
-            } catch {
-                show(.rejected(reason ?? "超出上限"))
-                return .unknown
-            }
-            focusId = basket.lines[i].id
-            clearPaidOverride()
-            return .known
+            return add(conv) ? .known : .unknown
         } catch {
             show(.rejected(Self.describe(error)))
             return .unknown
         }
+    }
+
+    /// 把一个码放进购物篮（同码 +1）；超上限加不进去时出黄条、返回假
+    @discardableResult
+    private func add(_ conv: PackConversion) -> Bool {
+        let reason = limitReason(adding: conv)
+        let i: Int
+        do {
+            i = try basket.add(conv)
+        } catch {
+            show(.rejected(reason ?? "超出上限"))
+            return false
+        }
+        focusId = basket.lines[i].id
+        clearPaidOverride()
+        return true
+    }
+
+    /// 登记页关掉：存好了就把它放进购物篮（04a「存好，接着卖」、05 存好后按整箱算）；返回的什么都不加。
+    /// 收银员临时登记存好后出一句「已记下，回头让家里人补全」（04c）
+    func finishRegistration(_ outcome: RegistrationOutcome?) {
+        registerCode = nil
+        guard let outcome else { return }
+        done = nil
+        notice = nil
+        let added = add(outcome.conversion)
+        if added, notice == nil, case .registered(_, quick: true) = outcome { show(.quickSaved) }
     }
 
     /// 某一行现在的件数；这一行已经删掉时是 0

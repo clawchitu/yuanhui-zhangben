@@ -30,7 +30,7 @@ struct SellView: View {
     /// 推到手输条码页、抹零面板盖着时：相机停、扫码枪不接、扫到的码不收。
     /// 面板 / 手输页一关，`covered` 变回假：`HIDKeyCaptureView.isActive` 变真时当场 `reclaim()` 抢回第一响应者
     /// （不只靠键盘收起的通知），关掉后不点屏幕直接扣扳机照样进（§14 S14-4）
-    private var covered: Bool { showManual || showDiscount }
+    private var covered: Bool { showManual || showDiscount || model.registerCode != nil }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,6 +54,16 @@ struct SellView: View {
                 pickManual(code)
             }
         }
+        // 扫到没登记的码：家用 04a（→ 04b / 05），收银员 04c。存好了放进购物篮，返回什么都不加
+        .navigationDestination(item: $model.registerCode) { req in
+            NewProductView(db: model.db, barcode: req.code, mode: fixture.newProduct.mode ?? .sell,
+                           quick: model.registration == .quick, canLinkPack: app.capabilities.canSend(.barcodeLink),
+                           lookup: StubNameLookup(offline: fixture.offline), pendingCount: model.pendingCount,
+                           suggestedProduct: model.focusLine?.conversion.product, fixture: fixture.newProduct) { outcome in
+                model.finishRegistration(outcome)
+                model.refreshPending()
+            }
+        }
         .sheet(isPresented: $showDiscount) {
             DiscountPanel(basket: model.basket, mode: .sell, fixtureKeys: fixture.discountKeys,
                           fixtureSubmit: fixture.discountSubmit) { outcome in
@@ -65,6 +75,8 @@ struct SellView: View {
             UIApplication.shared.isIdleTimerDisabled = true
             let appModel = app
             model.onPendingChange = { appModel.figures.pendingCount = $0 }
+            let caps = appModel.capabilities
+            model.registration = caps.has(.fullRegister) ? .full : (caps.has(.quickRegister) ? .quick : .none)
             let model = model
             hub.handler = { model.handle($0) }
             model.accepting = !covered
@@ -132,6 +144,8 @@ struct SellView: View {
                 Banner(kind: .alert, text: n.text, systemImage: "arrow.uturn.backward.circle.fill")
                     .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.banner).strokeBorder(Tokens.Palette.ink, lineWidth: 3))
                     .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
+            } else if n == .quickSaved {
+                Banner(kind: .soft, text: n.text, systemImage: "checkmark.circle.fill")
             } else {
                 Banner(kind: .alert, text: n.text, systemImage: "exclamationmark.circle.fill")
             }
@@ -213,7 +227,7 @@ struct FocusLineCard: View {
 
     var body: some View {
         PriceTag(name: line.name, caption: caption, unitPriceCents: Int(SellModel.unitPriceFen(line)),
-                 initial: line.name.first.map(String.init), footerVerticalPadding: 6, compact: true) {
+                 initial: ProductNaming.isPlaceholder(line.name) ? nil : line.name.first.map(String.init), footerVerticalPadding: 6, compact: true) {
             HStack {
                 Text("买几个").font(TypeScale.body.weight(.bold)).foregroundStyle(Tokens.Palette.ink)
                 Spacer(minLength: 8)

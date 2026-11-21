@@ -7,11 +7,13 @@ struct ModeBar: View {
     let title: String
     var mode: ShopMode = .neutral
     var pendingCount: Int?
+    /// 没网（25e）：待传状态换成「↑ 没网」
+    var offline = false
     var onBack: (() -> Void)?
 
     private var background: Color { mode == .neutral ? Tokens.Palette.paper : mode.color }
     private var foreground: Color { mode == .neutral ? Tokens.Palette.ink : .white }
-    private var showsPending: Bool { pendingCount != nil }
+    private var showsPending: Bool { pendingCount != nil || offline }
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -74,7 +76,15 @@ struct ModeBar: View {
     }
 
     @ViewBuilder private var pending: some View {
-        if let pendingCount {
+        if offline {
+            Label("没网", systemImage: "arrow.up.to.line")
+                .font(TypeScale.secondary)
+                .labelStyle(TightLabelStyle())
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.trailing, 6)
+                .accessibilityIdentifier("syncStatus")
+        } else if let pendingCount {
             Label(pendingCount > 0 ? "\(pendingCount) 笔待传" : "已同步",
                   systemImage: pendingCount > 0 ? "arrow.up.to.line" : "checkmark")
                 .font(TypeScale.secondary)
