@@ -992,14 +992,14 @@ components:
     ReportToday:
       type: object
       additionalProperties: false
-      required: [date, sold_fen, profit_fen, discount_fen, cost_missing_count, top_sellers, low_stock, expiring]
+      required: [date, sold_fen, profit_fen, discount_fen, count, cost_missing_count, top_sellers, low_stock, expiring]
       description: 口径见 §5.3
       properties:
         date: { $ref: "#/components/schemas/Date" }
         sold_fen: { $ref: "#/components/schemas/SignedFen", description: 卖了 = Σ 卖出行 amount_fen（cost_fix 行不算） }
         profit_fen: { $ref: "#/components/schemas/SignedFen", description: 赚了 = Σ 进价已知卖出行 (amount − cogs) + Σ cost_fix 行 (amount − cogs) }
         discount_fen: { $ref: "#/components/schemas/SignedFen", description: 优惠 = Σ 卖出行 (list_amount_fen − amount_fen) }
-        count: { type: integer, minimum: 0, description: 记了几笔（设计稿 09「记了 N 笔」）：这一天原行（非冲销行）的不同 op 个数，不算 cost_adjust；一笔卖出算一笔，撤销不算一笔。与 /v1/entries/days 的 count 同一口径 }
+        count: { type: integer, minimum: 0, description: 记了几笔（设计稿 09「记了 N 笔」）：这一天原行（非冲销行）的不同 op 个数，不算 cost_adjust；一笔卖出算一笔；撤销本身不算一笔，记了又撤销的那笔仍算；迟到补偿行、当场写的 cost_fix 和主流水同一个 op，算同一笔（§14 S07-1）。与 /v1/entries/days 的 count 同一口径 }
         cost_missing_count: { type: integer, minimum: 0, description: 有 N 样进价没填（尚未补记的 cost_missing 卖出涉及的商品种数） }
         loss_cost_missing_count: { type: integer, minimum: 0, description: 标了 cost_missing 的损耗行（扔掉、退货、盘点）笔数，「有 N 笔没算进价」（§5.2、§5.3） }
         top_sellers: { type: array, items: { $ref: "#/components/schemas/ProductAmount" } }

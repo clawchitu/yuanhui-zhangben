@@ -526,6 +526,13 @@ describe("返修（PR #18 Codex / Fable 第一轮）", () => {
     expect((await s.get("/v1/reports/today?date=2026-11-12")).count).toBe(0);
     await s.app.close();
   });
+
+  it("契约：ReportToday.count 必填（§14 S07-1，手机 09 要用）；笔数按 op 计", async () => {
+    const { loadOpenApi } = await import("./helpers/contract.ts");
+    const api: any = await loadOpenApi();
+    expect(api.components.schemas.ReportToday.required).toContain("count");
+    expect(api.components.schemas.ReportToday.properties.count.description).toContain("不同 op 个数");
+  });
 });
 
 describe("性能", () => {
