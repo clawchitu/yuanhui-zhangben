@@ -189,6 +189,51 @@ final class CameraLifecycleTests: XCTestCase {
         XCTAssertNil(out.relay, "停了摘掉回调")
     }
 
+    // MARK: 同帧多码交付途中换代（PR #17 Codex 第三轮）
+
+    /// 同一帧 3 个码，交出第 1 个时 `onCode` 同步触发 `trigger`（换代），后 2 个必须丢掉
+    private func assertRestOfBatchDropped(_ name: String, trigger: @escaping (CameraSession) -> Void) {
+        codes = []
+        let out = FakeOutput()
+        let s = CameraSession(testOutput: out)
+        s.onCode = { [unowned self, unowned s] code in
+            codes.append(code)
+            if codes.count == 1 { trigger(s) }
+        }
+        s.setRectOfInterest(visible)
+        s.start()
+        flush(s)
+        let r = try! XCTUnwrap(out.relay)
+        r.deliver(["6921168509256", "6901028075831", "6954767412345"])
+        XCTAssertEqual(codes, ["6921168509256"], "交第 1 个时换代（\(name)），同批剩下的码丢掉")
+        flush(s)
+        XCTAssertEqual(codes, ["6921168509256"], "换代做完后也不补交（\(name)）")
+    }
+
+    func testCodesLeftInTheSameFrameAreDroppedWhenTheEpochChangesMidBatch() {
+        assertRestOfBatchDropped("停用") { $0.stop() }
+        assertRestOfBatchDropped("停用再启用") { $0.stop(); $0.start() }
+        assertRestOfBatchDropped("范围无效") { $0.setRectOfInterest(nil) }
+        assertRestOfBatchDropped("换识别范围") { $0.setRectOfInterest(CGRect(x: 0.375, y: 0.25, width: 0.25, height: 0.5)) }
+    }
+
+    func testControllerStoppedMidBatchDeliversNoMoreCodes() {
+        let out = FakeOutput()
+        let s = CameraSession(testOutput: out)
+        let perm = CameraPermission(status: { .authorized }, requester: { true })
+        let c = CameraController(runner: s, permission: perm)
+        c.onCode = { [unowned self] code in
+            codes.append(code)
+            if codes.count == 1 { c.update(visible: false, sceneActive: true) }   // 交第 1 个时离开页面
+        }
+        s.setRectOfInterest(visible)
+        c.update(visible: true, sceneActive: true)
+        flush(s)
+        try! XCTUnwrap(out.relay).deliver(["6921168509256", "6901028075831", "6954767412345"])
+        XCTAssertEqual(codes, ["6921168509256"])
+        XCTAssertFalse(c.running)
+    }
+
     // MARK: 识别范围（§14 S14-2，PR #17 Codex 第二轮 2）
 
     func testNoCodesBeforeAVisibleRectIsSet() {

@@ -151,10 +151,14 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
         output.setMetadataObjectsDelegate(relay, queue: .main)
     }
 
-    /// 主线程：只交当前这一代、并且已经开了交码的码
+    /// 主线程：只交当前这一代、并且已经开了交码的码。
+    /// 同一帧有多个码时每个码交出前都重新核对代号：交前一个码时 `onCode` 可能同步停用 / 重开 / 换范围（换代），
+    /// 换代之后同批剩下的码全部丢掉（PR #17 Codex 第三轮）
     @MainActor fileprivate func deliver(_ codes: [String], epoch e: Int) {
-        guard e == epoch, acceptedEpoch == e else { return }
-        for code in codes { onCode?(code) }
+        for code in codes {
+            guard e == epoch, acceptedEpoch == e else { return }
+            onCode?(code)
+        }
     }
 
     nonisolated private func configure() {
