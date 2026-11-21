@@ -56,60 +56,94 @@ final class S17Tests: XCTestCase {
                        ["牛栏山二锅头 500ml": 2476, "青岛啤酒 500ml": 2378, "康师傅红烧牛肉面": 446], "记进本地库的各行实收")
     }
 
-    /// 契约 `allocation.json` 每一组：按件数装进卖出页购物篮 → 在面板上按出实收（要问的点「没错」）→ 记账，
-    /// 本地库里各行实收与向量逐分一致；超出实收上限的组面板不让定
+    /// 契约 `allocation.json` 每一组：按件数和换算数量（`pack_qty`，缺省 1）装进卖出页购物篮 → 在面板上按出实收
+    /// （要问的点「没错」）→ 记账，本地库里各行实收与向量逐分一致。
+    /// 向量里该拒的组（`expect.error`），每一组都要在店里人能走到的某一步被拒（装篮超上限、全零篮改价按钮灰、
+    /// 面板超实收上限不让定、负数按不出来），不许静默跳过；能记的组装篮或面板失败也算错。最后按 id 核对每组都有归属。
     func testEveryAllocationVectorThroughPanelAndCommitMatchesToTheFen() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../contracts/vectors/allocation.json")
         let root = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
-        var checked = 0
-        for case let c as [String: Any] in root["cases"] as! [Any] {
+        let cases = root["cases"] as! [[String: Any]]
+        var recorded: [String] = [], rejected: [String: String] = [:]
+        for c in cases {
             let id = c["id"] as! String
-            let lines = (c["lines"] as! [[String: Any]]).map { ($0["unit_price_fen"] as! NSNumber).int64Value }
-            let counts = (c["lines"] as! [[String: Any]]).map { ($0["pack_count"] as! NSNumber).int64Value }
+            let raw = c["lines"] as! [[String: Any]]
+            let prices = raw.map { ($0["unit_price_fen"] as! NSNumber).int64Value }
+            let counts = raw.map { ($0["pack_count"] as! NSNumber).int64Value }
+            let packQtys = raw.map { ($0["pack_qty"] as? NSNumber)?.int64Value ?? 1 }
             let paid = (c["paid_total_fen"] as! NSNumber).int64Value
             let expect = ((c["expect"] as? [String: Any])?["amount_fen"] as? [NSNumber])?.map(\.int64Value)  // nil = 这一组该被拒
-            guard lines.count <= Limits.maxSaleLines, paid >= 0,
-                  lines.allSatisfy({ $0 >= 0 && $0 <= Limits.maxFen }), counts.allSatisfy({ $0 > 0 && $0 <= Limits.maxPackCount })
-            else { continue }
+            XCTAssertTrue(expect != nil || (c["expect"] as? [String: Any])?["error"] as? String == "invalid", "\(id)：要么有结果，要么该拒")
+
             let db = try makeDB()
             var products: [Product] = [], codes: [BarcodeRecord] = []
-            for (i, price) in lines.enumerated() {
-                let p = try Product(id: UUID(), name: "向量\(id)-\(i)", baseUnit: "个", priceFen: Fen(price))
+            for (i, price) in prices.enumerated() {
+                let q = packQtys[i]
+                // 向量的 unit_price_fen 是一件（一个包装）的卖价；整件码用 packPriceFen 写死这一件的价
+                let p = try Product(id: UUID(), name: "向量\(id)-\(i)", baseUnit: "个", priceFen: Fen(q > 1 ? 0 : price))
                 products.append(p)
-                codes.append(try BarcodeRecord(barcode: String(format: "17%011d", i), productId: p.id, packQty: 1, unitName: "个",
-                                               packPriceFen: nil))
+                codes.append(try BarcodeRecord(barcode: String(format: "17%011d", i), productId: p.id, packQty: q,
+                                               unitName: q > 1 ? "箱" : "个", packPriceFen: q > 1 ? Fen(price) : nil))
             }
             try db.applyBaseline(CatalogBaseline(products: products, barcodes: codes))
             let m = SellModel(db: db)
-            var ok = true
+            // 1. 装篮：一样一样扫进来、改件数；超 §5.0 上限的这一步被拒
+            var buildFailure: String?
             for (i, n) in counts.enumerated() {
-                guard m.handle(Scan(code: codes[i].barcode, source: .gun)) == .known else { ok = false; break }
-                m.setCount(lineId: m.basket.lines[i].id, Int(n))
-                if m.count(lineId: m.basket.lines[i].id) != n { ok = false; break }
+                guard m.handle(Scan(code: codes[i].barcode, source: .gun)) == .known else { buildFailure = "第 \(i + 1) 样扫不进"; break }
+                XCTAssertEqual(m.basket.lines[i].packQty, packQtys[i], "\(id)：换算数量")
+                if n != 1 { m.setCount(lineId: m.basket.lines[i].id, Int(n)) }
+                if m.count(lineId: m.basket.lines[i].id) != n { buildFailure = "第 \(i + 1) 样改不到 \(n) 件"; break }
             }
-            guard ok else { continue }
-            let d = DiscountModel(basket: m.basket)
+            if let buildFailure {
+                if expect == nil { rejected[id] = "装篮：" + buildFailure } else { XCTFail("\(id)：该能记的组装篮失败（\(buildFailure)）") }
+                continue
+            }
+            // 2. 面板：按出实收
+            if paid < 0 {
+                // 面板没有负号键，负数按不出来；绕过面板直接交也被 ShopCore 拒
+                XCTAssertNil(DiscountModel.parseFen("-0.01"), id)
+                XCTAssertThrowsError(try m.setPaid(paid), id)
+                XCTAssertNil(expect, "\(id)：负实收不该有结果")
+                rejected[id] = "负实收"
+                continue
+            }
             if m.listTotalFen == 0 {
                 XCTAssertFalse(m.canChangePaid, "\(id)：全零购物篮改价按钮不可用")
+                if paid != 0 {
+                    XCTAssertNil(expect, "\(id)：全零篮改价该拒")
+                    rejected[id] = "全零篮改价按钮灰"
+                    continue
+                }
             } else {
+                let d = DiscountModel(basket: m.basket)
                 press(d, DiscountModel.yuanText(paid))
-                guard expect != nil else {
-                    if paid > Limits.maxPaidTotalFen { XCTAssertFalse(d.canSubmit, "\(id)：超出实收上限不让定"); checked += 1 }
+                guard d.canSubmit else {
+                    if expect == nil { rejected[id] = "面板不让定：\(d.limitMessage ?? "")" } else { XCTFail("\(id)：该能记的组面板不让定") }
                     continue
                 }
                 var r = d.submit()
                 if r == nil { r = d.confirm() }
-                m.applyDiscount(try XCTUnwrap(r, id))
+                guard let r else { XCTFail("\(id)：面板定不下来"); continue }
+                m.applyDiscount(r)
             }
-            guard let expect else { continue }
+            // 3. 记账，逐分核对
+            guard let expect else { XCTFail("\(id)：该拒的组一路走到了记账"); continue }
             XCTAssertEqual(m.paidTotalFen, paid, id)
             XCTAssertTrue(m.commit(), id)
             let sales = try db.entries(limit: 1000).filter { $0.type == .sale }
             let byName = Dictionary(uniqueKeysWithValues: sales.map { ($0.name, $0.amountFen.raw) })
-            XCTAssertEqual(lines.indices.map { byName["向量\(id)-\($0)"] ?? -1 }, expect, "\(id) 逐分")
-            checked += 1
+            XCTAssertEqual(prices.indices.map { byName["向量\(id)-\($0)"] ?? -1 }, expect, "\(id) 逐分")
+            recorded.append(id)
         }
-        XCTAssertGreaterThanOrEqual(checked, 15, "至少跑过的组数")
+        let all = Set(cases.map { $0["id"] as! String })
+        XCTAssertEqual(Set(recorded).union(rejected.keys), all, "每一组都有归属：记过或明确被拒")
+        XCTAssertTrue(Set(recorded).isDisjoint(with: rejected.keys))
+        XCTAssertEqual(recorded.count + rejected.count, cases.count)
+        // 已知该拒的组都要在这里被拒到（契约加组时这里一起改）
+        XCTAssertEqual(Set(rejected.keys), ["alloc-13", "alloc-20", "alloc-21", "alloc-22", "alloc-23", "alloc-26", "alloc-28"],
+                       "被拒的组：\(rejected)")
+        XCTAssertTrue(recorded.contains("alloc-27"), "pack_qty 9999 × 1000 件 = 9999000 基本单位，恰在上限内能记")
     }
 
     // MARK: 28：低于七折 / 多收
