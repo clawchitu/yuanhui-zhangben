@@ -8,6 +8,9 @@
 # 并打印一行 JSON：event=backup_ok，或 event=backup_failed + alert=backup_failed + stage（snapshot / dump / upload）。
 # 不删任何备份：备份账号对 backups/ 只写不删，35 天后由 OSS 生命周期规则删除（§14 T21）。
 # 退出码：0 成功；1 失败；2 已有一次在跑（不重叠；跳过也记进 backup/skips.log 和 metrics.prom，S10c 看得见）。
+# S10c：api 容器（node 用户 1000）只读挂 backup/ 看 metrics.prom、gate-skips.log、restore-events.log，所以 backup/ 是 711
+#   （能按名字读、不能列目录），这几个文件 644；明文 dump 在 work.*（mktemp，700）里，不受影响。
+#   metrics.prom 多一项 yuanhui_backup_lifecycle_stale（最旧的一份超过 36 天 = 生命周期没生效，§14 T26）。
 # 锁（backup/lock.d，里面记 pid）：拿锁的进程已经不在（kill -9、OOM、强制重启），或者锁超过 16 分钟
 #   （service 的 TimeoutStartSec=900 保证一次跑不过 15 分钟）都算残留，清掉再拿；拿到锁后清掉上一次残留的 backup/work.*（里面是明文 dump）。
 set -euo pipefail
@@ -17,15 +20,19 @@ ENV="$D/.env"
 S="$D/backup"
 C=(docker compose -f "$D/compose.yml" --project-directory "$D" --env-file "$ENV")
 mkdir -p "$S"
+chmod 711 "$S"
 t0=$(date +%s)
 stage=lock
 W=""
+lc_stale=""   # 这次查到的生命周期状态；空 = 没查到，沿用上一次
 json() { printf '{"at":"%s","event":"%s"%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:-}"; }
 # 状态文件：上一次成功的时间保留；失败次数连续累加
 prev() { sed -n "s/^yuanhui_backup_$1 //p" "$S/metrics.prom" 2>/dev/null | tail -1; }
 write_state() { # write_state <ok 0|1> <backup_id> <dump_bytes>
-  local ok=$1 id=$2 bytes=$3 now dur last fails skipped
+  local ok=$1 id=$2 bytes=$3 now dur last fails skipped stale
   skipped=$(prev last_skip_timestamp_seconds || true)
+  # 生命周期：这次上传后查到了就用这次的，没查到（失败）沿用上一次的
+  stale=${lc_stale:-$(prev lifecycle_stale || true)}
   now=$(date +%s); dur=$((now - t0))
   last=$(cat "$S/last-success" 2>/dev/null || echo 0)
   if [ "$ok" = 1 ]; then fails=0; last=$now; else fails=$(( $(prev consecutive_failures || echo 0) + 1 )); fi
@@ -37,10 +44,13 @@ write_state() { # write_state <ok 0|1> <backup_id> <dump_bytes>
     "yuanhui_backup_consecutive_failures $fails" \
     "yuanhui_backup_duration_seconds $dur" \
     "yuanhui_backup_dump_bytes ${bytes:-0}" \
-    "yuanhui_backup_last_skip_timestamp_seconds ${skipped:-0}" > "$S/metrics.prom.tmp"
+    "yuanhui_backup_last_skip_timestamp_seconds ${skipped:-0}" \
+    "yuanhui_backup_lifecycle_stale ${stale:-0}" > "$S/metrics.prom.tmp"
+  chmod 644 "$S/metrics.prom.tmp"
   mv "$S/metrics.prom.tmp" "$S/metrics.prom"
   printf '{"last_attempt":%s,"last_success":%s,"ok":%s,"consecutive_failures":%s,"stage":"%s","backup_id":"%s","duration_s":%s}\n' \
     "$now" "$last" "$( [ "$ok" = 1 ] && echo true || echo false )" "$fails" "$stage" "$id" "$dur" > "$S/status.json.tmp"
+  chmod 644 "$S/status.json.tmp"
   mv "$S/status.json.tmp" "$S/status.json"
 }
 cleanup() {
@@ -66,6 +76,7 @@ skip() {
   else
     echo "yuanhui_backup_last_skip_timestamp_seconds $now" > "$S/metrics.prom.skip"
   fi
+  chmod 644 "$S/metrics.prom.skip"
   mv "$S/metrics.prom.skip" "$S/metrics.prom"
   exit 2
 }
@@ -116,8 +127,9 @@ bytes=$(sed -n 's/.*"dump_bytes":\([0-9]*\).*/\1/p' "$W/upload.out" | head -1)
 [ -n "$id" ] || fail
 # 生命周期没生效（最旧的一份超过 36 天）：backup.ts 打 alert=backup_lifecycle_stale，原样转出来
 grep -h '"event":"backup_status"' "$W/upload.out" || true
+if grep -q '"alert":"backup_lifecycle_stale"' "$W/upload.out"; then lc_stale=1; elif grep -q '"event":"backup_status"' "$W/upload.out"; then lc_stale=0; fi
 
 stage=finish
-date +%s > "$S/last-success.tmp" && mv "$S/last-success.tmp" "$S/last-success"
+date +%s > "$S/last-success.tmp" && chmod 644 "$S/last-success.tmp" && mv "$S/last-success.tmp" "$S/last-success"
 write_state 1 "$id" "$bytes"
 json backup_ok ",\"backup_id\":\"$id\",\"dump_bytes\":${bytes:-0},\"duration_s\":$(( $(date +%s) - t0 ))"

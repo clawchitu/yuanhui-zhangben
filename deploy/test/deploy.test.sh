@@ -182,6 +182,8 @@ setup; with_prev; rm "$T/remote/backup/last-success"; deploy "$NEW" --execute --
 check "退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
 check "current-tag = 新标签" [ "$(tag)" = "$NEW" ]
 check "gate-skips.log 记了标签和原因" grep -q "tag=$NEW 跳过备份门禁：没有任何成功的备份记录" "$T/remote/backup/gate-skips.log"
+perm() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+check "gate-skips.log 是 644、backup/ 是 711（api 的监控只读挂进去读它，S10c）" [ "$(perm "$T/remote/backup/gate-skips.log")$(perm "$T/remote/backup")" = 644711 ]
 check "输出里有警告" grep -q "跳过备份门禁" "$T/out"
 
 t "发布成功后装上 backup.sh 和定时器；systemctl 失败 → 退出码 4，发布本身不回滚"

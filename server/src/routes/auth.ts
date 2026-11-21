@@ -105,7 +105,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
       // 验完密码后锁住账号行重查（§14 S03-3）：同时发来的一批请求里，别的请求可能刚把账号锁上。
       // 计数、上锁、清零、建设备都在这一把锁里做，锁生效后不会再签发令牌，也不会把锁清掉。
-      type Out = { locked: Date } | { bad: true } | { ok: { token: string; label: string; deleteRequestedAt: Date | null } };
+      type Out = { locked: Date; fresh?: true } | { bad: true } | { ok: { token: string; label: string; deleteRequestedAt: Date | null } };
       let out: Out;
       try {
         out = await db.transaction().execute(async (trx): Promise<Out> => {
@@ -121,7 +121,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
               // 第 5 次输错本身就回 423；上锁时计数清零（解锁后重新数）
               const until = new Date(now.getTime() + LOCK_MS);
               await trx.updateTable("accounts").set({ failed_logins: 0, locked_until: until }).where("id", "=", acct.id).execute();
-              return { locked: until };
+              return { locked: until, fresh: true };
             }
             await trx.updateTable("accounts").set({ failed_logins: n }).where("id", "=", acct.id).execute();
             return { bad: true };
@@ -143,7 +143,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         if (e instanceof DeviceIdTaken) return sendError(reply, 400, "invalid", { message: "device_id 已经用过，请重新生成" });
         throw e;
       }
-      if ("locked" in out) return lockedReply(out.locked);
+      if ("locked" in out) {
+        // 刚锁上的这一次记日志并告警（§9.5「登录异常」）；锁定期内再来的请求不重复记
+        if (out.fresh) req.log.warn({ alert: "login_locked", store_id: acct.store_id, locked_until: out.locked.toISOString() }, "账号密码输错太多次，已锁定");
+        return lockedReply(out.locked);
+      }
       if ("bad" in out) return sendError(reply, 401, "bad_credentials", { message: "用户名或密码不对" });
       return sessionBody({
         token: out.ok.token,

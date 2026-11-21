@@ -73,6 +73,13 @@ export class DailyQuota {
     this.counts.set(k, n + 1);
     if (this.counts.size > 1000) for (const key of this.counts.keys()) if (!key.endsWith(`|${day}`)) this.counts.delete(key);
   }
+  /** 今天各店用了几次（S10c 的「快鸟余量」告警看它，§14 S08-3 条件二） */
+  usage(now: Date): Array<{ storeId: string; used: number }> {
+    const suffix = `|${shanghaiDay(now).day}`;
+    const out: Array<{ storeId: string; used: number }> = [];
+    for (const [k, n] of this.counts) if (k.endsWith(suffix)) out.push({ storeId: k.slice(0, -suffix.length), used: n });
+    return out;
+  }
   used(storeId: string, now: Date): number {
     return this.counts.get(`${storeId}|${shanghaiDay(now).day}`) ?? 0;
   }
@@ -148,7 +155,10 @@ export class CatalogService {
       const kind = e instanceof SourceError ? e.kind : "unknown";
       // 只记条码、失败类型和固定文字的错误信息（状态码 + 固定分类）；不记网关报错头、响应体（SourceError.raw 不记）。
       // 不是 SourceError 的异常一律记成 unexpected，不记它的 message（来源不明，可能带凭据）
-      log.warn({ barcode, source: source.name, kind, err: e instanceof SourceError ? e.message : "unexpected" }, "外部条码库查询失败，按没查到返回");
+      const err = e instanceof SourceError ? e.message : "unexpected";
+      // 网关报额度用完 / 限流（gatewayErrorClass 分出来的 quota）：转成告警（S10c，§9.5「快鸟额度」）
+      const alert = kind === "http" && err.includes("（quota）") ? { alert: "kuainiao_quota" } : {};
+      log.warn({ barcode, source: source.name, kind, err, ...alert }, "外部条码库查询失败，按没查到返回");
       return { kind: "unavailable" };
     } finally {
       clearTimeout(timer);

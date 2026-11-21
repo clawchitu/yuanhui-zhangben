@@ -6,10 +6,23 @@ import { loadConfig } from "./config.ts";
 import { createDb, migrate } from "./db.ts";
 import { defaultTasks, Scheduler } from "./jobs/scheduler.ts";
 import { archiveStoreFromConfig } from "./lookup/oss.ts";
+import type { AlerterLog } from "./monitor/alerter.ts";
+import { monitorFromConfig } from "./monitor/setup.ts";
+import { ServerMonitor } from "./monitor/server-monitor.ts";
 
 const config = loadConfig();
 const db = createDb({ connectionString: config.databaseUrl });
-const app = buildApp({ config, db });
+const startedAt = new Date();
+// 监控（S10c）：日志先交给 LogTap，Alerter 等 app 建好后拿 app.log 记自己的发送失败。
+// Alerter 在 app 建好之前就构造（读 state.json；坏了要记一条警告），所以 app 建好之前先往 stderr 写一行 JSON，
+// 建好之后换成 app.log（PR #25 返修：以前这里直接引用还没初始化的 app，状态文件一坏 api 就起不来）。
+const earlyLog = (level: number) => (o: object, m: string) => process.stderr.write(JSON.stringify({ level, time: Date.now(), ...o, msg: m }) + "\n");
+let monLogTarget: AlerterLog = { warn: earlyLog(40), error: earlyLog(50) };
+const monLog: AlerterLog = { warn: (o, m) => monLogTarget.warn(o, m), error: (o, m) => monLogTarget.error(o, m) };
+const mon = monitorFromConfig(config, () => new Date(), monLog);
+const app = buildApp({ config, db, ...(mon ? { logTap: (l: string) => mon.tap.line(l) } : {}) });
+monLogTarget = { warn: (o, m) => app.log.warn(o, m), error: (o, m) => app.log.error(o, m) };
+if (!mon) app.log.warn("没配 MONITOR_DIR：不跑监控检查，告警只留在日志里（生产必须配，见 deploy/compose.yml）");
 
 if (process.env.MIGRATE_ON_START === "1") {
   const applied = await migrate(db.pool);
@@ -18,7 +31,7 @@ if (process.env.MIGRATE_ON_START === "1") {
 
 await app.listen({ host: config.host, port: config.port });
 
-// 后台任务（jobs/scheduler.ts）：商品图（开关打开且配了对象存储才登记）、演示店每日重置、注销导出包、注销到期清除。
+// 后台任务（jobs/scheduler.ts）：商品图（开关打开且配了对象存储才登记）、演示店每日重置、注销导出包、注销到期清除、监控（S10c）。
 // 存档桶（exports/、deletions/）：本机目录和商品图共用；阿里云是第二个桶 OSS_ARCHIVE_BUCKET（yuanhui-backup），不落到商品图桶（S09-11、T13）。
 const clock = () => new Date();
 const scheduler = new Scheduler({
@@ -32,6 +45,18 @@ const scheduler = new Scheduler({
     archive: archiveStoreFromConfig(config, app.deps.objectStore),
     imageCacheDir: config.imageCacheDir,
     log: app.log,
+    monitor: mon
+      ? new ServerMonitor({
+          db: db.kysely,
+          alerter: mon.alerter,
+          tap: mon.tap,
+          syncSeen: app.syncSeen,
+          quotaUsage: (now) => app.catalog.quota.usage(now),
+          startedAt,
+          backupDir: config.monitor.backupDir,
+          diskPath: config.monitor.diskPath,
+        })
+      : null,
   }),
 });
 scheduler.start();
