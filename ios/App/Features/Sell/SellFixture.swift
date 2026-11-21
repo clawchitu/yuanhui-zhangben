@@ -29,6 +29,8 @@ struct SellFixture: Equatable, Sendable {
     var offline = false
     /// 登记页 / 05 预先填好的内容
     var newProduct = NewProductFixture.none
+    /// 进货页（S19）预先填好的内容
+    var stockIn = StockInFixture.none
 
     static let none = SellFixture()
 }
@@ -90,6 +92,17 @@ extension SellFixture {
         n.packPrice = UIFixture.value(for: "-uiPackPrice", in: args)
         if UIFixture.value(for: "-uiNewMode", in: args) == "stock" { n.mode = .stock }
         f.newProduct = n
+        var si = StockInFixture()
+        si.qty = UIFixture.value(for: "-uiStockQty", in: args)
+        si.cost = UIFixture.value(for: "-uiStockCost", in: args)
+        si.expiryMode = UIFixture.value(for: "-uiStockMode", in: args)
+        si.date = UIFixture.value(for: "-uiStockDate", in: args)
+        si.months = UIFixture.value(for: "-uiStockMonths", in: args)
+        si.field = UIFixture.value(for: "-uiStockField", in: args)
+        si.unknown = args.contains("-uiStockUnknown")
+        si.commit = args.contains("-uiStockCommit")
+        si.confirmZero = args.contains("-uiStockConfirmZero")
+        f.stockIn = si
         return f
     }
 }

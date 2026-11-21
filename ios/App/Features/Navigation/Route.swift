@@ -74,7 +74,6 @@ enum Route: String, Hashable, CaseIterable, Sendable {
     /// 还没做的页面在哪一段做（占位页上显示）
     var plannedIn: String? {
         switch self {
-        case .stockIn: "S19"
         case .reports: "S24"
         case .products: "S25"
         case .records, .undoLast: "S20"
@@ -84,7 +83,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .account: "S23b"
         case .privacy: "S21"
         case .logout: "S22b"
-        case .sell, .manualCode, .discount, .settings, .deviceName, .scanner: nil
+        case .sell, .manualCode, .discount, .stockIn, .settings, .deviceName, .scanner: nil
         }
     }
 
@@ -105,7 +104,7 @@ struct RouteView: View {
 
     /// 这条路由在这些能力下出哪种页面（纯函数，单元测试逐个路由 × 身份测）
     enum Content: Equatable {
-        case denied, sell, manualCode, discountEntry, settings, deviceName, scanner, placeholder
+        case denied, sell, manualCode, discountEntry, stockIn, settings, deviceName, scanner, placeholder
     }
 
     static func content(for route: Route, capabilities: Capabilities) -> Content {
@@ -114,6 +113,7 @@ struct RouteView: View {
         case .sell: return .sell
         case .manualCode: return .manualCode
         case .discount: return .discountEntry
+        case .stockIn: return .stockIn
         case .settings: return .settings
         case .deviceName: return .deviceName
         case .scanner: return .scanner
@@ -130,6 +130,7 @@ struct RouteView: View {
             case .manualCode: ManualCodeView(db: model.db)
             // 抹零面板要对着一个购物篮，只能从卖出页的「抹零 / 改总价」弹出；直接塞路由只出一句说明
             case .discountEntry: PlaceholderPage(route: route, layout: model.layout, message: "从卖出页的「抹零 / 改总价」进")
+            case .stockIn: StockInView(db: model.db, today: model.today, fixture: model.sellFixture)
             case .settings: SettingsView()
             case .deviceName: DeviceNameView()
             case .scanner: ScannerStatusView()

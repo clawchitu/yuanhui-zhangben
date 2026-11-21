@@ -60,6 +60,14 @@ struct NewProductView: View {
                 onDone(.linked(conv))
             }
         }
+        // 卖价是 0：再问一句（PR #30 Fable 建议 2）
+        .alert("卖价是 0 元，确定吗？", isPresented: Binding(get: { model.confirmZeroPrice },
+                                                       set: { if !$0 { model.cancelZeroPrice() } })) {
+            Button("确定，就卖 0 元") { model.step == .basic ? saveBasic(confirmedZero: true) : saveMore(confirmedZero: true) }
+            Button("再改改", role: .cancel) { model.cancelZeroPrice() }
+        } message: {
+            Text("顾客扫到这一样会按 ¥0.00 收钱")
+        }
         .task {
             model.applyLookup(await lookup.lookup(model.barcode))
             applyFixture()
@@ -94,6 +102,7 @@ struct NewProductView: View {
                             .tint(model.mode.color)
                             .focused($nameFocused)
                             .submitLabel(.done)
+                            .onSubmit { model.submitName() }
                             .autocorrectionDisabled()
                             .padding(.horizontal, 16)
                             .frame(minHeight: 64)
@@ -114,7 +123,7 @@ struct NewProductView: View {
             VStack(alignment: .leading, spacing: 6) {
                 label(model.priceLabel)
                 priceField
-                if let m = model.priceMessage ?? model.error {
+                if let m = model.priceMessage ?? model.error ?? model.nameScanNotice {
                     Text(m).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.sell)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("newProduct.error")
@@ -222,8 +231,13 @@ struct NewProductView: View {
         .background(Tokens.Palette.paper)
     }
 
-    private func saveBasic() {
-        if let conv = model.saveBasic() { onDone(.registered(conv, quick: model.quick)) }
+    private func saveBasic(confirmedZero: Bool = false) {
+        if let conv = model.saveBasic(confirmedZero: confirmedZero) { onDone(.registered(conv, quick: model.quick)) }
+    }
+
+    private func saveMore(confirmedZero: Bool = false) {
+        moreFocus = nil
+        if let conv = model.saveMore(confirmedZero: confirmedZero) { onDone(.registered(conv, quick: false)) }
     }
 
     // MARK: 04b
@@ -266,10 +280,7 @@ struct NewProductView: View {
                         .accessibilityIdentifier("newProduct.keyboardDone")
                 }
             }
-            PrimaryButton("存好", systemImage: "checkmark", mode: model.mode) {
-                moreFocus = nil
-                if let conv = model.saveMore() { onDone(.registered(conv, quick: false)) }
-            }
+            PrimaryButton("存好", systemImage: "checkmark", mode: model.mode) { saveMore() }
             .disabled(!model.canSaveBasic)
             .accessibilityIdentifier("newProduct.saveMore")
             .padding(.horizontal, 20)
