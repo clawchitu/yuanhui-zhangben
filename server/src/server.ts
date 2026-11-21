@@ -6,17 +6,22 @@ import { loadConfig } from "./config.ts";
 import { createDb, migrate } from "./db.ts";
 import { defaultTasks, Scheduler } from "./jobs/scheduler.ts";
 import { archiveStoreFromConfig } from "./lookup/oss.ts";
+import type { AlerterLog } from "./monitor/alerter.ts";
 import { monitorFromConfig } from "./monitor/setup.ts";
 import { ServerMonitor } from "./monitor/server-monitor.ts";
 
 const config = loadConfig();
 const db = createDb({ connectionString: config.databaseUrl });
 const startedAt = new Date();
-// 监控（S10c）：日志先交给 LogTap，Alerter 等 app 建好后拿 app.log 记自己的发送失败
-// （闭包里的 app 在第一次发送时早已建好：发送只发生在 scheduler 里）
-const monLog = { warn: (o: object, m: string) => app.log.warn(o, m), error: (o: object, m: string) => app.log.error(o, m) };
+// 监控（S10c）：日志先交给 LogTap，Alerter 等 app 建好后拿 app.log 记自己的发送失败。
+// Alerter 在 app 建好之前就构造（读 state.json；坏了要记一条警告），所以 app 建好之前先往 stderr 写一行 JSON，
+// 建好之后换成 app.log（PR #25 返修：以前这里直接引用还没初始化的 app，状态文件一坏 api 就起不来）。
+const earlyLog = (level: number) => (o: object, m: string) => process.stderr.write(JSON.stringify({ level, time: Date.now(), ...o, msg: m }) + "\n");
+let monLogTarget: AlerterLog = { warn: earlyLog(40), error: earlyLog(50) };
+const monLog: AlerterLog = { warn: (o, m) => monLogTarget.warn(o, m), error: (o, m) => monLogTarget.error(o, m) };
 const mon = monitorFromConfig(config, () => new Date(), monLog);
 const app = buildApp({ config, db, ...(mon ? { logTap: (l: string) => mon.tap.line(l) } : {}) });
+monLogTarget = { warn: (o, m) => app.log.warn(o, m), error: (o, m) => app.log.error(o, m) };
 if (!mon) app.log.warn("没配 MONITOR_DIR：不跑监控检查，告警只留在日志里（生产必须配，见 deploy/compose.yml）");
 
 if (process.env.MIGRATE_ON_START === "1") {
