@@ -5,10 +5,13 @@
 // 在 withStoreLock 里确认商品还没图、取一个新号，写回 image_key / image_ver（+1）/ rev。
 // 图片任务和商品保存是两件事：商品早已在同步时保存，这里失败只记 last_error，商品照常可用（显示首字）。
 // 总开关 product_images_enabled 关着时什么都不做；演示店不抓第三方图。
+// 和注销清除（jobs/account-purge.ts）的协调（PR #20 Codex 2）：清除删掉这家店的 image_jobs；在途的那个上传前复查店还在，
+// 传完在店铺锁里再查，店没了就删掉刚传的图，删不掉把 store_purges 重新标成没清完（dropLateObject）。
 import { sql, type Kysely } from "kysely";
 import type { Database } from "../db.ts";
 import { withStoreLock } from "../sync/lock.ts";
 import { imageKey, type ObjectStore } from "../lookup/oss.ts";
+import { dropLateObject, storeGone } from "./account-purge.ts";
 import { ImageRejected, fetchImage as defaultFetch, makeThumbnail, sha256 } from "../lookup/images.ts";
 
 export const MAX_ATTEMPTS = 3;
@@ -112,9 +115,16 @@ async function processJob(d: ImageJobDeps, store: ObjectStore, job: Claimed): Pr
     const thumb = await makeThumbnail(raw);
     const ver = before.image_ver + 1;
     const key = imageKey(job.store_id, job.product_id, ver, sha256(thumb));
-    // 上传在锁外做（不拿着店铺锁等网络）；写回时在锁里再确认一次商品还没图
+    // 下载期间店可能被注销清除了（PR #20 Codex 2）：传之前先复查，省一次上传
+    if (await storeGone(d.db, job.store_id)) {
+      await finish(d, job, null);
+      return "skipped";
+    }
+    // 上传在锁外做（不拿着店铺锁等网络）；写回时在锁里再确认一次商品还没图、店还在
     await store.put(key, thumb, "image/jpeg");
     const wrote = await withStoreLock(d.db, job.store_id, async (tx) => {
+      // 清除在店铺锁里删店：这里看到店没了，清除已提交，它的对象清理可能已经做完 → 刚传的图得自己删（删不掉交给下一轮清理）
+      if (await storeGone(tx.trx, job.store_id)) return "gone" as const;
       const cur = await tx.trx
         .selectFrom("products")
         .select(["image_ver", "archived_at"])
@@ -130,6 +140,10 @@ async function processJob(d: ImageJobDeps, store: ObjectStore, job: Claimed): Pr
         .execute();
       return true;
     });
+    if (wrote === "gone") {
+      await dropLateObject(d.db, job.store_id, () => store.delete(key), d.log);
+      return "skipped";
+    }
     await finish(d, job, null);
     d.log?.info({ store_id: job.store_id, product_id: job.product_id, wrote }, "商品图已写回");
     return wrote ? "done" : "skipped";

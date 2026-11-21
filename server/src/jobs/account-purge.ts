@@ -14,6 +14,9 @@
 //    restore.sh 恢复后重放，S10b）；写不成（没配存档桶、写失败）就不删，告警、下一轮重来（PR #20 Codex 1）。
 // 3. 对象清理（clearPurgedObjects）：对 store_purges 里还没清理完的店，再写一遍删除记录（幂等），删商品图桶的 images/<店>/、存档桶的 exports/<店>/、
 //    本机图片缓存目录里这家店的子树（T12），都成功了才记 objects_cleared_at。每一步都可重做，失败下一轮接着来。
+// 在途的图片任务、GET /v1/images 的缓存回填可能在清理之后才把对象落地（PR #20 Codex 2）：清除删掉了这家店的 image_jobs，
+// 在途的那个传完之后在店铺锁里复查店还在不在，不在就删掉刚传的（jobs/image-fetch.ts）；缓存回填写完文件后同样复查（cacheFillGuard）。
+// 删不掉就撤回 objects_cleared_at，交给下一轮对象清理（dropLateObject）。
 // 演示店不走这里：审核号的注销申请由每日重置撤回（demo/reset.ts）。
 import { randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
@@ -21,7 +24,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { sql, type Kysely } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import type { Database } from "../db.ts";
 import { DELETE_GRACE_MS } from "../auth/session.ts";
 import { withStoreLock } from "../sync/lock.ts";
@@ -313,6 +316,37 @@ export async function runAccountPurges(d: AccountJobDeps): Promise<{ purged: str
 }
 
 // ── 3. 对象清理 ──
+
+/** 这家店已经被清除了（店那一行没了）。清除在店铺锁里删店，在店铺锁里查就不会和它交错 */
+export async function storeGone(db: Kysely<Database> | Transaction<Database>, storeId: string): Promise<boolean> {
+  return !(await db.selectFrom("stores").select("id").where("id", "=", storeId).executeTakeFirst());
+}
+
+/**
+ * 店清除之后才落地的对象（在途的图片任务传上去的图、GET /v1/images 回填到本机缓存的图，PR #20 Codex 2）：马上删掉；
+ * 删不掉就把 store_purges 重新标成「对象没清完」（objects_cleared_at 置空、记原因），下一轮 clearPurgedObjects 整个前缀再清一遍。
+ * 不会提前永久标成清理完成：标记只在这里被撤回，清理那边每轮都按前缀重列。
+ */
+export async function dropLateObject(
+  db: Kysely<Database>,
+  storeId: string,
+  drop: () => Promise<void>,
+  log?: { warn(obj: object, msg: string): void; error?(obj: object, msg: string): void },
+): Promise<void> {
+  try {
+    await drop();
+  } catch (e) {
+    await db.updateTable("store_purges").set({ objects_cleared_at: null, last_error: reason(e) }).where("store_id", "=", storeId).execute();
+    (log?.error ?? log?.warn)?.call(log, { store_id: storeId, code: reason(e) }, "已清除店的迟到对象删除失败，交给下一轮对象清理");
+  }
+}
+
+/** 给 ImageCache 用：回填到本机缓存之后复查店还在不在，不在就删掉刚写的文件（见 dropLateObject） */
+export function cacheFillGuard(db: Kysely<Database>, log?: PurgeLog) {
+  return async (storeId: string, file: string): Promise<void> => {
+    if (await storeGone(db, storeId)) await dropLateObject(db, storeId, () => rm(file, { force: true }), log);
+  };
+}
 
 /** 删除记录的内容：只有店 id 和时间，不含任何业务数据 */
 export function deletionRecord(storeId: string, purgedAt: Date): Buffer {
