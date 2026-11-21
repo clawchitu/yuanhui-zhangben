@@ -17,12 +17,13 @@ function specFromPlan(): Record<string, string[]> {
   return out;
 }
 const SPEC = specFromPlan();
-// S09 的三张运维表（演示店重置状态、注销导出任务、清除进度）：不是业务数据、不同步给手机，§3 的表格里没有，
+// S09 的四张运维表（演示店重置状态、注销导出任务、清除进度、待删对象）：不是业务数据、不同步给手机，§3 的表格里没有，
 // 字段以 migrations/0002_demo_and_deletion.sql 为准，在这里手抄一份做结构回归保护（多了、少了都会红）
 const S09_TABLES: Record<string, string[]> = {
   demo_stores: ["store_id", "review_password_hash", "seeded_at", "next_reset_at"],
   export_jobs: ["store_id", "requested_at", "object_key", "done_at", "attempts", "next_try_at", "last_error", "cancelled_at", "stale_cleared_at"],
   store_purges: ["store_id", "purged_at", "swept_at", "objects_cleared_at", "attempts", "last_error"],
+  object_discards: ["object_key", "store_id", "created_at", "attempts", "next_try_at", "last_error"],
 };
 
 // 索引：名字 → 定义里必须出现的片段（结构回归保护，Codex 审核意见）
@@ -75,6 +76,7 @@ const INDEXES: Record<string, string> = {
   demo_stores_pkey: "(store_id)",
   export_jobs_pkey: "(store_id)",
   store_purges_pkey: "(store_id)",
+  object_discards_pkey: "(object_key)",
   image_jobs_pending_idx: "(next_try_at) WHERE (done_at IS NULL)",
   removed_pkey: "(store_id, rev)",
   removed_row_idx: "(store_id, kind, row_id)",

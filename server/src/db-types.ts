@@ -269,6 +269,15 @@ export interface StorePurgesTable {
   last_error: string | null;
 }
 
+export interface ObjectDiscardsTable {
+  object_key: string;
+  store_id: string;
+  created_at: Ts;
+  attempts: Generated<number>;
+  next_try_at: Ts;
+  last_error: string | null;
+}
+
 export interface SchemaMigrationsTable {
   name: string;
   checksum: string;
@@ -294,5 +303,6 @@ export interface Database {
   demo_stores: DemoStoresTable;
   export_jobs: ExportJobsTable;
   store_purges: StorePurgesTable;
+  object_discards: ObjectDiscardsTable;
   schema_migrations: SchemaMigrationsTable;
 }

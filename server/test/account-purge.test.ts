@@ -351,6 +351,67 @@ describe("导出包", () => {
     await s.app.close();
   });
 
+  it("作废的导出包删不掉：记一条待删标记，之后每轮重试直到删掉；生成失败分支的删除失败同样记下（PR #20 Codex 第二轮 2）", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "作废包店");
+    const t = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    const archive = new MemoryObjectStore();
+    const del = archive.delete.bind(archive);
+    let broken = false;
+    archive.delete = async (k) => {
+      if (broken) throw Object.assign(new Error("超时"), { code: "RequestTimeout" });
+      return del(k);
+    };
+    const exportsOf = () => archive.list(storePrefix("exports", s.storeId));
+    // 包传上去之后、写回之前：撤回，另一个进程的撤回清理在包落地之前列举过（看不到它）、删掉了任务行；随后存储出故障
+    const d = deps(clock, {
+      archive,
+      afterExportUpload: async () => {
+        const u = await login(s.app, s.username);
+        expect((await s.app.inject({ method: "POST", url: "/v1/account/delete-cancel", headers: bearer(u.token) })).statusCode).toBe(204);
+        await runExportJobs(deps(clock, { archive: new MemoryObjectStore() }));
+        expect(await tdb.kysely.selectFrom("export_jobs").select("store_id").where("store_id", "=", s.storeId).execute()).toEqual([]);
+        broken = true;
+      },
+    });
+    const sink = logSink();
+    expect((await runExportJobs({ ...d, log: sink.log })).map((x) => x.result)).toEqual(["superseded"]);
+    expect((await exportsOf()).length).toBe(1);
+    // 存储还坏着：重试也失败，标记留着
+    clock.advance(60_000);
+    await runExportJobs(deps(clock, { archive }));
+    expect((await exportsOf()).length).toBe(1);
+    // 存储恢复：到点重试删掉
+    broken = false;
+    clock.advance(6 * 3_600_000);
+    await runExportJobs(deps(clock, { archive }));
+    expect(await exportsOf()).toEqual([]);
+
+    // 生成失败分支：包其实写进去了但上传报错，紧接着的删除也失败 → 同样记下、之后删掉
+    const u = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(u.token), payload: { password: PASSWORD } });
+    const putFile = archive.putFile.bind(archive);
+    let lost = true;
+    archive.putFile = async (k, f, c) => {
+      await putFile(k, f, c);
+      if (lost) {
+        broken = true;
+        throw Object.assign(new Error("响应丢了"), { code: "ResponseTimeoutError" });
+      }
+    };
+    expect((await runExportJobs(deps(clock, { archive }))).map((x) => x.result)).toEqual(["failed"]);
+    expect((await exportsOf()).length).toBe(1);
+    broken = false;
+    lost = false;
+    clock.advance(6 * 3_600_000);
+    const r = await runExportJobs(deps(clock, { archive }));
+    // 重试那一版生成成功；失败那一版的包被删掉，只留新包
+    expect(r.map((x) => x.result)).toEqual(["done"]);
+    expect(await exportsOf()).toEqual([r[0]!.object_key]);
+    await s.app.close();
+  });
+
   it("没配存档桶：有未完成的导出任务就打 error 级告警（export_no_archive），不静默跳过（Fable 必须改 2）", async () => {
     const clock = new TestClock(T0);
     const s = await shopWithBooks(clock, "没桶店");

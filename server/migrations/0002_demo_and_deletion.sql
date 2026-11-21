@@ -45,3 +45,15 @@ CREATE TABLE store_purges (
   last_error         text,
   CHECK (objects_cleared_at IS NULL OR swept_at IS NOT NULL)
 );
+
+-- 存档桶里要删、但删除时失败了的对象（PR #20 Codex 第二轮 2）：作废的导出包（生成期间撤回或清除、写回没成）、生成失败时已经写进去的包。
+-- 这些包没有任务行指向它，前缀清理也未必还会来，所以持久化一条待删标记，定时任务（runExportJobs 每轮）按退避重试，删掉才删这一行。
+-- 只有店 id、对象键和原因代码，不含业务数据。
+CREATE TABLE object_discards (
+  object_key  text PRIMARY KEY,
+  store_id    uuid NOT NULL,
+  created_at  timestamptz NOT NULL,
+  attempts    integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_try_at timestamptz NOT NULL,
+  last_error  text
+);

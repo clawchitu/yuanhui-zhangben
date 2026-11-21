@@ -5,7 +5,8 @@
 //    从文件流式上传（putFile，不整包进内存）到存档桶的 exports/<店>/，再按「还是领到时那一次申请、没被撤回」条件写回；条件不成立（期间撤回或撤回后又申请）就删掉刚传的包。
 //    写回成功先打一条告警日志（附包的位置），由 Chitu 转交黄总；再删 exports/<店>/ 下比这一版更早的旧包（clearStaleExports，
 //    只删键里申请时间更早的、开始前在任务行锁里复查版本；失败只让 stale_cleared_at 留空、下一轮单独重试，不碰已完成的包）。
-//    生成、上传、写回失败只记原因代码、按次数退避重试。
+//    生成、上传、写回失败只记原因代码、按次数退避重试。作废的包、失败时已经写进去的包删不掉就记待删标记 object_discards，
+//    每轮按退避重试直到删掉（retryObjectDiscards，PR #20 Codex 第二轮 2）。
 //    撤回注销记 cancelled_at：这里锁住那一行、删掉 exports/<店>/ 下的包、再删行（锁住期间重新申请会等着，不会删到新包）。
 // 2. 到期清除（runAccountPurges）：delete_requested_at 已过 7 天（恰好 7 天整仍可撤回，所以是严格大于）的非演示店。
 //    每家店一个事务、拿店铺锁（withStoreLock）和账号行锁（FOR UPDATE，和登录、兑码、申请注销的 FOR NO KEY UPDATE 冲突）后锁内重查，
@@ -136,22 +137,85 @@ export async function runOneExportJob(d: AccountJobDeps): Promise<ExportOutcome 
       .where("requested_at", "=", requestedAt)
       .where("done_at", "is", null)
       .execute();
-    if (key) await archive.delete(key).catch(() => {});
+    if (key) await discardExport(d, storeId, key, "failed");
     (job.attempts >= 3 ? d.log?.error : d.log?.warn)?.call(d.log, { alert: job.attempts >= 3 ? "account_delete_export_failed" : undefined, store_id: storeId, code, attempts: job.attempts }, "导出包生成失败");
     return { store_id: storeId, result: "failed" };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
   if (superseded) {
-    // 生成期间撤回了（或撤回后又申请，那是新的一次，会重新生成）：这个包不该留。删不掉也不要紧：
-    // 它的键带着这一版的申请时间，新一版完成后的旧包清理、撤回清理都会删它
-    await archive.delete(key).catch((e) => d.log?.warn({ store_id: storeId, code: reason(e) }, "作废的导出包删除失败，留给之后的清理"));
+    // 生成期间撤回了（或撤回后又申请、或到期清除了）：这个包不该留。撤回清理、对象清理可能在包落地之前就做完了，
+    // 没有任务行再指向它，所以删不掉要记待删标记、定时重试（PR #20 Codex 第二轮 2）
+    await discardExport(d, storeId, key, "superseded");
     return { store_id: storeId, result: "superseded" };
   }
   // 完成了就先通知（不等旧包清理）；旧包清理单独做、单独重试，失败不碰这个已完成的包（PR #20 Codex 4）
   d.log?.warn({ alert: "account_delete_export", store_id: storeId, object_key: key }, "账号注销申请：导出包已生成，请转交黄总");
   await clearStaleExports(d, storeId);
   return { store_id: storeId, result: "done", object_key: key };
+}
+
+/**
+ * 删掉一个不该留的导出包（作废的、生成失败时已经写进去的）。删不掉就在 object_discards 记一条待删标记（重复记只推后重试时间），
+ * 由 retryObjectDiscards 每轮按退避重试，直到删掉。记标记也失败（数据库断了）只能打 error 日志：这家店若被清除，T17 复扫兜底。
+ */
+export async function discardExport(d: AccountJobDeps, storeId: string, key: string, why: "superseded" | "failed"): Promise<void> {
+  try {
+    await d.archive!.delete(key);
+    return;
+  } catch (e) {
+    const code = reason(e);
+    try {
+      const now = d.clock();
+      await d.db
+        .insertInto("object_discards")
+        .values({ object_key: key, store_id: storeId, created_at: now, next_try_at: now, last_error: code })
+        .onConflict((oc) => oc.column("object_key").doUpdateSet({ last_error: code }))
+        .execute();
+      d.log?.warn({ store_id: storeId, code, why }, "不该留的导出包删除失败，已记待删标记，定时重试");
+    } catch (e2) {
+      d.log?.error({ alert: "export_discard_lost", store_id: storeId, code: reason(e2), why }, "不该留的导出包删除失败，待删标记也没记上");
+    }
+  }
+}
+
+/**
+ * 待删标记重试（runExportJobs 每轮先做）：一行一个事务、FOR UPDATE SKIP LOCKED（多进程各删各的）。
+ * 删之前确认没有已完成的导出任务指向这个键（生成失败分支的写回其实提交了的极端情况），指向着就只删标记不删包。
+ * 删掉了删标记；失败 attempts + 1、按 exportBackoffMs 退避，次数多了打 error 告警。返回这轮删掉了几个。
+ */
+export async function retryObjectDiscards(d: AccountJobDeps, limit = 50): Promise<number> {
+  if (!d.archive) return 0;
+  const archive = d.archive;
+  let n = 0;
+  const tried: string[] = [];
+  for (let i = 0; i < limit; i++) {
+    const r = await d.db.transaction().execute(async (trx) => {
+      let q = trx.selectFrom("object_discards").selectAll().where("next_try_at", "<=", d.clock());
+      if (tried.length) q = q.where("object_key", "not in", tried);
+      const row = await q.orderBy("next_try_at").orderBy("object_key").limit(1).forUpdate().skipLocked().executeTakeFirst();
+      if (!row) return null;
+      tried.push(row.object_key);
+      try {
+        const live = await trx.selectFrom("export_jobs").select("store_id").where("object_key", "=", row.object_key).where("done_at", "is not", null).executeTakeFirst();
+        if (!live) await archive.delete(row.object_key);
+        await trx.deleteFrom("object_discards").where("object_key", "=", row.object_key).execute();
+        return true;
+      } catch (e) {
+        const attempts = row.attempts + 1;
+        await trx
+          .updateTable("object_discards")
+          .set({ attempts, last_error: reason(e), next_try_at: new Date(d.clock().getTime() + exportBackoffMs(attempts)) })
+          .where("object_key", "=", row.object_key)
+          .execute();
+        (attempts >= 3 ? d.log?.error : d.log?.warn)?.call(d.log, { alert: attempts >= 3 ? "object_discard_failed" : undefined, store_id: row.store_id, code: reason(e), attempts }, "待删对象重试失败");
+        return false;
+      }
+    });
+    if (r === null) break;
+    if (r) n++;
+  }
+  return n;
 }
 
 /**
@@ -243,6 +307,7 @@ export async function runExportJobs(d: AccountJobDeps, limit = 10): Promise<Expo
     if (pending > 0) d.log?.error({ alert: "export_no_archive", pending }, "有注销申请的导出包要生成，但没配存档桶");
     return [];
   }
+  await retryObjectDiscards(d);
   await clearCancelledExports(d);
   // 上一轮没清完的旧包单独重试（不重新生成）
   await clearStaleExports(d);
