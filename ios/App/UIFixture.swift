@@ -17,6 +17,7 @@ import ShopCore
 ///   -uiScrollTo bottom                           首页打开后滚到底（截长页用）
 ///   -uiPriorSales N                              先记 N 笔卖出（03 顶栏「2 笔待传」）
 ///   -uiLongName                                  多登记一个名字很长、单价很高的商品（码 6900000000017）
+///   -uiMoreGoods                                 S17：多登记同前缀的面、几样牛奶、一个零价购物袋（见 `installSellExtras`）
 ///   -uiFixture scanner | scanner-login           扫码测试页（27a / 27b 的样子，S14）
 ///   -uiCamera denied|authorized|notDetermined    把相机权限当成这个值（S14；卖出页同样认）
 ///   -uiScan / -uiScanSource / -uiScanGap / -uiScanDelay   FakeScanner 喂码，见 `FakeScanner`（S14；卖出页同样认）
@@ -121,6 +122,9 @@ extension UIFixture {
     static let longNameBarcode = "6900000000017"
     static let longName = "贵州茅台酒（飞天）53%vol 500ml 礼盒装 附赠两只小酒杯 生肖纪念版"
 
+    /// `-uiMoreGoods` 加的码：和康师傅红烧牛肉面（6902514300011）同前缀的另一个商品、零价商品
+    static let sameMakerBarcode = "6902514300028"
+    static let zeroPriceBarcode = "6900000000024"
     /// 卖出页要用的额外夹具：长名商品、事先记好的几笔卖出
     static func installSellExtras(into db: LocalDB, args: [String]) throws {
         if args.contains("-uiLongName") {
@@ -128,6 +132,24 @@ extension UIFixture {
                                 priceFen: Fen(999_999))
             try db.applyBaseline(CatalogBaseline(products: [p], barcodes: [
                 try BarcodeRecord(barcode: longNameBarcode, productId: p.id, packQty: 1, unitName: "瓶", packPriceFen: nil)]))
+        }
+        if args.contains("-uiMoreGoods") {
+            // S17：同厂商另一个面（前缀 69025143 命中两个商品，prefix.json 同款）、按名称找的几样牛奶、一个零价商品
+            let items: [(Int, String, String, Int64, String)] = [
+                (0x301, "康师傅老坛酸菜牛肉面", "桶", 450, sameMakerBarcode),
+                (0x302, "伊利纯牛奶 250ml", "盒", 350, "6907992100012"),
+                (0x303, "光明 新鲜牧场 950ml", "瓶", 1380, "6901209200014"),
+                (0x304, "旺仔牛奶 245ml", "罐", 500, "6902083800016"),
+                (0x305, "购物袋（送的）", "个", 0, zeroPriceBarcode),
+            ]
+            var products: [Product] = [], codes: [BarcodeRecord] = []
+            for (n, name, unit, price, code) in items {
+                let p = try Product(id: UUID(uuidString: String(format: "5EED0000-0000-4000-8000-%012X", n))!, name: name,
+                                    baseUnit: unit, priceFen: Fen(price))
+                products.append(p)
+                codes.append(try BarcodeRecord(barcode: code, productId: p.id, packQty: 1, unitName: unit, packPriceFen: nil))
+            }
+            try db.applyBaseline(CatalogBaseline(products: products, barcodes: codes))
         }
         if let n = value(for: "-uiPriorSales", in: args).flatMap(Int.init), n > 0 {
             guard let water = try db.lookup(barcode: "6921168509256") else { return }
