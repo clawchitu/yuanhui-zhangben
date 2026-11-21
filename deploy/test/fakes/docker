@@ -53,19 +53,22 @@ caddy_cmd() {
   esac
   return 0
 }
-backup_run() { # compose run [选项] backup node scripts/<backup|restore>.ts <参数…>
-  local host="" a args=() seen=0 script="" db
+# 库名 yuanhui（compose 里的在用库）对应 FAKE_RESTORE_DB_URL 本身；别的库名（restore.sh 的 RESTORE_DB）换掉它的库名部分
+restore_db_url() { [ "$1" = yuanhui ] && { printf '%s' "$FAKE_RESTORE_DB_URL"; return; }; node -e 'const u = new URL(process.argv[1]); u.pathname = "/" + process.argv[2]; process.stdout.write(u.toString())' "$FAKE_RESTORE_DB_URL" "$1"; }
+backup_run() { # compose run [选项] backup [sh -c '换库名' restore] node scripts/<backup|restore>.ts <参数…>（-e RESTORE_DB=<库> 时连那个库）
+  local host="" a args=() seen=0 script="" db rdb=""
   while [ $# -gt 0 ]; do
     case "$1" in
       -v) host=${2%%:/work}; shift 2; continue ;;
+      -e) [ $seen = 0 ] && { case "$2" in RESTORE_DB=*) rdb=${2#RESTORE_DB=} ;; esac; shift 2; continue; } ;;
       node) [ $seen = 0 ] && { script=$2; seen=1; shift 2; continue; } ;;   # node 和脚本路径
     esac
     [ $seen = 1 ] && { a=$1; args+=("${a//\/work/$host}"); }
     shift
   done
   if [ "${args[0]:-}" = upload ] && [ "${FAKE_UPLOAD_FAIL:-0}" = 1 ]; then echo '{"event":"backup_upload_failed","code":"fake"}' >&2; return 1; fi
-  case "$script" in scripts/backup.ts) db=$FAKE_BACKUP_DB_URL ;; scripts/restore.ts) db=${FAKE_RESTORE_DB_URL:-} ;; *) echo "fake: 不认识的脚本 $script" >&2; return 1 ;; esac
-  DATABASE_URL=$db BACKUP_STORE_DIR=$FAKE_BACKUP_STORE BACKUP_PASSPHRASE=${FAKE_BACKUP_PASSPHRASE:-} \
+  case "$script" in scripts/backup.ts) db=$FAKE_BACKUP_DB_URL ;; scripts/restore.ts) db=${FAKE_RESTORE_DB_URL:-}; [ -n "$rdb" ] && db=$(restore_db_url "$rdb") ;; *) echo "fake: 不认识的脚本 $script" >&2; return 1 ;; esac
+  env DATABASE_URL="$db" BACKUP_STORE_DIR="$FAKE_BACKUP_STORE" BACKUP_PASSPHRASE="${FAKE_BACKUP_PASSPHRASE:-}" \
     node "$FAKE_BACKUP_SERVER/$script" "${args[@]}"
 }
 pg_dump_run() {
@@ -74,10 +77,11 @@ pg_dump_run() {
   [ "${FAKE_PGDUMP_FAIL:-0}" = 1 ] && { echo "pg_dump: error: fake" >&2; return 1; }
   pg_dump -d "$FAKE_PG_URL" -n "$FAKE_PG_SCHEMA" -Fc ${snap:+"$snap"}
 }
-pg_restore_run() { # 只认 --list，或 -U/-d（忽略，改写 FAKE_RESTORE_DB_URL）+ --no-owner --no-acl --exit-on-error；dump 从标准输入来
-  local a
+pg_restore_run() { # 只认 --list，或 -U/-d <库名>（写 restore_db_url <库名>）+ --no-owner --no-acl --exit-on-error；dump 从标准输入来
+  local a d=yuanhui
   for a in "$@"; do [ "$a" = --list ] && { pg_restore --list; return; }; done
-  pg_restore -d "$FAKE_RESTORE_DB_URL" --no-owner --no-acl --exit-on-error
+  while [ $# -gt 0 ]; do [ "$1" = -d ] && { d=$2; shift; }; shift; done
+  pg_restore -d "$(restore_db_url "$d")" --no-owner --no-acl --exit-on-error
 }
 case "${1:-}" in
   pull) [ "${FAKE_PULL_FAIL:-0}" = 1 ] && exit 1; exit 0 ;;

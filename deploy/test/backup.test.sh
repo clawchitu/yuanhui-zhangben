@@ -22,7 +22,7 @@ with_path() { # 连接串加 search_path（node 脚本和 pg_restore 都认）
 SRC_URL=$(with_path "$DATABASE_URL" "$SCHEMA")
 BASE=${DATABASE_URL%%\?*}; TGT=$(with_path "${BASE%/*}/$TARGET_DB" "$SCHEMA")
 cleanup() {
-  psql -q "$DATABASE_URL" -c "DROP SCHEMA IF EXISTS $SCHEMA CASCADE" -c "DROP DATABASE IF EXISTS $TARGET_DB WITH (FORCE)" -c "DROP DATABASE IF EXISTS ${TARGET_DB}_b WITH (FORCE)" >/dev/null 2>&1
+  psql -q "$DATABASE_URL" -c "DROP SCHEMA IF EXISTS $SCHEMA CASCADE" -c "DROP DATABASE IF EXISTS $TARGET_DB WITH (FORCE)" -c "DROP DATABASE IF EXISTS ${TARGET_DB}_b WITH (FORCE)" -c "DROP DATABASE IF EXISTS ${TARGET_DB}_c WITH (FORCE)" -c "DROP DATABASE IF EXISTS ${TARGET_DB}_live WITH (FORCE)" >/dev/null 2>&1
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -184,6 +184,26 @@ crestore latest --execute
 ok() { [ "$(rc)" = 1 ] && grep -q "拒绝覆盖" "$T/out"; }; check "清过标记的库再恢复：拒绝覆盖" ok
 ok() { grep -q '"event":"restore_failed","alert":"restore_failed","stage":"prepare"' "$R/backup/restore-events.log"; }; check "整机重建跑法失败写进 restore-events.log（stage=prepare）" ok
 psql -q "$DATABASE_URL" -c "DROP DATABASE IF EXISTS $TARGET2 WITH (FORCE)"
+
+t "ECS 上的恢复演练（RESTORE_COMPOSE_DIR + RESTORE_DB）：恢复到另建的空库，compose 里的在用库不动"
+# FAKE_RESTORE_DB_URL 代表在用库 yuanhui（这里是一个有表的库）；RESTORE_DB 指向另一个空库
+LIVE="${TARGET_DB}_live"; TARGET3="${TARGET_DB}_c"; LIVE_URL=$(with_path "${BASE%/*}/$LIVE" "$SCHEMA"); TGT3=$(with_path "${BASE%/*}/$TARGET3" "$SCHEMA")
+psql -q "$DATABASE_URL" -c "CREATE DATABASE $LIVE" -c "CREATE DATABASE $TARGET3"
+psql -q "$LIVE_URL" -c "CREATE SCHEMA $SCHEMA" -c "CREATE TABLE $SCHEMA.live (x int)" -c "INSERT INTO $SCHEMA.live VALUES (1)"
+drestore() { PATH="$HERE/fakes:$PATH" FAKE_RESTORE_DB_URL="$LIVE_URL" RESTORE_COMPOSE_DIR="$R" bash "$HERE/../restore.sh" "$@" > "$T/out" 2>&1; echo $? > "$T/rc"; }
+: > "$FAKE_LOG"
+RESTORE_DB="$TARGET3" drestore latest --execute
+ok() { [ "$(rc)" = 0 ] && grep -q '"event":"restore_ok"' "$T/out"; }; check "--execute 退出码 0（实际 $(rc)）" ok
+check "演练库里只剩留下的店" [ "$(q "$TGT3" "SELECT string_agg(id::text, ',') FROM stores")" = "$KEEP" ]
+check "在用库没被动（还是那一张表、一行）" [ "$(q "$LIVE_URL" "SELECT count(*) FROM pg_tables WHERE schemaname = '$SCHEMA'"),$(q "$LIVE_URL" "SELECT count(*) FROM $SCHEMA.live")" = "1,1" ]
+ok() { grep -q -- "-e RESTORE_DB=$TARGET3 backup sh -c .* restore node scripts/restore.ts finish" "$FAKE_LOG" && grep -q "exec -T postgres pg_restore -U yuanhui -d $TARGET3 " "$FAKE_LOG"; }; check "node 步骤带 RESTORE_DB、pg_restore 写演练库" ok
+RESTORE_DB="$TARGET3" drestore latest --execute
+ok() { [ "$(rc)" = 0 ] && grep -q '"already_restored":true' "$T/out"; }; check "演练库重跑：already_restored（实际 $(rc)）" ok
+RESTORE_DB='yuanhui;drop' drestore latest
+check "RESTORE_DB 库名不对：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ]
+drestore latest --execute
+ok() { [ "$(rc)" = 1 ] && grep -q "拒绝覆盖" "$T/out"; }; check "不设 RESTORE_DB：目标是在用库 yuanhui，拒绝覆盖（实际 $(rc)）" ok
+psql -q "$DATABASE_URL" -c "DROP DATABASE IF EXISTS $LIVE WITH (FORCE)" -c "DROP DATABASE IF EXISTS $TARGET3 WITH (FORCE)"
 
 t "OSS 跑法没设 BACKUP_OSS_ARCHIVE_BUCKET：拒绝（deletions/ 在存档桶，读成空的话已注销的店会复活），退出码 2，不连 OSS（PR #27 Fable S10r-8）"
 # 端点指向本机一个不监听的端口：脚本真去连 OSS 的话会是「连不上」退出码 1，而不是配置检查的退出码 2
