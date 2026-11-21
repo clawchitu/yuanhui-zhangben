@@ -709,7 +709,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 - 迁移前备份门禁（§14 T20，PR #22 Codex 4、S10a-8）：`deploy.sh` 跑迁移前检查最近一次备份心跳，营业时间内超过 2 小时没更新就拒绝，带一个明确的跳过开关。
 - 备份的 RAM 账号（§14 T21、S10a-6）：备份单独用一个账号，`backups/` 只写不删，删除靠生命周期；35 天生命周期只作用于 `backups/` 前缀，`exports/`、`deletions/` 怎么过期单独定；确认两个桶没开版本控制。
 - 重放删除记录（§14 T14）：`restore.sh` 重放删除记录要列举 `deletions/`，现在 `ObjectStore.list` 只认 `images/<店>/`、`exports/<店>/` 两种前缀，要加；重放后这些店的旧令牌和重传按 401 处理。
-- 返修（PR #23 Codex、Fable，§14 S10b-1 至 S10b-11，按 Haoqiang 11/21 要求精简）：恢复标记分「恢复中」「已恢复」，已恢复的库不再被清空；compose 把 `RECOVERY_MODE`（默认 0）传给 api；`backup` 加 `memswap_limit: 256m`；整机重建改成在容器里恢复（`restore.sh` 的 `RESTORE_COMPOSE_DIR`）；目标库有大对象拒绝，`pg_restore` 口令走 `PGPASSWORD`。其余加固记为 T23–T26。
+- 返修（PR #23 Codex、Fable，§14 S10b-1 至 S10b-11，PR #23 第二轮）：恢复标记分「恢复中」「已恢复」，已恢复的库不再被清空；compose 把 `RECOVERY_MODE`（默认 0）传给 api；`backup` 加 `memswap_limit: 256m`；整机重建改成在容器里恢复（`restore.sh` 的 `RESTORE_COMPOSE_DIR`）；目标库有大对象拒绝，`pg_restore` 口令走 `PGPASSWORD`；换 epoch 用例补真实 op 重传；残留锁改 pid + 16 分钟并清残留 `work.*`；runbook 加 B10、B11，B7 和第 36 天检查移为 T23、T24。
 
 **S10c 监控与告警**
 - 要读：§9.5。
@@ -900,7 +900,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 - **客户端 IP 与限速**（§14 S03-6）：`api` 的端口只允许 Caddy 访问（只绑本机或 Compose 内部网络，不映射到公网，安全组也不放行）。接 Caddy 时打开 `TRUST_PROXY`，并且**只信一跳**（只信 Caddy 这一层给的地址，不信请求自带的整条 `X-Forwarded-For`）；默认关。S03 合并时的实现是打开后信整条头，S10a 要改成只信一跳，改完之前 `api` 端口不许对公网开。S10a 的实现按地址（§14 S03-6（补）、S10a-1）：`TRUST_PROXY=1` 必须同时配 `TRUSTED_PROXY`（Caddy 的固定地址 `172.30.0.2`，不许 `/0`），只有 TCP 对端在名单里才取 `X-Forwarded-For` 最右一项；部署时还要确认 Caddy 看到的是真实客户端 IP。
 - Compose 三个服务：`caddy`（TLS、静态页、反代；**版本锁定**，证书状态放在持久化数据卷）、`api`（Node，内存上限 512 MB 且 `memswap_limit` 同为 512 MB（§14 S10a-7），不设 `UV_THREADPOOL_SIZE`（§14 T2-3））、`postgres`（`shared_buffers=256MB`，数据卷 `/data/pg`）。图片缓存 `/data/img`。
 - 配置和密钥在 ECS 的 `/opt/yuanhui/.env`（权限 600）：数据库密码、OSS 密钥（给 RAM 子账号最小权限：api 的账号不碰 `backups/`、不能删 `deletions/`，备份另用一个账号，§14 S10a-6、T21）、快鸟 AppCode、审核号密码、备份加密口令。**任何密钥不进仓库、不进 CI 日志。**
-- **备份加密口令另存**：部署机（这台 Mac）的钥匙串，另给 Haoqiang 一份存进他 iPhone「密码」App（§14 S10b-10）。整台 ECS 丢了也要能解开备份。S10b 验收时确认。
+- **备份加密口令另存**：部署机（这台 Mac）的钥匙串，Haoqiang 的 iPhone「密码」App、纸质一份（§14 S10b-10）。整台 ECS 丢了也要能解开备份。S10b 验收时确认。
 - OSS 两个 bucket（上海，私有）：`yuanhui-img`（商品图）、`yuanhui-backup`（备份、`exports/` 导出包、`deletions/` 删除记录）。ECS 走内网 endpoint，不花流量费。
 - 发布：合并到 `main` → CI 构建镜像推 ACR（标签 = 提交号）→ 在本机跑 `deploy/deploy.sh <提交号>` → ECS 拉镜像、跑迁移、重启 `api`、探 `/healthz`，失败自动换回上一个标签。迁移必须向后兼容一个版本（先加列后用）。
 
@@ -1354,17 +1354,17 @@ S09 的 PR（#20）提了 16 条，Fable 审核裁定如下（按评论原文；
 | S10a-7 | api 内存上限算不算数 | `api` 加 `memswap_limit: 512m`，上限才是真的 512 MB。T10 记 cgroup 的 `memory.peak`，不被 OOM 杀且峰值写进 runbook 才算过 | compose、T10 |
 | S10a-8 | `image.yml` 里的推送步骤、迁移前备份门禁 | 推送步骤保留：计划的产出就是「构建并推 ACR」，没配 secrets 时跳过，本 PR 没有凭据（不采纳 Codex 10）。迁移前的备份门禁不在 S10a 做，这时还没有备份，库里只有假数据；挪到 S10b（T20）（Codex 4） | image.yml、T20 |
 | S10a-9 | 本 PR 合并算不算 S10a 完成 | 不算。部署实测另开一个 PR（只填 runbook 的数字和必要修正），第五节 13 项齐了、经审核后 S10a 才算过；在那之前 S10b 可以开工，S11b 的探针可以先连 | §8 S10a |
-| S10b-1 | 加密用 Node 自带 crypto（scrypt + AES-256-GCM），清单也加密，心跳不加密 | 同意。格式说明在 `crypto.ts` 开头 | 不用改 |
-| S10b-2 | 清单和 dump 同一快照，`pg_dump` 在 Postgres 容器里跑 | 同意 | 不用改 |
-| S10b-3 | 门禁：营业时间 2 小时、其余 6 小时；读 ECS 本地 `last-success` | 同意 | 不用改 |
-| S10b-4 | `exports/` 30 天；`deletions/` 不过期 | 同意 | 隐私政策（T25） |
-| S10b-5 | 恢复只写空库或带恢复标记的库 | 改：标记分「恢复中」「已恢复」。已恢复的库不再清空：同一备份报已恢复完成，别的备份拒绝（PR #23 Codex 1、Fable 必须改 1） | `backup/restore.ts`、`restore.sh` |
-| S10b-6 | 重放删除记录不看注销申请 | 同意。恢复输出单独一行列出将被删掉的店，人工核对 | runbook |
-| S10b-7 | 定时器由 `remote-deploy.sh` 发布成功后装；首次发布带 `--skip-backup-gate` | 同意 | 不用改 |
-| S10b-8 | `backup` 服务挂 `db`、`edge`，内存 256 MB | 同意，加 `memswap_limit: 256m` | compose |
-| S10b-9 | 备份 RAM 账号没有删除权限，删除只靠生命周期 | 同意。`PutObject` 能覆盖同名对象，第一版接受 | 不用改 |
-| S10b-10 | 备份口令保管 | 按 Haoqiang 11/21 要求精简：口令存在部署机钥匙串，另给 Haoqiang 一份存进他 iPhone「密码」App。不做三处指纹比对等流程 | runbook、cloud-manual-steps |
-| S10b-11 | 本 PR 合并算不算 S10b 完成 | 不算。部署实测 PR 填齐 runbook 的 B 表并经审核后才算；T23、T24 不阻塞 S10b | runbook |
+| S10b-1 | 加密用 Node 自带 crypto（scrypt N=2^15 + AES-256-GCM），清单也加密，心跳不加密 | 同意。每个文件新盐新 IV，头部进附加认证数据，标签验过才落明文，我改字节验过。格式说明保留在 `crypto.ts` 开头，runbook「恢复」里加一句指过去 | runbook |
+| S10b-2 | 清单和 dump 同一快照，`pg_dump` 在 Postgres 容器里跑 | 同意。跨容器导入快照在 B2 验 | runbook B2 |
+| S10b-3 | 门禁：营业时间（上海 8:00–22:59）2 小时，其余 6 小时；读 ECS 本地 `last-success` | 同意 6 小时。时间表里最长间隔是 02:30 → 8:00 的 5.5 小时，6 小时刚好罩住，再小会在凌晨误拒，再大等于营业时间外不设防。8:00 那一次没跑完之前发布会被拒，属于正确行为。读本地文件也同意：它只在上传和心跳都成功后才写，发布不用拿备份凭据。T20 字面写的是「心跳」，按此改 | 不用改 |
+| S10b-4 | `exports/` 30 天；`deletions/` 不过期 | 都同意。`exports/` 只是兜底，30 天短于 35 天，不破坏「7 + 35 天内清除」；注销卡住超过 30 天时导出包会先没，可以接受（包只在 7 天内交给黄总）。`deletions/` 永久保留：记录只有店的随机编号和时间，必须比任何含这家店的备份活得久，而生命周期可能失效，所以不设期限最稳。条件：隐私政策和注销页写明这两点（T25） | T25 |
+| S10b-5 | 恢复只写空库或带恢复标记的库 | 改：标记分「恢复中」「已恢复」两种，已恢复的不再清库（PR #23 必须改 1） | `backup/restore.ts`、`restore.sh` |
+| S10b-6 | 重放删除记录不看注销申请，新加 `replayDeletion` | 同意。恢复出来的可能是申请之前的备份，只能这么做。runbook 加人工核对删除记录那一步（建议 2） | runbook |
+| S10b-7 | 定时器由 `remote-deploy.sh` 发布成功后装，装不上退出码 4 不回滚；首次发布带 `--skip-backup-gate` | 同意 | 不用改 |
+| S10b-8 | `backup` 服务挂 `db` 和 `edge` 两个网络，内存上限 256 MB | 同意网络（api 本来也是两头都通）。加 `memswap_limit: 256m`（必须改 7） | compose |
+| S10b-9 | 备份 RAM 账号没有任何删除权限，删除只靠 35 天生命周期 | 同意。写明一条残余风险并接受：`PutObject` 可以覆盖同名对象，拿到 ECS 的人删不了备份但能把它们写坏；桶不能开版本控制（T21），所以第一版不防这一条，靠每周的云盘快照兜底。第二版候选：备份单独一个桶加合规保留策略 | runbook B3 |
+| S10b-10 | 备份口令和恢复凭据的保管（§9.1 的「另存两处」落到具体） | ① 口令由 Chitu 在这台 Mac 上生成，直接进钥匙串和 ECS 的 `.env`，不经过任何聊天软件、邮件、备忘录；② 第二处：Haoqiang 本人在这台 Mac 的终端里存进他 iPhone 的「密码」App（iCloud 钥匙串，这台 Mac 丢了还拿得到），另抄一份纸质的放家里；③ 唯一补不回来的是口令。AccessKey 丢了可以用阿里云主账号重发，所以前提是主账号的登录和二次验证在 Haoqiang 手里；④ 验收按 B5，指纹比对是可选的核对手段；⑤ 换口令时旧口令各处再留 35 天，runbook 写上；⑥ S32 的演练再核对一次（T27） | runbook「口令保管」、cloud-manual-steps |
+| S10b-11 | 本 PR 合并算不算 S10b 完成 | 不算（同 S10a-9）。部署实测 PR 填齐 B1–B6、B8–B11 并经审核后才算过；B7（T23）和第 36 天的检查（T24）不阻塞 S10b，但阻塞 S32 | runbook |
 
 ### 跨段待办与待排查（来自审核评论，不是裁定；做完在这里划掉）
 
@@ -1392,10 +1392,11 @@ S09 的 PR（#20）提了 16 条，Fable 审核裁定如下（按评论原文；
 | ~~T20~~ | ~~`deploy.sh` 跑迁移前检查最近一次备份心跳，营业时间内超过 2 小时没更新就拒绝，带一个明确的跳过开关~~ **已完成（PR #23）** | PR #22 Codex 4、Fable | S10b |
 | ~~T21~~ | ~~备份单独用一个 RAM 账号：`backups/` 只写不删，删除靠生命周期；35 天生命周期只作用于 `backups/` 前缀，`exports/`、`deletions/` 怎么过期单独定；确认两个桶没开版本控制~~ **已完成（PR #23）** | PR #22 Fable（S10a-6） | S10b |
 | T22 | S11b 探针把方案 B（包内 CA 锚点固定）一并实测，写明需要的 Info.plist 键值，不等 A 出问题再测 | PR #22 Fable（S10a-3） | S11b |
-| T23 | 换 epoch 后真手机补回：带保留 op 的测试手机恢复后拿到 `epoch_mismatch`、全量拉取、补回备份之后的流水（原 B7；服务器端已有重传用例） | PR #23 Fable | S22b |
-| T24 | 第一份备份满 36 天后看 `backup.ts status`：`lifecycle_stale` 为 false；`exports/` 里没有超过 30 天的对象 | PR #23 Fable | 部署后第 36 天，最迟 S32 |
-| T25 | 隐私政策和注销页写明：注销后保留一条不含业务数据的删除记录；导出包最长保留 30 天 | PR #23 Fable（S10b-4） | §10 |
-| T26 | 按 Haoqiang 11/21 要求精简、本 PR 不做的加固，需要时再做：备份进程被 `kill -9` 后的残留锁改用 pid / 16 分钟阈值并清残留 `work.*`、跳过也记状态（Fable 必须改 6）；资源影响实测（原 B10）、云盘自动快照核对（原 B11）；告警接上 `backup_failed`、`backup_lifecycle_stale`、`restore_failed` | PR #23 Fable | S10c 或出问题时 |
+| T23 | 换 epoch 后真手机补回：带保留 op 的测试手机恢复后拿到 `epoch_mismatch`、全量拉取、补回备份之后的流水（原 B7） | PR #23 Fable | S22b |
+| T24 | 第一份备份满 36 天后看 `backup.ts status`：`lifecycle_stale` 为 false、最旧一份不超过 36 天；`exports/` 里没有超过 30 天的对象 | PR #23 Fable | 部署后第 36 天，最迟 S32 |
+| T25 | 隐私政策和注销页写明：注销后永久保留一条不含业务数据的删除记录（店的随机编号和时间）；导出包最长保留 30 天 | PR #23 Fable（S10b-4） | §10 |
+| T26 | 告警接上：`backup_failed`、`backup_lifecycle_stale`、`consecutive_failures ≥ 2`、备份被跳过（锁）、`gate-skips.log` 有新行、`restore_failed` | PR #23 Fable | S10c |
+| T27 | 上线前演练时再核对一次口令三份（可用指纹），并确认阿里云主账号的登录和二次验证可用 | PR #23 Fable（S10b-10） | S32 |
 
 T2 的 PR（#15）定了 4 条，Fable 审核裁定如下：
 

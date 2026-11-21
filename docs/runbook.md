@@ -27,13 +27,14 @@ Compose（`deploy/compose.yml`）：
 - `current-tag` 只在整套成功后写；失败时它保持上一个成功的标签。退出码：0 成功；1 失败已回滚（或首次发布没有可回的）；2 参数 / `.env` 不对，什么都没动；3 回滚也失败，需人工；4 发布成功但备份定时器没装上；5 备份门禁拒绝，什么都没动。
 - 手工回滚 = 用上一个标签再跑一次 `deploy.sh`。
 - **迁移前备份门禁**（S10b，§14 T20）：`remote-deploy.sh` 动任何东西之前看 `/opt/yuanhui/backup/last-success`，营业时间（上海 8:00–22:59）超过 2 小时、其余时间超过 6 小时没有成功备份 → 退出码 5、什么都不动。先在 ECS 上 `bash /opt/yuanhui/backup.sh`，成功再发布。确需跳过（首次发布、备份本身坏了要发修复）加 `--skip-backup-gate`，每次跳过记进 `/opt/yuanhui/backup/gate-skips.log`（时间、标签、原因）。
+- 发布避开整点和 02:30 之后的两三分钟：迁移的 DDL 会排在正在跑的 `pg_dump` 后面，排队期间那张表的读写都要等。
 - 发布成功后会装上 `backup.sh` 和 `yuanhui-backup.{service,timer}` 并 `enable --now`；这一步失败退出码 4（发布本身已成功，不回滚）。
 - 只改了 Caddyfile：用当前标签再跑一次 `deploy.sh`，会校验后 `caddy reload`。
 
 ## 备份与恢复（S10b，§9.4）
 **时间表**：`yuanhui-backup.timer`，上海时间 8:00–22:00 每小时一次、02:30 一次（`systemctl list-timers yuanhui-backup.timer` 看下一次）。错过的开机补跑。
-**一次备份**（`/opt/yuanhui/backup.sh`，也可手动跑）：`backup` 容器开可重复读事务、`pg_export_snapshot()`、在同一快照里算清单 → Postgres 容器里 `pg_dump -Fc --snapshot=<同一快照>` → `backup` 容器用口令加密（scrypt + AES-256-GCM）→ 传 `backups/<UTC 时间>-<随机>.dump.enc` 和 `.manifest.enc` → 写心跳 `heartbeat/backup.json` → 写 `backup/last-success`。不重叠（`backup/lock.d`，60 分钟以上算残留）。
-**清单**：每张表的行数；每家店的流水条数、`value_delta_fen` 合计、`cogs_fen` 合计、商品库存 / 货值 / 最近进价的校验和、每条流水数量 / 金额 / 成本的校验和、本月和上月月报全部数字。和 dump 同一快照，恢复后逐项比对必须全等。
+**一次备份**（`/opt/yuanhui/backup.sh`，也可手动跑）：`backup` 容器开可重复读事务、`pg_export_snapshot()`、在同一快照里算清单 → Postgres 容器里 `pg_dump -Fc --snapshot=<同一快照>` → `backup` 容器用口令加密（scrypt + AES-256-GCM）→ 传 `backups/<UTC 时间>-<随机>.dump.enc` 和 `.manifest.enc` → 写心跳 `heartbeat/backup.json` → 写 `backup/last-success`。不重叠（`backup/lock.d`，里面记 pid）：上一次还在跑就跳过，退出码 2，打 `alert=backup_skipped` 并记进 `backup/skips.log` 和 `metrics.prom` 的 `last_skip_timestamp_seconds`；持锁进程已不在（`kill -9`、OOM、强制重启）或锁超过 16 分钟（`TimeoutStartSec=900`）算残留，清掉照常跑。拿到锁后先删上一次残留的 `backup/work.*`（明文 dump）。
+**清单**：每张表的行数；每家店的流水条数、`value_delta_fen` 合计、`cogs_fen` 合计、商品库存 / 货值 / 最近进价的校验和、每条流水数量 / 金额 / 成本的校验和、本月和上月月报全部数字。和 dump 同一快照，恢复后逐项比对必须全等。**不覆盖**商品名、售价、条码内容、设备和账号（这些表只比行数），它们靠 dump 的 sha256 和 `pg_restore --exit-on-error` 保证，清单不是全量校验。加密格式（scrypt + AES-256-GCM）见 `server/src/backup/crypto.ts` 开头（§14 S10b-1）。
 **保留**：备份账号删不了任何对象；`backups/` 35 天后由 OSS 生命周期删除（`cloud-manual-steps.md` 第 3 步）。每次备份顺带列一遍 `backups/`，最旧的一份超过 36 天打 `alert=backup_lifecycle_stale`（生命周期没生效）。
 **可观测**（S10c 接告警）：
 - `journalctl -u yuanhui-backup`：每次一行 JSON，`event=backup_ok`（`backup_id`、`dump_bytes`、`duration_s`），或 `event=backup_failed`、`alert=backup_failed`、`stage=prepare|snapshot|dump|upload`；
@@ -70,8 +71,18 @@ Compose（`deploy/compose.yml`）：
 - 开：`.env` 里改 `RECOVERY_MODE=1`，`C up -d api`，`C exec -T api printenv RECOVERY_MODE` 输出 `1`。
 - 关（补交完就关）：改回 `RECOVERY_MODE=0`，`C up -d api`，同一条命令输出 `0`。
 
-### 口令保管
-备份口令存在部署机（这台 Mac）的钥匙串（`yuanhui-backup-passphrase`），另给 Haoqiang 一份存进他 iPhone 的「密码」App（§14 S10b-10）。
+### 口令保管（§9.1、§14 S10b-10）
+备份口令丢了所有备份都解不开，补不回来；备份账号的 AccessKey 丢了可以用阿里云主账号重发。口令留三份，不经过聊天软件、邮件、备忘录：
+1. 部署机（这台 Mac）的钥匙串：`security add-generic-password -s yuanhui-backup-passphrase -a yuanhui -w "$(openssl rand -base64 32)"`；写进 ECS 时走管道、不显示：`printf 'BACKUP_PASSPHRASE=%s\n' "$(security find-generic-password -s yuanhui-backup-passphrase -w)" | ssh root@47.117.184.253 'cat >> /opt/yuanhui/.env'`。AccessKey 存 `-s yuanhui-backup-oss`。
+2. Haoqiang 的 iPhone「密码」App：他本人在这台 Mac 的终端里 `security find-generic-password -s yuanhui-backup-passphrase -w | pbcopy`，粘贴进「密码」App 新建的「元辉账本 备份口令」（存 iCloud 钥匙串，手机上能打开），然后 `pbcopy < /dev/null`。AccessKey 同样存一项。
+3. 纸质一份：只抄口令，放家里。
+4. Haoqiang 确认阿里云主账号的登录密码和二次验证在他本人手里（AccessKey 丢了靠它重发）。
+5. 换口令时旧口令各处再留 35 天（旧备份还要用它解）。
+
+可选：核对各份是否一致，各算一次口令 sha256 的前 12 位，只比指纹、不报口令：
+- ECS：`sed -n 's/^BACKUP_PASSPHRASE=//p' /opt/yuanhui/.env | tr -d '\n' | sha256sum | cut -c1-12`
+- Mac：`security find-generic-password -s yuanhui-backup-passphrase -w | tr -d '\n' | shasum -a 256 | cut -c1-12`
+- 「密码」App 或纸质：`read -rs P; printf %s "$P" | shasum -a 256 | cut -c1-12; unset P`（粘贴或照纸敲入）
 
 ## 看日志、看证书
 - 容器状态：`docker compose -f /opt/yuanhui/compose.yml --project-directory /opt/yuanhui --env-file /opt/yuanhui/.env ps`
@@ -121,18 +132,20 @@ Compose（`deploy/compose.yml`）：
 | 12 | T9 ①–⑥ | ① 20 个真实条码命中率 / 有图率；② 真实录制件替换手写夹具、定判别字段；③ 条款原文摘进 `docs/image-rights.md`；④ 计费是预付次数包、用完即停；⑤ 真实 OSS 往返、RAM 只能读写 `images/`；⑥ 条码格式过滤做不做 | 待测 |
 | 13 | 重启 | `reboot` 后三个容器自己起来（`restart: unless-stopped`），`swapon --show` 仍有 `/swapfile`，`smoke.sh` 通过 | 待测 |
 
-### S10b 部署时验证（真机器上才能做，数字写回这里和部署实测 PR；没做完 S10b 不算通过）
+### S10b 部署时验证（真机器上才能做，数字写回这里和部署实测 PR；B1–B6、B8–B11 没做完 S10b 不算通过，§14 S10b-11）
 原 B7（真手机换 epoch 后补回）和第 36 天的生命周期检查不在这里等，记在 §14 待办 T23、T24。
 | # | 项 | 方法 | 结果 |
 |---|---|---|---|
-| B1 | 定时器在 ECS 上按时跑 | `systemctl list-timers yuanhui-backup.timer` 的下一次时间对得上（上海 8:00–22:00 整点、02:30）；跑过一个营业日后 `journalctl -u yuanhui-backup --since today` 里 15 次 `backup_ok`，桶里 `backups/` 多 15 对对象 | 待测 |
+| B1 | 定时器在 ECS 上按时跑 | `systemctl list-timers yuanhui-backup.timer` 的下一次时间对得上（上海 8:00–22:00 整点、02:30）；跑过一个营业日后 `journalctl -u yuanhui-backup --since today` 里 15 次 `backup_ok`，桶里 `backups/` 多 15 对对象；ECS `reboot` 之后定时器仍是 `enabled`，下一次按时跑 | 待测 |
 | B2 | 跨容器快照 | 第一次 `bash /opt/yuanhui/backup.sh` 成功（`pg_dump --snapshot` 在 Postgres 容器里导入 backup 容器导出的快照）；记 `duration_s`、`dump_bytes` | 待测 |
-| B3 | 真实 OSS 读写 | 备份账号：`backups/` 分片上传（`putFile`）、读、列举，`deletions/` 列举、读，心跳读写各成功一次；`cloud-manual-steps.md` 第 4 步的负测全部 403 | 待测 |
+| B3 | 真实 OSS 读写 | 备份账号：`backups/` 分片上传（`putFile`）、读、列举，`deletions/` 列举、读，心跳读写各成功一次；`cloud-manual-steps.md` 第 4 步的负测全部 403。`PutObject` 能覆盖已有对象是已知并接受的（§14 S10b-9），不算负测失败 | 待测 |
 | B4 | 生命周期、版本控制 | `ossutil lifecycle --method get` 的输出贴进 PR：`backups/` 35 天、`exports/` 30 天、`deletions/` 无；两个桶「版本控制」未开通；第 36 天的检查见 §14 T24 | 待测 |
-| B5 | 口令另存 | Mac 钥匙串里有 `yuanhui-backup-passphrase`；Haoqiang 确认 iPhone「密码」App 里有一份（只确认有，不贴值） | 待测 |
-| B6 | 异机恢复演练 | 在 Mac 上只凭 OSS 和钥匙串按上面「恢复」做一遍：`restore_ok`、清单逐项一致、注销的店不在；记 `restore_seconds`（RTO 目标 1 小时以内，含下载） | 待测 |
+| B5 | 口令三份 | 按「口令保管」：Mac 钥匙串有 `yuanhui-backup-passphrase`、`yuanhui-backup-oss`；Haoqiang 确认 iPhone「密码」App 里有两项、纸质一份已放好、主账号登录和二次验证在他手里（不贴值）。可选附三处 12 位指纹 | 待测 |
+| B6 | 异机恢复演练 | 在 Mac 上只凭 OSS 和钥匙串按上面「恢复」做一遍：`restore_ok`、清单逐项一致、注销的店不在；再在恢复出来的库上起一个本机 api：`/healthz` 200、用新 epoch 同步一次 200；记 `restore_seconds` 和从开始到这一步的总时长（RTO 目标 1 小时以内，含下载） | 待测 |
 | B8 | 迁移前门禁 | 营业时间内停掉定时器超过 2 小时后发布 → 退出码 5；`--skip-backup-gate` 能发布且 `gate-skips.log` 有记录；恢复定时器 | 待测 |
 | B9 | 失败信号 | 临时把 `.env` 的 `BACKUP_OSS_ACCESS_KEY_SECRET` 改错跑一次：`backup_failed stage=upload`、`metrics.prom` 的 `last_ok 0`、`consecutive_failures` 加 1、心跳不变；改回后下一次清零 | 待测 |
+| B10 | 资源影响 | S10a 压测的 3 年数据量下，压测进行中手动跑 3 次 `backup.sh`：记 `duration_s`、`backup` 容器内存峰值（cgroup `memory.peak`）、备份期间 `/v1/sync` 的 p95 和不备份时的对比、`free -m` 最低值；没有容器被 OOM 杀 | 待测 |
+| B11 | 云盘自动快照（§9.4） | 每周一次、留 4 份的策略已挂到这块盘上，截图或导出贴进部署实测 PR | 待测 |
 
 ## 关掉商品图开关时清第三方图（T12）
 1. `.env` 里 `PRODUCT_IMAGES_ENABLED=0`，用当前标签跑 `deploy.sh --execute` 重启 api。

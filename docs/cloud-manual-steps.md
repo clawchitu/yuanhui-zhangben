@@ -65,7 +65,8 @@
 ```
   - AccessKey 写进 ECS `/opt/yuanhui/.env` 的 `BACKUP_OSS_ACCESS_KEY_ID` / `BACKUP_OSS_ACCESS_KEY_SECRET`（compose 只把它们给 `backup` 服务，api 容器拿不到）。
   - 负测（结果写进部署实测 PR）：`ossutil rm oss://yuanhui-backup/backups/<任一>` → 403；`ossutil cp x oss://yuanhui-backup/deletions/x.json` → 403；`ossutil cp x oss://yuanhui-img/images/x` → 403；`ossutil ls oss://yuanhui-backup/exports/` → 403；`backups/` 写、读、列举和 `deletions/` 列举、读各成功一次。
-  - **加密口令 `BACKUP_PASSPHRASE`（`openssl rand -base64 32`）**存在部署机（这台 Mac）的钥匙串（`security add-generic-password -s yuanhui-backup-passphrase -a yuanhui -w`，AccessKey 存 `-s yuanhui-backup-oss`），另给 Haoqiang 一份存进他 iPhone 的「密码」App（§14 S10b-10）。
+  - **加密口令 `BACKUP_PASSPHRASE`（`openssl rand -base64 32`）**存在部署机（这台 Mac）的钥匙串（`security add-generic-password -s yuanhui-backup-passphrase -a yuanhui -w`，AccessKey 存 `-s yuanhui-backup-oss`），另给 Haoqiang 一份存进他 iPhone 的「密码」App，再抄一份纸质；Haoqiang 确认阿里云主账号登录和二次验证在他手里。步骤见 `docs/runbook.md`「口令保管」（§14 S10b-10）。
+- [ ] 云盘自动快照策略（每周、留 4 份）挂到 ECS 的系统盘 / 数据盘上，验收见 runbook B11。
 - [ ] AccessKey 只写进 ECS `/opt/yuanhui/.env`（600）和 Mac 钥匙串，不进仓库、不进 CI。
 
 ## 5. ACR（个人版，上海）
