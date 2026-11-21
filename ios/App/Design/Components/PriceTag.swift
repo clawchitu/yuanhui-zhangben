@@ -74,11 +74,14 @@ struct PriceTag<Footer: View>: View {
     var initial: String?
     /// 下面一栏的上下留白（卖出页 03 的「买几个」栏比陈列页紧一点）
     var footerVerticalPadding: CGFloat = 12
+    /// 紧凑版（卖出页 03）：黄底上下留白收小，单价收掉 DIN 多出来的行高，整块比原来矮约 23pt，贴近稿子
+    var compact = false
     let footer: Footer
 
     init(name: String, caption: String = "刚扫的 · 单价", unitPriceCents: Int, thumb: Image? = nil, initial: String? = nil,
-         footerVerticalPadding: CGFloat = 12, @ViewBuilder footer: () -> Footer) {
+         footerVerticalPadding: CGFloat = 12, compact: Bool = false, @ViewBuilder footer: () -> Footer) {
         self.footerVerticalPadding = footerVerticalPadding
+        self.compact = compact
         self.name = name
         self.caption = caption
         self.unitPriceCents = unitPriceCents
@@ -91,7 +94,7 @@ struct PriceTag<Footer: View>: View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 14) {
                 Thumb(image: thumb, initial: initial)
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: compact ? 0 : 6) {
                     Text(name)
                         .font(TypeScale.title)
                         .fixedSize(horizontal: false, vertical: true)
@@ -99,17 +102,19 @@ struct PriceTag<Footer: View>: View {
                         HStack(alignment: .lastTextBaseline) {
                             captionText
                             Spacer(minLength: 8)
-                            PriceText(cents: unitPriceCents)
+                            price
                         }
                         VStack(alignment: .leading, spacing: 2) {
                             captionText
-                            PriceText(cents: unitPriceCents)
+                            price
                         }
                     }
                 }
             }
             .foregroundStyle(Tokens.Palette.ink)
-            .padding(16)
+            .padding(.horizontal, 16)
+            .padding(.top, compact ? 12 : 16)
+            .padding(.bottom, compact ? 14 : 16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Tokens.Palette.tag)
             if Footer.self != EmptyView.self {
@@ -125,6 +130,10 @@ struct PriceTag<Footer: View>: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.card))
         .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(Tokens.Palette.ink, lineWidth: 2.5))
+    }
+
+    private var price: some View {
+        PriceText(cents: unitPriceCents).padding(.vertical, compact ? -6 : 0)
     }
 
     private var captionText: some View {

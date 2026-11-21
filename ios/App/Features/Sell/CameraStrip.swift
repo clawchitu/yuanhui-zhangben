@@ -44,7 +44,7 @@ struct CameraStrip: View {
     static let labelSize: CGFloat = 17
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {   // 不用 Group：Group 会把下面的标识套到 NoCameraBand 上，盖掉 scanner.noCamera
             if permission.access == .denied {
                 NoCameraBand(onManual: onManual)
             } else {

@@ -162,7 +162,7 @@ struct FocusLineCard: View {
 
     var body: some View {
         PriceTag(name: line.name, caption: caption, unitPriceCents: Int(SellModel.unitPriceFen(line)),
-                 initial: line.name.first.map(String.init), footerVerticalPadding: 6) {
+                 initial: line.name.first.map(String.init), footerVerticalPadding: 6, compact: true) {
             HStack {
                 Text("买几个").font(TypeScale.body.weight(.bold)).foregroundStyle(Tokens.Palette.ink)
                 Spacer(minLength: 8)
@@ -319,7 +319,7 @@ struct CheckoutPanel: View {
     private var empty: Bool { model.basket.isEmpty }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             summaryRow
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .bottom, spacing: 12) {
@@ -375,9 +375,9 @@ struct CheckoutPanel: View {
         .minimumScaleFactor(0.6)
     }
 
+    /// 「抹零 / 改总价」：稿子上是 24pt 粗体、约 176×56；字号固定不缩（左右留白收小，不靠 minimumScaleFactor 压字）
     private var discountButton: some View {
-        PrimaryButton("抹零 / 改总价", style: .ghost, size: .small, action: onDiscount)
-            .frame(width: 180)
+        DiscountButton(action: onDiscount)
             .disabled(!model.canChangePaid)
             .accessibilityIdentifier("sell.discount")
     }
@@ -389,10 +389,33 @@ struct CheckoutPanel: View {
                 .foregroundStyle(Tokens.Palette.ink2)
             FittingPrice(cents: model.paidTotalFen, sizes: [Tokens.FixedFontSize.total, 48, 36, 28],
                          color: empty ? Tokens.Palette.mute : Tokens.Palette.ink)
-                .padding(.vertical, -7)   // DIN 的行高比字身高出一截，收掉，让总价底边和左边按钮底边齐（03）
-                .padding(.top, 4)
+                .padding(.vertical, -10)   // DIN 的行高比字身高出一截，收掉，让总价底边和左边按钮底边齐（03）
                 .accessibilityIdentifier("sell.total")
         }
+    }
+}
+
+/// 结算区的「抹零 / 改总价」描边按钮；不可用时灰边灰字（同 `PrimaryButton` 的置灰样式）
+struct DiscountButton: View {
+    var action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    static let fontSize: CGFloat = 24
+    static let size = CGSize(width: 176, height: 56)
+
+    var body: some View {
+        let color = isEnabled ? Tokens.Palette.ink : PrimaryButton.disabledGhost
+        Button(action: action) {
+            Text("抹零 / 改总价")
+                .font(.system(size: Self.fontSize, weight: .bold))
+                .lineLimit(1)
+                .fixedSize()
+                .foregroundStyle(color)
+                .frame(width: Self.size.width, height: Self.size.height)
+                .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.button).strokeBorder(color, lineWidth: 2))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressDimStyle())
     }
 }
 

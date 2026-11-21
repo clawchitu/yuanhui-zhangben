@@ -34,6 +34,14 @@ final class S15UITests: XCTestCase {
                       "收银员到了：\(visited.intersection(Self.cashierForbidden))", file: file, line: line)
         XCTAssertFalse(visited.contains("page.denied"), "收银员界面上出现了没能力的入口", file: file, line: line)
         XCTAssertTrue(visited.isSuperset(of: Self.cashierReachable), "\(visited)", file: file, line: line)
+        assertSellEmptyGreyed(walker, file: file, line: line)
+    }
+
+    /// 卖出页空篮：记账和抹零按钮置灰是允许的（遍历时记为「置灰（允许）」，不算没点到）
+    private func assertSellEmptyGreyed(_ walker: Walker, file: StaticString, line: UInt) {
+        for id in ["sell.commit", "sell.discount"] {
+            XCTAssertTrue(walker.covered(page: "page.sell", label: id), "\(id) 应被列为允许置灰", file: file, line: line)
+        }
     }
 
     /// 验收：收银员形态下遍历所有可点元素，到不了进货、看账、商品、盘点、快过期、开通（普通首页 02）
@@ -56,6 +64,7 @@ final class S15UITests: XCTestCase {
         XCTAssertTrue(visited.isSuperset(of: ["page.home", "page.sell", "page.settings", "page.undoLast",
                                               "page.scanner", "page.privacy", "page.logout"]), "\(visited)", file: file, line: line)
         XCTAssertFalse(visited.contains("page.denied"), file: file, line: line)
+        assertSellEmptyGreyed(walker, file: file, line: line)
         // 弹窗分支（「自己填…」）每个按钮都按过，填的名字出现后也被点过
         XCTAssertTrue(walker.covered(page: "alert.给这台手机起个名字", label: "不填了"), file: file, line: line)
         XCTAssertTrue(walker.covered(page: "alert.给这台手机起个名字", label: "好了"), file: file, line: line)
@@ -334,6 +343,8 @@ final class Walker {
     static let typedName = "遍历填的名"
     /// 只用来导航的「返回」：不当作待测入口（每次回原页都在按它）
     static let navigationOnly: Set<String> = ["返回"]
+    /// 允许置灰的入口（页面 · 标识）：卖出页空篮时的「收好钱了，记账」和「抹零 / 改总价」（S16 验收：空篮置灰）
+    static let allowedDisabled: Set<String> = ["page.sell · sell.commit", "page.sell · sell.discount"]
 
     let args: [String]
     var app: XCUIApplication
@@ -408,7 +419,16 @@ final class Walker {
                 let k = Key(type: s.elementType, identifier: s.identifier, label: s.label)
                 signature.append("\(k)@\(Int(s.frame.minY))")
                 if seen.insert(k).inserted { out.append(k) }
-                if !s.isEnabled { uncovered.append("\(currentPage()) · \(k) 不可用（灰）") }
+                if !s.isEnabled {
+                    let item = "\(currentPage()) · \(k)"
+                    if Self.allowedDisabled.contains(item) {
+                        if !records.contains(where: { "\($0.page) · \($0.item)" == item }) {
+                            records.append(Record(page: currentPage(), item: k.description, outcome: "置灰（允许）"))
+                        }
+                    } else {
+                        uncovered.append("\(item) 不可用（灰）")
+                    }
+                }
             }
             s.children.forEach(walk)
         }
