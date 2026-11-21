@@ -162,7 +162,7 @@ Compose（`deploy/compose.yml`）：
 | 服务存活 | `healthz_down` | 本机 + 云监控站点监控 | 连续 2 次（20 分钟）失败 |
 | CPU、内存、磁盘 | 云监控规则；`disk_usage` | 云监控 + 服务器 | > 80% |
 | 证书（T19） | `ip_cert_expiry` | 本机 | 剩余 < 48 小时或链不受信任；续期记进 `cert-renewals.jsonl` |
-| 备份心跳、失败（T26） | `backup_heartbeat_stale`、`backup_failed`、`backup_consecutive_failures`、`backup_lifecycle_stale`、`backup_skipped`、`backup_gate_skipped`、`restore_failed` | 服务器 | 营业时间 2 小时 / 其余 6 小时；连续失败 ≥ 2 升严重 |
+| 备份心跳、失败（T26） | `backup_heartbeat_stale`、`backup_failed`、`backup_consecutive_failures`、`backup_lifecycle_stale`、`backup_skipped`、`backup_gate_skipped`、`restore_failed` | 服务器 | 营业时间 2 小时（从 8:00 起算，不在 8:00 切换时误报）/ 任何时候 6 小时；连续失败 ≥ 2 升严重 |
 | 营业时间没有同步 | `no_sync:<店>` | 服务器 | 8:00–21:00 超过 3 小时 |
 | 接口错误率 | `http_5xx_rate` | 服务器 | 一小时 > 20 次 |
 | 快鸟额度（S08-3 条件二） | `kuainiao_store_daily:<店>`、`kuainiao_quota` | 服务器 | 单店当天 ≥ 200 次；网关报额度用完 / 限流 |

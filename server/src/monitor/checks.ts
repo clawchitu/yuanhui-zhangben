@@ -60,10 +60,15 @@ export function heartbeatVerdict(lastSuccessS: number | null, now: Date): Verdic
   const business = h >= 8 && h <= 22;
   const max = business ? THRESHOLDS.heartbeatBusinessMs : THRESHOLDS.heartbeatOffHoursMs;
   if (!lastSuccessS) return { active: true, details: { reason: "没有任何成功的备份记录", max_minutes: max / 60_000 } };
-  const age = now.getTime() - lastSuccessS * 1000;
+  const last = lastSuccessS * 1000;
+  const age = now.getTime() - last;
+  // 营业时间的 2 小时只从当天 8:00 起算（同 noSyncVerdict）：8:00 那一刻上一份还是夜里 02:30 的，
+  // 直接按 2 小时比会每天早上误报一条「严重」再跟一条「已恢复」（PR #25 Fable 建议 1）。6 小时的上限任何时候都管。
+  const sinceOpen = now.getTime() - Math.max(last, shanghaiAt(now, 8).getTime());
+  const active = age > THRESHOLDS.heartbeatOffHoursMs || (business && sinceOpen > THRESHOLDS.heartbeatBusinessMs);
   return {
-    active: age > max,
-    details: { last_success: new Date(lastSuccessS * 1000).toISOString(), age_minutes: Math.floor(age / 60_000), max_minutes: max / 60_000 },
+    active,
+    details: { last_success: new Date(last).toISOString(), age_minutes: Math.floor(age / 60_000), max_minutes: max / 60_000 },
   };
 }
 

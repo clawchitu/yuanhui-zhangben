@@ -178,7 +178,7 @@ describe("LogTap：日志解析", () => {
 
 describe("阈值", () => {
   it("备份心跳：营业时间（8:00–22:59）2 小时，其余 6 小时；没有成功记录直接告警", () => {
-    const at10 = sh("2026-11-20T10:00:00");
+    const at10 = sh("2026-11-20T10:30:00");
     const s = (d: Date) => d.getTime() / 1000;
     expect(heartbeatVerdict(s(new Date(at10.getTime() - 2 * H)), at10).active).toBe(false);
     expect(heartbeatVerdict(s(new Date(at10.getTime() - 2 * H - 1000)), at10).active).toBe(true);
@@ -189,6 +189,16 @@ describe("阈值", () => {
     const at759 = sh("2026-11-20T07:59:00");
     expect(heartbeatVerdict(s(sh("2026-11-20T02:31:00")), at759).active).toBe(false);
     expect(heartbeatVerdict(null, at10)).toMatchObject({ active: true });
+    // 8:00 切到 2 小时时不误报（PR #25 Fable 建议 1）：02:30 那份到 8:00 已 5.5 小时，8:00 的备份还在跑，
+    // 营业时间的 2 小时只从 8:00 起算；8:00 那份没出来，到 08:30 由 6 小时上限报出来
+    const night = s(sh("2026-11-20T02:30:00"));
+    for (const t of ["08:00:00", "08:00:30", "08:15:00", "08:30:00"]) expect(heartbeatVerdict(night, sh(`2026-11-20T${t}`)).active, t).toBe(false);
+    expect(heartbeatVerdict(night, sh("2026-11-20T08:30:01")).active).toBe(true);
+    // 白天照旧 2 小时：08:01 那份之后到 10:01 没新的就报
+    expect(heartbeatVerdict(s(sh("2026-11-20T08:01:00")), sh("2026-11-20T10:01:00")).active).toBe(false);
+    expect(heartbeatVerdict(s(sh("2026-11-20T08:01:00")), sh("2026-11-20T10:01:01")).active).toBe(true);
+    // 夜里那份也没有：6 小时规则在营业时间照样管（01:00 那份到 8:30 已 7.5 小时）
+    expect(heartbeatVerdict(s(sh("2026-11-20T01:00:00")), sh("2026-11-20T08:30:00")).active).toBe(true);
   });
   it("营业时间无同步：只数 8:00 之后、21:00 之前；超过 3 小时才告警", () => {
     const last = sh("2026-11-19T20:30:00"); // 昨晚最后一次
