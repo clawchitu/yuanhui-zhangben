@@ -1,7 +1,7 @@
 // 记账 op 写库（§5.1、§5.2、§5.6 第 2、3 条，§14 S05-1…S05-4）：sale_batch / stock_in / opening。
 // 调用方（push.ts）已拿店铺锁、判过权限和 schema，并先写好 ops 这一行（entries.op_id 外键指向它）。
 // 每个 op 在自己的 savepoint「ledger」里写：能在写库前判定的问题（0 件进货、乘积上限、列范围、年份 0000 的 expiry_date、
-// entry_id / batch_id 已被占用）抛 LedgerInvalid / CostError / AllocationError → 回滚这个 op 写过的行，rejected invalid 并留档。
+// entry_id / batch_id 已被占用，含服务器派生的冲销行、补偿行 id）抛 LedgerInvalid / CostError / AllocationError → 回滚这个 op 写过的行，rejected invalid 并留档。
 // 之后写库时再出 22xxx 不在这里接，由 push.ts 让整个请求 500（§14 S04-14）。
 // 每改一行取一个新号；每次库存变动 stock_ver + 1；期初写 last_count_at。同一个 op 产生的流水 seq 连续递增（cost_fix 冲销相邻依赖它）。
 import { derivedId } from "./ids.ts";
@@ -130,7 +130,10 @@ export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRo
   const step = settle(stateOf(prod), rawStep, late);
   let seq = await nextSeq(tx);
   for (const [i, d] of step.entries.entries()) {
-    const id = i === 0 && main.id !== undefined ? main.id.toLowerCase() : derivedId(tx.storeId, "entry", ctx.opId.toLowerCase(), String(seq));
+    const derived = !(i === 0 && main.id !== undefined);
+    const id = derived ? derivedId(tx.storeId, "entry", ctx.opId.toLowerCase(), String(seq)) : main.id!.toLowerCase();
+    // 派生 id 可以事先算出来（同一台手机、或以后确认入账的被踢设备选的 op id）：撞上已有流水和主流水一样 rejected invalid，不让主键冲突变成 500
+    if (derived) await entryFree(tx, id);
     await tx.trx
       .insertInto("entries")
       .values({

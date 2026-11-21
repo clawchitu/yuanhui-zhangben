@@ -5,6 +5,7 @@ import { createTestDb, type TestDb } from "./helpers/db.ts";
 import { bearer, login, makeApp, makeLoginShop, pair, TestClock } from "./helpers/auth.ts";
 import { allKeys, op, pullAll, syncOk, upsertFull } from "./helpers/sync.ts";
 import { assertDbLedger as assertDbLedgerIn } from "./helpers/ledger.ts";
+import { derivedId } from "../src/ledger/ids.ts";
 
 let tdb: TestDb;
 beforeAll(async () => {
@@ -242,5 +243,23 @@ describe("收银员拉到真实流水（⑨）", () => {
     const family = await pullAll(app, boss.token, shop.epoch);
     await app.close();
     expect(new Set(family.snapshot().entries.map((e: { type: string }) => e.type))).toEqual(new Set(["opening", "stock_in", "sale", "cost_fix", "cost_adjust"]));
+  });
+});
+
+describe("服务器派生的流水 id 撞上已有流水（PR #20 Fable 必须改 1）", () => {
+  it("冲销行的派生 id 事先被一笔进货占了：撤销 rejected invalid，重发同样结果，不是 500；占位那笔不动", async () => {
+    const { shop, send, newProduct } = await setup();
+    const a = await newProduct();
+    await send(opening(a, 10, { unit_cost_fen: 100 })); // seq 1
+    const voidId = randomUUID();
+    // 冲销行会落在 seq 3：抢先用它的派生 id 记一笔进货（seq 2），再撤销这笔进货
+    const squat = op("stock_in", { entry_id: derivedId(shop.storeId, "entry", voidId, "3"), product_id: a, barcode: "6900000000001", pack_qty: 1, pack_count: 2, unit_cost_fen: 100 }, { at: AT });
+    expect(await send(squat)).toEqual([{ id: squat.id, status: "applied" }]);
+    const v = op("void", { target: { entry_id: squat.payload.entry_id } }, { id: voidId, at: "2026-11-20T01:59:30Z" });
+    expect(await send(v)).toEqual([{ id: v.id, status: "rejected", code: "invalid" }]);
+    expect(await send(v)).toEqual([{ id: v.id, status: "rejected", code: "invalid", replayed: true }]);
+    const es = await entriesOf(shop.storeId, a);
+    expect(es.map((e) => [e.type, e.voided_at])).toEqual([["opening", null], ["stock_in", null]]);
+    await assertDbLedger(shop.storeId, a);
   });
 });
