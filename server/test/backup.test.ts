@@ -8,12 +8,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import pg from "pg";
+import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb, quoteIdent, type Db } from "../src/db.ts";
 import { BackupCryptoError, decryptBuffer, decryptFile, encryptBuffer, encryptFile } from "../src/backup/crypto.ts";
 import { backupStatus, listBackups, uploadBackup, withBackupSnapshot } from "../src/backup/backup.ts";
-import { diffManifests, type Manifest } from "../src/backup/manifest.ts";
-import { RestoreError, fetchBackup, finishRestore, inspectTarget, listDeletions, prepareTarget, resolveBackup } from "../src/backup/restore.ts";
+import { computeManifest, diffManifests, type Manifest } from "../src/backup/manifest.ts";
+import { RestoreError, clearMarker, fetchBackup, finishRestore, inspectTarget, listDeletions, prepareTarget, resolveBackup } from "../src/backup/restore.ts";
 import { purgeStore } from "../src/jobs/account-purge.ts";
 import { DELETE_GRACE_MS } from "../src/auth/session.ts";
 import { HEARTBEAT_KEY, LocalDirObjectStore, MemoryObjectStore, backupKeys, deletionKey } from "../src/lookup/oss.ts";
@@ -117,6 +118,13 @@ async function pgDump(snapshot: string, file: string) {
   await run(`${PG_BIN}pg_dump`, ["-d", databaseUrl(), "-n", tdb.schema, "-Fc", `--snapshot=${snapshot}`, "-f", file]);
 }
 
+/** 一个商品的库存、货值，和它的卖出流水条数、成本合计 */
+async function stockOf(db: Db, pid: string) {
+  const p = await db.kysely.selectFrom("products").select(["stock_qty", "stock_value_fen"]).where("id", "=", pid).executeTakeFirstOrThrow();
+  const e = await sql<{ n: string; c: string }>`SELECT count(*)::text AS n, coalesce(sum(cogs_fen), 0)::text AS c FROM entries WHERE product_id = ${pid}`.execute(db.kysely);
+  return { qty: Number(p.stock_qty), value: Number(p.stock_value_fen), entries: Number(e.rows[0]!.n), cogs: Number(e.rows[0]!.c) };
+}
+
 async function newDatabase(): Promise<{ name: string; url: string }> {
   const name = `yh_restore_${randomBytes(4).toString("hex")}`;
   const c = new pg.Client({ connectionString: databaseUrl() });
@@ -135,7 +143,7 @@ async function dropDatabase(name: string) {
 }
 
 describe("备份 → 删库 → 恢复 → 重放删除记录", () => {
-  it("和备份清单逐项一致；已注销的店不复活、旧令牌 401；没注销的店换 epoch 后能握手同步；重跑恢复结果一样", { timeout: 120_000 }, async () => {
+  it("和备份清单逐项一致；已注销的店不复活、旧令牌 401；没注销的店换 epoch 后补回备份之后的流水；恢复中可重来，恢复完成后不再清库", { timeout: 120_000 }, async () => {
     const clock = new TestClock(NOW);
     const bucket = new MemoryObjectStore(); // yuanhui-backup：备份、删除记录在同一个桶
     const keep = await makeShop(clock);
@@ -169,9 +177,11 @@ describe("备份 → 删库 → 恢复 → 重放删除记录", () => {
     await writeFile(path.join(dir, "junk"), "pg_dump: error: connection failed");
     await expect(uploadBackup(bucket, { dumpFile: path.join(dir, "junk"), manifest, passphrase: PASS, now: clock.now(), workDir: dir })).rejects.toThrow(/PGDMP/);
 
-    // ── 备份之后：继续记账、清除一家店（往 deletions/ 写记录），然后删库 ──
+    // ── 备份之后：继续记账（这一笔恢复后要靠手机重传补回）、清除一家店（往 deletions/ 写记录），然后删库 ──
     clock.advance(30 * 60_000);
-    await keep.io.send(saleOp([{ pid: keep.pids[1]!, n: 1, price: 2350 }], clock.now().toISOString()).op);
+    const lateSale = saleOp([{ pid: keep.pids[1]!, n: 1, price: 2350 }], clock.now().toISOString()).op;
+    await keep.io.send(lateSale);
+    const liveBefore = await stockOf(tdb, keep.pids[1]!);
     await expire(doomed.storeId, clock, bucket);
     await tdb.drop();
 
@@ -185,38 +195,75 @@ describe("备份 → 删库 → 恢复 → 重放删除记录", () => {
       await expect(fetchBackup(bucket, id, "wrong-passphrase-0123456789", out)).rejects.toThrow(BackupCryptoError);
       const { manifest: got, dumpFile: restoredDump } = await fetchBackup(bucket, id, PASS, out);
       expect(got.stores).toEqual(manifest.stores);
+      const pgRestore = () => run(`${PG_BIN}pg_restore`, ["-d", target.url, "--no-owner", "--no-acl", "--exit-on-error", restoredDump]);
 
       rdb = createDb({ connectionString: target.url, searchPath: tdb.schema, max: 2 });
       expect(await prepareTarget(rdb.kysely, id, true)).toBe("empty");
-      expect((await inspectTarget(rdb.kysely)).marked).toBe(false); // dry-run 什么都不改
-      await prepareTarget(rdb.kysely, id, false);
-      await run(`${PG_BIN}pg_restore`, ["-d", target.url, "--no-owner", "--no-acl", "--exit-on-error", restoredDump]);
+      expect((await inspectTarget(rdb.kysely)).state).toBe("empty"); // dry-run 什么都不改
+      expect(await prepareTarget(rdb.kysely, id, false)).toBe("empty");
+      expect(await inspectTarget(rdb.kysely)).toMatchObject({ state: "restoring", backupId: id });
+      await pgRestore();
 
-      const dry = await finishRestore(rdb.kysely, bucket, got, { dryRun: true });
-      expect(dry).toMatchObject({ dry_run: true, deletions: 2, replayed: [doomed.storeId], epochs_rotated: 0 });
-      expect(await rdb.kysely.selectFrom("stores").select("id").where("id", "=", doomed.storeId).executeTakeFirst()).toBeTruthy();
-
-      const rep = await finishRestore(rdb.kysely, bucket, got, { dryRun: false });
-      expect(rep).toMatchObject({ dry_run: false, deletions: 2, replayed: [doomed.storeId], epochs_rotated: 1 });
-      await checkRestored(rdb, got);
-
-      // ── 重跑整次恢复（幂等）：之前恢复的库会被清空重来，结果一样 ──
+      // ── 中途断了（恢复中）：重跑会清空重来 ──
       expect(await prepareTarget(rdb.kysely, id, false)).toBe("reset");
-      await run(`${PG_BIN}pg_restore`, ["-d", target.url, "--no-owner", "--no-acl", "--exit-on-error", restoredDump]);
-      expect(await finishRestore(rdb.kysely, bucket, got, { dryRun: false })).toMatchObject({ replayed: [doomed.storeId], epochs_rotated: 1 });
-      await checkRestored(rdb, got);
+      await pgRestore();
 
-      // ── 恢复后库里的数被改过 → 比对报错（演示「改坏后失败」）──
-      expect(await prepareTarget(rdb.kysely, id, false)).toBe("reset");
-      await run(`${PG_BIN}pg_restore`, ["-d", target.url, "--no-owner", "--no-acl", "--exit-on-error", restoredDump]);
+      // ── 恢复后库里的数被改过 → 比对报错（演示「改坏后失败」），还是「恢复中」，可以重来 ──
       await rdb.kysely.updateTable("entries").set({ cogs_fen: 1 }).where("store_id", "=", keep.storeId).where("type", "=", "sale").execute();
       await expect(finishRestore(rdb.kysely, bucket, got, { dryRun: false })).rejects.toThrow(/cogs_fen|entries_checksum/);
+      expect((await inspectTarget(rdb.kysely)).state).toBe("restoring");
+      expect(await prepareTarget(rdb.kysely, id, false)).toBe("reset");
+      await pgRestore();
+
+      const dry = await finishRestore(rdb.kysely, bucket, got, { dryRun: true });
+      expect(dry).toMatchObject({ dry_run: true, deletions: 2, replayed: [doomed.storeId], epochs_rotated: 0, backup_id: id });
+      expect(await rdb.kysely.selectFrom("stores").select("id").where("id", "=", doomed.storeId).executeTakeFirst()).toBeTruthy();
+      expect((await inspectTarget(rdb.kysely)).state).toBe("restoring");
+
+      const rep = await finishRestore(rdb.kysely, bucket, got, { dryRun: false });
+      expect(rep).toMatchObject({ dry_run: false, deletions: 2, replayed: [doomed.storeId], epochs_rotated: 1, backup_id: id });
+      expect(await inspectTarget(rdb.kysely)).toMatchObject({ state: "restored", backupId: id });
+      const fresh = await checkRestored(rdb, got);
+
+      // ── 换 epoch 后手机重传备份之后的那一笔（§4.6）：旧 epoch 不应用；新 epoch 入账一次；再发一遍不重复 ──
+      expect(await stockOf(rdb, keep.pids[1]!)).toEqual({ qty: liveBefore.qty + 1, value: expect.any(Number), entries: liveBefore.entries - 1, cogs: expect.any(Number) });
+      const app = makeApp(tdb, { clock, db: rdb });
+      try {
+        const stale = await sync(app, keep.token, { epoch: keep.epoch, ops: [lateSale], pull: false });
+        expect(stale.status).toBe(409);
+        expect(stale.body).toMatchObject({ code: "epoch_mismatch", epoch: fresh });
+        expect(await rdb.kysely.selectFrom("ops").select("id").where("id", "=", lateSale.id).execute()).toEqual([]);
+        const r1 = await sync(app, keep.token, { epoch: fresh, ops: [lateSale], pull: true });
+        expect(r1.status, JSON.stringify(r1.body)).toBe(200);
+        expect((r1.body as { results: Array<{ status: string }> }).results.map((x) => x.status)).toEqual(["applied"]);
+        const r2 = await sync(app, keep.token, { epoch: fresh, ops: [lateSale], pull: false });
+        expect((r2.body as { results: Array<{ status: string; replayed?: boolean }> }).results).toMatchObject([{ status: "applied", replayed: true }]);
+      } finally {
+        await app.close();
+      }
+      // 库存、货值、成本、流水条数都回到删库前的样子（这一笔只入账一次）
+      expect(await stockOf(rdb, keep.pids[1]!)).toEqual(liveBefore);
+
+      // ── 已恢复完成、又记了新账的库：再跑同一次恢复 → 「已恢复完成」，什么都不动；别的备份 → 拒绝；finish 也拒绝 ──
+      expect(await prepareTarget(rdb.kysely, id, true)).toBe("done");
+      expect(await prepareTarget(rdb.kysely, id, false)).toBe("done");
+      expect(await stockOf(rdb, keep.pids[1]!)).toEqual(liveBefore);
+      expect(await rdb.kysely.selectFrom("ops").select("id").where("id", "=", lateSale.id).execute()).toHaveLength(1);
+      await expect(prepareTarget(rdb.kysely, "20991231T000000Z-0123456789abcdef", false)).rejects.toThrow(/恢复完成/);
+      await expect(finishRestore(rdb.kysely, bucket, got, { dryRun: false })).rejects.toThrow(/恢复中/);
+      expect((await rdb.kysely.selectFrom("stores").select("epoch").executeTakeFirstOrThrow()).epoch).toBe(fresh);
+
+      // ── 整机重建：清掉标记后它就是普通的在用库，任何恢复都拒绝 ──
+      expect(await clearMarker(rdb.kysely)).toBe("foreign");
+      await expect(prepareTarget(rdb.kysely, id, true)).rejects.toThrow(/拒绝覆盖/);
+      expect(await stockOf(rdb, keep.pids[1]!)).toEqual(liveBefore);
     } finally {
       await rdb?.close();
       await dropDatabase(target.name);
     }
 
-    async function checkRestored(db: Db, m: Manifest) {
+    /** 校验恢复结果，返回 keep 店的新 epoch */
+    async function checkRestored(db: Db, m: Manifest): Promise<string> {
       const ids = (await db.kysely.selectFrom("stores").select(["id", "epoch"]).execute());
       expect(ids.map((s) => s.id)).toEqual([keep.storeId]);
       expect(ids[0]!.epoch).not.toBe(keep.epoch);
@@ -227,7 +274,7 @@ describe("备份 → 删库 → 恢复 → 重放删除记录", () => {
         [{ store_id: doomed.storeId }, { store_id: early.storeId }].sort((a, b) => a.store_id.localeCompare(b.store_id)),
       );
       // 备份之后记的那笔不在：keep 店和清单逐项一致
-      const now = await db.kysely.transaction().setIsolationLevel("repeatable read").execute((trx) => import("../src/backup/manifest.ts").then((x) => x.computeManifest(trx, new Date(m.taken_at))));
+      const now = await db.kysely.transaction().setIsolationLevel("repeatable read").execute((trx) => computeManifest(trx, new Date(m.taken_at)));
       expect(diffManifests(m, now, { excludeStores: [doomed.storeId], skipTables: true })).toEqual([]);
       // 旧令牌：已清除的店 401；没清除的店握手得到 epoch_mismatch，换新 epoch 后同步正常
       const app = makeApp(tdb, { clock, db });
@@ -235,11 +282,26 @@ describe("备份 → 删库 → 恢复 → 重放删除记录", () => {
         expect((await sync(app, doomed.token, { epoch: doomed.epoch, ops: [], pull: true })).status).toBe(401);
         const r1 = await sync(app, keep.token, { epoch: keep.epoch, ops: [], pull: true });
         expect(JSON.stringify(r1.body)).toContain("epoch_mismatch");
-        const fresh = await sync(app, keep.token, { epoch: ids[0]!.epoch, ops: [], pull: true });
-        expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
+        const ok = await sync(app, keep.token, { epoch: ids[0]!.epoch, ops: [], pull: true });
+        expect(ok.status, JSON.stringify(ok.body)).toBe(200);
       } finally {
         await app.close();
       }
+      return ids[0]!.epoch;
+    }
+  });
+
+  it("目标库里有大对象（本项目不用）→ 拒绝，空库判断也算上它", async () => {
+    const t = await newDatabase();
+    const db = createDb({ connectionString: t.url, max: 1 });
+    try {
+      await sql`SELECT lo_create(0)`.execute(db.kysely);
+      expect((await inspectTarget(db.kysely)).state).toBe("foreign");
+      await expect(prepareTarget(db.kysely, "20261120T030000Z-0123456789abcdef", true)).rejects.toThrow(/大对象/);
+      await expect(prepareTarget(db.kysely, "20261120T030000Z-0123456789abcdef", false)).rejects.toThrow(/大对象/);
+    } finally {
+      await db.close();
+      await dropDatabase(t.name);
     }
   });
 
