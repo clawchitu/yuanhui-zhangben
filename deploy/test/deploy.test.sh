@@ -221,7 +221,8 @@ check "load 完删掉了 tar" [ ! -e "$T/remote/incoming/yuanhui-images-$NEW.tar
 check ".env 指向 local/yuanhui/api:新标签（实际 $(envimg)）" [ "$(envimg)" = "local/yuanhui/api:$NEW" ]
 unset A
 setup; with_prev; export FAKE_IMAGE_PRESENT=1; deploy "$NEW" --execute
-check "不带 tar、本机已有镜像：不 docker pull（实际 $(rc)）" [ "$(rc)" = 0 ] && no grep -q "^docker pull" "$FAKE_LOG"
+check "不带 tar、本机已有镜像：退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
+check "不带 tar、本机已有镜像：不 docker pull" no grep -q "^docker pull" "$FAKE_LOG"
 unset FAKE_IMAGE_PRESENT
 setup; with_prev; deploy "$NEW" --execute
 check "不带 tar、本机没有镜像：照常 docker pull" grep -q "^docker pull $REG/api:$NEW" "$FAKE_LOG"
