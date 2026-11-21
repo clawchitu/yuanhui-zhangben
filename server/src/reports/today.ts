@@ -44,13 +44,13 @@ async function topSellers(db: Q, storeId: string, from: Bound, to: Bound): Promi
 }
 
 /**
- * 快没货：没停用、库存动过（stock_ver > 0，从没进过货也没卖过的新登记商品不算）、库存 ≤ 提醒线
+ * 快没货：没停用、不是待确认（needs_review 的库存没人数过，已在「待确认」里提醒，§14 S07-6）、库存动过（stock_ver > 0，从没进过货也没卖过的新登记商品不算）、库存 ≤ 提醒线
  * （商品自己的 low_at，没设就用店里的 low_stock_default）。按库存从少到多。
  */
 async function lowStock(db: Q, storeId: string): Promise<ProductAmount[]> {
   const r = await sql<{ id: string; name: string; stock_qty: number }>`
     SELECT p.id, p.name, p.stock_qty FROM products p JOIN stores s ON s.id = p.store_id
-    WHERE p.store_id = ${storeId} AND p.archived_at IS NULL AND p.stock_ver > 0
+    WHERE p.store_id = ${storeId} AND p.archived_at IS NULL AND NOT p.needs_review AND p.stock_ver > 0
       AND p.stock_qty <= COALESCE(p.low_at, s.low_stock_default)
     ORDER BY p.stock_qty, p.name, p.id`.execute(db);
   return r.rows.map((x) => ({ product_id: x.id, name: x.name, qty: x.stock_qty }));

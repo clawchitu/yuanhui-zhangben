@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
 import { TestClock, bearer, login, makeApp, makeLoginShop, pair } from "./helpers/auth.ts";
-import { op, upsertFull } from "./helpers/sync.ts";
+import { op, upsertFull, upsertQuick } from "./helpers/sync.ts";
 import { SH, allEntries, expectMonthMatches, recompute, saleOp, shopIO, stockInOp, voidOp } from "./helpers/reports.ts";
 
 let tdb: TestDb;
@@ -481,6 +481,27 @@ describe("返修（PR #18 Codex / Fable 第一轮）", () => {
     const line = readFileSync(new URL("../../contracts/openapi.yaml", import.meta.url), "utf8").split("\n").find((l) => /^\s+stock_value_end_fen: .*description/.test(l))!;
     expect(line).toContain("下个月第一刻（上海时间）之前全部流水");
     expect(line).not.toContain("本月则为现在");
+    await s.app.close();
+  });
+
+  it("快没货不出负数（Fable 1，§14 S07-6）：quick 登记没进货就卖 → 待确认，不进快没货；正式登记没进货就卖 → 照列（手机显示没货了）", async () => {
+    const s = await setup();
+    const q = upsertQuick({ name: "临时货", price: 500 });
+    await s.send(q);
+    const quick = q.payload.product_id as string;
+    expect((await prod(s.shop.storeId, quick)).needs_review).toBe(true);
+    const formal = await s.product({ price: 300, name: "正式没进货" });
+    await s.send(saleOp([{ pid: quick, n: 3, price: 500 }], SH("2026-11-20T09:00:00")).op, saleOp([{ pid: formal, n: 2, price: 300 }], SH("2026-11-20T09:05:00")).op);
+    expect([(await prod(s.shop.storeId, quick)).stock_qty, (await prod(s.shop.storeId, formal)).stock_qty]).toEqual([-3, -2]);
+    const t = await s.get("/v1/reports/today", "ReportToday");
+    expect(t.low_stock).toEqual([{ product_id: formal, name: "正式没进货", qty: -2 }]);
+    // 补全之后不再待确认，按数到的库存照常判断
+    const p = await prod(s.shop.storeId, quick);
+    await s.send(op("product_review_complete", { entry_id: randomUUID(), product_id: quick, counted_qty: 1, unit_cost_fen: 300, base_ver: Number(p.stock_ver) }, { at: SH("2026-11-20T10:00:00") }));
+    expect((await s.get("/v1/reports/today")).low_stock).toEqual([
+      { product_id: formal, name: "正式没进货", qty: -2 },
+      { product_id: quick, name: "临时货", qty: 1 },
+    ]);
     await s.app.close();
   });
 });
