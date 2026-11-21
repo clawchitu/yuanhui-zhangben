@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # 在 ECS 上执行的发布步骤：由 deploy/deploy.sh 传到 /opt/yuanhui/incoming/ 后调用，不要在本机跑。
-# 用法：bash /opt/yuanhui/incoming/remote-deploy.sh <提交号> <镜像仓库>
+# 用法：bash /opt/yuanhui/incoming/remote-deploy.sh <提交号> <镜像仓库> [--skip-backup-gate]
 # 状态：/opt/yuanhui/current-tag 只在整套发布成功后写；.env 的 API_IMAGE 在切换时改、失败时改回；
 #       上一份 compose.yml / Caddyfile 备在 prev/，失败时一起换回（Codex 3、Fable 必须改 2）。
-# 迁移前的备份门禁不在这里：S10a 时还没有备份、库里只有假数据，挪到 S10b（§14 S10a-8、T20）。
+# 迁移前备份门禁（S10b，§14 T20）：动任何东西之前看 backup/last-success（backup.sh 上传和心跳都成功才写）。
+#   营业时间（上海 8:00–22:59）超过 2 小时、其余时间超过 6 小时（22:00 → 02:30 → 8:00 的间隔最长 5.5 小时）没有成功备份
+#   → 拒绝发布，退出码 5。--skip-backup-gate 跳过（首次发布还没有备份时用），跳过一律记进 backup/gate-skips.log。
+# 发布成功后装上 backup.sh 和备份定时器（yuanhui-backup.timer）；装不上退出码 4（发布本身已成功）。
 set -euo pipefail
 umask 077
-TAG="${1:-}"; REG="${2:-}"
+TAG="${1:-}"; REG="${2:-}"; SKIP_GATE=0
+[ "${3:-}" = --skip-backup-gate ] && SKIP_GATE=1
 [[ $TAG =~ ^[0-9a-f]{7,40}$ ]] || { echo "标签不对：$TAG" >&2; exit 2; }
 [[ $REG =~ ^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9][a-z0-9._-]*$ || $REG == "<ACR>/yuanhui" ]] || { echo "镜像仓库不对：$REG" >&2; exit 2; }
 IN=$(cd "$(dirname "$0")" && pwd)
@@ -22,6 +26,27 @@ set_image() { { grep -v '^API_IMAGE=' "$ENV" || true; echo "API_IMAGE=$1"; } > "
 PREV=$(cat "$D/current-tag" 2>/dev/null || true)
 PREV_IMAGE=$(envval API_IMAGE)
 echo "上一个标签：${PREV:-（无）} → 新标签：$TAG"
+
+# ── 0. 迁移前备份门禁（T20）──
+backup_gate() {
+  local now last age hour max
+  now=${GATE_NOW:-$(date +%s)}   # GATE_NOW 只给测试用
+  last=$(cat "$D/backup/last-success" 2>/dev/null || true)
+  hour=$(TZ=Asia/Shanghai date -d "@$now" +%H 2>/dev/null || TZ=Asia/Shanghai date -r "$now" +%H)
+  if [ "$((10#$hour))" -ge 8 ] && [ "$((10#$hour))" -le 22 ]; then max=7200; else max=21600; fi
+  if [[ $last =~ ^[0-9]+$ ]]; then age=$((now - last)); else age=""; fi
+  if [ -n "$age" ] && [ "$age" -le "$max" ]; then echo "备份门禁：最近一次成功备份在 $((age / 60)) 分钟前"; return 0; fi
+  local why="${age:+最近一次成功备份在 $((age / 60)) 分钟前（上限 $((max / 60)) 分钟）}"; why=${why:-没有任何成功的备份记录}
+  if [ "$SKIP_GATE" = 1 ]; then
+    mkdir -p "$D/backup"
+    printf '%s tag=%s 跳过备份门禁：%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TAG" "$why" >> "$D/backup/gate-skips.log"
+    echo "警告：--skip-backup-gate，跳过备份门禁（$why），已记入 backup/gate-skips.log" >&2
+    return 0
+  fi
+  echo "备份门禁：$why，拒绝在迁移前发布。先在 ECS 上跑 bash $D/backup.sh，成功后再发布；确需跳过加 --skip-backup-gate" >&2
+  exit 5
+}
+backup_gate
 
 healthy() {
   for _ in $(seq 1 30); do
@@ -87,4 +112,14 @@ if release; then
   echo "发布成功：$TAG"
 else
   rollback
+fi
+
+# ── 4. 装上备份脚本和定时器（S10b）。发布本身已经成功，这里失败不回滚，退出码 4 ──
+UNITS="${SYSTEMD_DIR:-/etc/systemd/system}"   # SYSTEMD_DIR 只给测试用
+if cp "$IN/backup.sh" "$D/backup.sh" && cp "$IN/yuanhui-backup.service" "$IN/yuanhui-backup.timer" "$UNITS/" \
+  && systemctl daemon-reload && systemctl enable --now yuanhui-backup.timer; then
+  echo "备份定时器已启用（systemctl list-timers yuanhui-backup.timer）"
+else
+  echo "发布成功，但备份脚本或定时器没装上，需人工处理（看 systemctl status yuanhui-backup.timer）" >&2
+  exit 4
 fi

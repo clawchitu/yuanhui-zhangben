@@ -97,6 +97,26 @@ services:
     networks: [db]
     depends_on:
       postgres: { condition: service_healthy }
+  # 备份 / 恢复命令（S10b）：只由 backup.sh 用 docker compose run 起，跑完即删。用当前 api 镜像里的 scripts/backup.ts。
+  # 凭据是备份专用的 RAM 账号（§14 T21），和 api 的 OSS 账号分开；api 容器拿不到这些变量，也拿不到 BACKUP_PASSPHRASE。
+  # 要连库（db）也要出网传 OSS（edge，动态地址，不占 caddy / api 的固定地址）。
+  backup:
+    profiles: [tools]
+    image: ${API_IMAGE:?}
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+    mem_limit: 256m
+    environment:
+      <<: *api-env
+      BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:-}
+      BACKUP_OSS_REGION: ${OSS_REGION:-}
+      BACKUP_OSS_ENDPOINT: ${OSS_ENDPOINT:-}
+      BACKUP_OSS_BUCKET: ${OSS_ARCHIVE_BUCKET:-}
+      BACKUP_OSS_ACCESS_KEY_ID: ${BACKUP_OSS_ACCESS_KEY_ID:-}
+      BACKUP_OSS_ACCESS_KEY_SECRET: ${BACKUP_OSS_ACCESS_KEY_SECRET:-}
+    networks: [db, edge]
+    depends_on:
+      postgres: { condition: service_healthy }
   postgres:
     image: ${POSTGRES_IMAGE:?填 ACR 上的 postgres:16，见 deploy/.env.example}
     restart: unless-stopped

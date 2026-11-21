@@ -10,6 +10,10 @@
 #   FAKE_UNHEALTHY_IMAGE=<子串>  api 镜像含这个子串时只有 /healthz 探测失败，缩图冒烟照常通过（专测 healthy 这一步）
 #   FAKE_CADDY_INVALID=1        caddy validate 失败
 #   FAKE_CADDY_RELOAD_FAIL=1    caddy reload 失败
+# 备份（S10b，backup.test.sh）：compose run … backup node scripts/backup.ts … 转给本机 node 跑真脚本
+#   （FAKE_BACKUP_SERVER=server 目录，连 FAKE_BACKUP_DB_URL，对象写 FAKE_BACKUP_STORE 目录，-v <宿主>:/work 照样映射）；
+#   compose exec postgres pg_dump … 转给本机 pg_dump（FAKE_PG_URL、FAKE_PG_SCHEMA）。
+#   FAKE_PGDUMP_FAIL=1 pg_dump 失败；FAKE_UPLOAD_FAIL=1 上传失败
 # FAKE_REAL_COMPOSE=<真 compose 可执行文件>：每次 compose 调用再让真 Compose 对同样的 -f / --env-file / 环境
 #   跑一次 config -q，两边任一报错都算失败（CI 用真 docker compose，本机可用独立的 docker-compose v2 二进制）
 # 和真 Compose 一样：任何 compose 子命令都先对整份 compose.yml 插值，必填变量（${X:?}）解析为空就报错退出 1，
@@ -47,6 +51,26 @@ caddy_cmd() {
   esac
   return 0
 }
+backup_run() { # compose run [选项] backup node scripts/backup.ts <参数…>
+  local host="" a args=() seen=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -v) host=${2%%:/work}; shift 2; continue ;;
+      node) seen=1; shift 2; continue ;;   # 跳过 node 和脚本路径
+    esac
+    [ $seen = 1 ] && { a=$1; args+=("${a//\/work/$host}"); }
+    shift
+  done
+  if [ "${args[0]:-}" = upload ] && [ "${FAKE_UPLOAD_FAIL:-0}" = 1 ]; then echo '{"event":"backup_upload_failed","code":"fake"}' >&2; return 1; fi
+  DATABASE_URL=$FAKE_BACKUP_DB_URL BACKUP_STORE_DIR=$FAKE_BACKUP_STORE BACKUP_PASSPHRASE=${FAKE_BACKUP_PASSPHRASE:-} \
+    node "$FAKE_BACKUP_SERVER/scripts/backup.ts" "${args[@]}"
+}
+pg_dump_run() {
+  local a snap=""
+  for a in "$@"; do case "$a" in --snapshot=*) snap=$a ;; esac; done
+  [ "${FAKE_PGDUMP_FAIL:-0}" = 1 ] && { echo "pg_dump: error: fake" >&2; return 1; }
+  pg_dump -d "$FAKE_PG_URL" -n "$FAKE_PG_SCHEMA" -Fc ${snap:+"$snap"}
+}
 case "${1:-}" in
   pull) [ "${FAKE_PULL_FAIL:-0}" = 1 ] && exit 1; exit 0 ;;
   exec) shift; [ "${1:-}" = -T ] && shift; c=$1; shift
@@ -76,6 +100,7 @@ case "$sub" in
     if [ -n "${FAKE_UP_FAIL_IMAGE:-}" ] && [[ $img == *"$FAKE_UP_FAIL_IMAGE"* ]]; then echo "fake compose: up 失败（${img}）" >&2; exit 1; fi
     touch "$S/pg_up"; echo "$img" > "$S/api_image"; exit 0 ;;
   run)
+    for a in "$@"; do [ "$a" = backup ] && { backup_run "$@"; exit; }; done
     nodeps=0; for a in "$@"; do [ "$a" = --no-deps ] && nodeps=1; done
     if [ $nodeps = 1 ] && [ ! -f "$S/pg_up" ]; then echo "fake compose: 连不上 postgres（没起来）" >&2; exit 1; fi
     touch "$S/pg_up"
@@ -83,6 +108,6 @@ case "$sub" in
     echo "migrate $(api_from_env)" >> "$S/migrations"; exit 0 ;;
   exec)
     [ "${1:-}" = -T ] && shift; c=$1; shift
-    case "$c" in api) api_exec "$@"; exit ;; caddy) caddy_cmd "$@"; exit ;; esac; exit 0 ;;
+    case "$c" in api) api_exec "$@"; exit ;; caddy) caddy_cmd "$@"; exit ;; postgres) [ "${1:-}" = pg_dump ] && { pg_dump_run "$@"; exit; } ;; esac; exit 0 ;;
   *) exit 0 ;;
 esac
