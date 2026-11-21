@@ -456,6 +456,35 @@ export function deletionRecord(storeId: string, purgedAt: Date): Buffer {
  */
 export const RESCAN_DELAY_MS = 60 * 60_000;
 
+/** 一遍扫描最多来回几次；超过还没扫干净（一直有新东西冒出来）就算这一遍失败，下一轮重来 */
+const SWEEP_ROUNDS = 3;
+
+/**
+ * 按前缀清一家店的 images/、exports/：先中止未完成的分片上传，再列举删除对象（PR #20 Codex 第三轮 2）。
+ * 反过来的话，分片上传恰好在「列对象」和「列分片」之间完成，两边都看不到它。先中止再列对象：中止前完成的会被列对象看到；
+ * 中止之后它就完成不了。再保险一点：来回做到某一次两边都是空的才算扫干净，最多 SWEEP_ROUNDS 次，还不干净就抛错。
+ * 未完成的分片上传（传到一半失败、中止也失败留下的残片，Codex 第二轮 3）delete 删不掉，只能按前缀列出来逐个中止。
+ */
+async function sweepStorePrefixes(storeId: string, archive: ObjectStore, images: ObjectStore | null): Promise<void> {
+  const stores: Array<[ObjectStore, string]> = [[archive, storePrefix("exports", storeId)]];
+  if (images) stores.unshift([images, storePrefix("images", storeId)]);
+  for (let round = 0; round < SWEEP_ROUNDS; round++) {
+    let found = 0;
+    for (const [store, prefix] of stores) {
+      for (const u of await store.listUploads(prefix)) {
+        found++;
+        await store.abortUpload(u.key, u.uploadId);
+      }
+      for (const k of await store.list(prefix)) {
+        found++;
+        await store.delete(k);
+      }
+    }
+    if (!found) return;
+  }
+  throw Object.assign(new Error("对象一直在冒出来，这一遍没扫干净"), { code: "sweep_not_quiet" });
+}
+
 /**
  * 对象清理：对 store_purges 里还没清完的店，按前缀删商品图、导出包、未完成的分片上传和本机缓存。
  * 每一遍成功记 swept_at；清除后满 RESCAN_DELAY_MS 才开始的那一遍成功了才记 objects_cleared_at（返回值里只列这些店）。
@@ -489,11 +518,7 @@ export async function clearPurgedObjects(d: AccountJobDeps, limit = 20): Promise
       try {
         // 删除记录在清除时已写过；这里再写一遍（幂等），保证对象清理完时它一定在
         await archive.put(deletionKey(row.store_id), deletionRecord(row.store_id, new Date(row.purged_at)), "application/json");
-        if (images) for (const k of await images.list(storePrefix("images", row.store_id))) await images.delete(k);
-        for (const k of await archive.list(storePrefix("exports", row.store_id))) await archive.delete(k);
-        // 未完成的分片上传（传到一半失败、中止也失败留下的残片，Codex 第二轮 3）：delete 删不掉，按前缀列出来逐个中止
-        if (images) for (const u of await images.listUploads(storePrefix("images", row.store_id))) await images.abortUpload(u.key, u.uploadId);
-        for (const u of await archive.listUploads(storePrefix("exports", row.store_id))) await archive.abortUpload(u.key, u.uploadId);
+        await sweepStorePrefixes(row.store_id, archive, images);
         await removeStoreDir(d.imageCacheDir, "images", row.store_id);
         await trx
           .updateTable("store_purges")

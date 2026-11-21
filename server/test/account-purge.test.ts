@@ -962,6 +962,69 @@ describe("满 7 天删除", () => {
     await s.app.close();
   });
 
+  it("复扫时分片上传恰好完成（列举对象和列举分片上传之间落地）：不会两边都漏掉还记清完（PR #20 Codex 第三轮 2）", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "恰好传完店");
+    const d = deps(clock);
+    const t = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    clock.advance(DELETE_GRACE_MS + 1);
+    expect((await runAccountPurges(d)).purged).toContain(s.storeId);
+    // 一个在途的导出包分片上传，和一个在途的商品图分片上传
+    const exp = `exports/${s.storeId}/${String(T0).padStart(13, "0")}-${"c".repeat(16)}.zip`;
+    const img = imageKey(s.storeId, s.productIds[0]!, 1, "ef".repeat(32));
+    d.archive.uploads.set("exp-late", exp);
+    d.images.uploads.set("img-late", img);
+    // 复扫列举分片上传的那一刻，两个上传都恰好完成：分片记录没了，对象落地
+    for (const [store, id, key] of [[d.archive, "exp-late", exp], [d.images, "img-late", img]] as const) {
+      const listUploads = store.listUploads.bind(store);
+      let done = false;
+      store.listUploads = async (prefix) => {
+        if (!done && key.startsWith(prefix)) {
+          done = true;
+          store.uploads.delete(id);
+          await store.put(key, Buffer.from("x"), "application/octet-stream");
+        }
+        return listUploads(prefix);
+      };
+    }
+    clock.advance(60 * 60_000);
+    const cleared = await clearPurgedObjects(d);
+    // 记了清完，就不能留着刚落地的对象；留着就不能记清完
+    if (cleared.includes(s.storeId)) {
+      expect(await d.archive.list(storePrefix("exports", s.storeId))).toEqual([]);
+      expect(await d.images.list(storePrefix("images", s.storeId))).toEqual([]);
+    }
+    expect(cleared).toContain(s.storeId);
+    expect([...d.archive.uploads.keys(), ...d.images.uploads.keys()]).toEqual([]);
+    await s.app.close();
+  });
+
+  it("复扫时对象一直冒出来（来回 3 次还不干净）：这一遍不记清完、记原因，下一轮重来（PR #20 Codex 第三轮 2）", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "一直冒对象店");
+    const d = deps(clock);
+    const t = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    clock.advance(DELETE_GRACE_MS + 1);
+    expect((await runAccountPurges(d)).purged).toContain(s.storeId);
+    const listUploads = d.archive.listUploads.bind(d.archive);
+    let n = 0;
+    let noisy = true;
+    d.archive.listUploads = async (prefix) => {
+      if (noisy && prefix === storePrefix("exports", s.storeId)) d.archive.uploads.set(`u-${n++}`, `exports/${s.storeId}/${String(T0).padStart(13, "0")}-${"d".repeat(16)}.zip`);
+      return listUploads(prefix);
+    };
+    clock.advance(60 * 60_000);
+    expect(await clearPurgedObjects(d)).not.toContain(s.storeId);
+    const p = await tdb.kysely.selectFrom("store_purges").select(["objects_cleared_at", "last_error"]).where("store_id", "=", s.storeId).executeTakeFirstOrThrow();
+    expect([p.objects_cleared_at, p.last_error]).toEqual([null, "sweep_not_quiet"]);
+    expect(n).toBe(3);
+    noisy = false;
+    expect(await clearPurgedObjects(d)).toContain(s.storeId);
+    await s.app.close();
+  });
+
   it("演示店的审核号申请注销满 7 天也不删（每日重置会撤回）", async () => {
     const clock = new TestClock(T0);
     const demo = await makeLoginShop(tdb, { demo: true });
