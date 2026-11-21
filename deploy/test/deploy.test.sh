@@ -226,9 +226,11 @@ unset FAKE_IMAGE_PRESENT
 setup; with_prev; deploy "$NEW" --execute
 check "不带 tar、本机没有镜像：照常 docker pull" grep -q "^docker pull $REG/api:$NEW" "$FAKE_LOG"
 setup; with_prev; IMAGES_TAR="$T/nope.tar.gz" deploy "$NEW" --execute
-check "tar 不存在：退出码 2、没有 ssh（实际 $(rc)）" [ "$(rc)" = 2 ] && [ ! -s "$FAKE_LOG" ]
+check "tar 不存在：退出码 2、没有 ssh（实际 $(rc)）" [ "$(rc)" = 2 ]
+check "tar 不存在：退出码 2、没有 ssh（实际 $(rc)）（第二个条件）" [ ! -s "$FAKE_LOG" ]
 setup; with_prev; printf x > "$T/a;b.tar"; IMAGES_TAR="$T/a;b.tar" deploy "$NEW" --execute
-check "tar 文件名带分号：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ] && [ ! -s "$FAKE_LOG" ]
+check "tar 文件名带分号：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ]
+check "tar 文件名带分号：退出码 2（实际 $(rc)）（第二个条件）" [ ! -s "$FAKE_LOG" ]
 
 t "发布标签（PR #27 Codex）：成功后打附注标签 release-<前 12 位> 并推到 origin；失败、门禁拒绝、dry-run 不打；重复发布幂等；推不上退出码 6"
 setup; with_prev; deploy "$NEW" --execute
@@ -331,7 +333,8 @@ fix=$(grep -o '\(ECS_HOST=[^ ]* \)\{0,1\}deploy/release-tag\.sh [^（ ]*' "$T/ou
 check "A 的输出里有补救命令（实际「${fix}」）" [ -n "$fix" ]
 (cd "$HERE/../.." && PATH="$HERE/fakes:$PATH" eval "env $fix") > "$T/out" 2>&1; echo $? > "$T/rc"
 check "照 A 的提示补救：退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
-check "补救后 release-current 仍是 B（实际 $(rcur)），线上也是 B（$(tag)）" [ "$(rcur)" = "$NEW" ] && [ "$(tag)" = "$NEW" ]
+check "补救后 release-current 仍是 B（实际 $(rcur)）" [ "$(rcur)" = "$NEW" ]
+check "补救后线上仍是 B（实际 $(tag)）" [ "$(tag)" = "$NEW" ]
 PATH="$HERE/fakes:$PATH" ECS_HOST=root@47.117.184.253 bash "$HERE/../release-tag.sh" "$OLD" > "$T/out" 2>&1; echo $? > "$T/rc"
 ok() { [ "$(rc)" = 3 ] && [ "$(rcur)" = "$NEW" ] && grep -q -- "--from-ecs" "$T/out"; }
 check "旧写法（带 A 的提交号）直接跑：和 ECS current-tag 不一致，退出码 3、不动 release-current、提示用 --from-ecs（实际 $(rc)、$(rcur)）" ok
