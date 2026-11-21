@@ -1,9 +1,12 @@
 // S04：/v1/sync 的协议层：epoch 握手、最低版本、请求格式、被踢设备（§4.5）、注销期间、手机时钟超前、只推不拉。
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
 import { bearer, login, makeApp, makeLoginShop, pair, TestClock } from "./helpers/auth.ts";
 import { op, sync, syncOk, upsertFull, upsertQuick } from "./helpers/sync.ts";
+import { HANDLERS } from "../src/sync/push.ts";
+import { OP_TYPES, OPS_SCHEMA_PATH, type OpType } from "../src/sync/validate.ts";
 
 let tdb: TestDb;
 beforeAll(async () => {
@@ -282,8 +285,8 @@ describe("注销期间", () => {
   });
 });
 
-describe("本段还没实现的 op 类型（§14 S04-1、S05-6 ⑩）", () => {
-  it("过渡分支只对 S05b 的四种记账 op 去掉：sale_batch / stock_in / opening / void 正常入账并留档；count 等 S06 的四种仍 rejected invalid、不留档", async () => {
+describe("全部 op 类型都已接入（§14 S04-1、S05-6 ⑩）", () => {
+  it("S05b 的四种记账 op 正常入账并留档；S06 的 count / product_review_complete（版本过时 → stale）、expiry_dispose / lot_snooze（批次不存在 → invalid）都正常处理并留档", async () => {
     const shop = await makeLoginShop(tdb);
     const app = makeApp(tdb);
     const boss = await login(app, shop.username);
@@ -303,22 +306,34 @@ describe("本段还没实现的 op 类型（§14 S04-1、S05-6 ⑩）", () => {
     ];
     // 都按 ops.schema.json 写成格式正确的 payload，排除「格式不对才拒」
     const lot = randomUUID();
-    const s06 = [
+    const stale = [
       op("count", { entry_id: randomUUID(), product_id: pid, counted_qty: 1, base_qty: 0, base_ver: 0 }),
       op("product_review_complete", { entry_id: randomUUID(), product_id: pid, unit_cost_fen: 100, counted_qty: 1, base_ver: 0 }),
+    ];
+    const lots = [
       op("expiry_dispose", { lot_id: lot, handle_ver: 0, actual_qty: 1, action: "discard", entry_id: randomUUID() }),
       op("lot_snooze", { lot_id: lot, handle_ver: 0, actual_qty: 1, days: 3 }),
     ];
-    const r = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [...ledger, ...s06], pull: false });
+    const r = await syncOk(app, boss.token, { epoch: shop.epoch, ops: [...ledger, ...stale, ...lots], pull: false });
     await app.close();
     expect(r.results).toEqual([
       ...ledger.map((o) => ({ id: o.id, status: "applied" })),
-      ...s06.map((o) => ({ id: o.id, status: "rejected", code: "invalid" })),
+      ...stale.map((o) => ({ id: o.id, status: "rejected", code: "stale", current: expect.objectContaining({ stock_qty: expect.any(Number), stock_ver: expect.any(Number) }) })),
+      ...lots.map((o) => ({ id: o.id, status: "rejected", code: "invalid" })),
     ]);
     const logged = new Set((await opsOf(shop.storeId)).map((o) => o.id));
-    for (const o of ledger) expect(logged.has(o.id)).toBe(true);
-    for (const o of s06) expect(logged.has(o.id)).toBe(false);
+    for (const o of [...ledger, ...stale, ...lots]) expect(logged.has(o.id)).toBe(true);
     const types = await tdb.kysely.selectFrom("entries").select("type").where("store_id", "=", shop.storeId).execute();
     expect(new Set(types.map((t) => t.type))).toEqual(new Set(["opening", "stock_in", "sale", "cost_adjust"]));
+  });
+});
+
+describe("ops.schema.json 里每个 type 都有处理函数（§14 S04-1）", () => {
+  it("契约的 type 集合 = OP_TYPES = HANDLERS 的键，每个都是函数（HANDLERS 的类型是完整的 Record，少一个就编译不过）", () => {
+    const schema = JSON.parse(readFileSync(OPS_SCHEMA_PATH, "utf8")) as { oneOf: Array<{ properties: { type: { const: string } } }> };
+    const contractTypes = schema.oneOf.map((b) => b.properties.type.const).sort();
+    expect([...OP_TYPES].sort()).toEqual(contractTypes);
+    expect(Object.keys(HANDLERS).sort()).toEqual(contractTypes);
+    for (const t of contractTypes) expect(typeof HANDLERS[t as OpType]).toBe("function");
   });
 });

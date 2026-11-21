@@ -251,6 +251,49 @@ function voidEntryRaw<R>(s: CostState, target: Draft & { ref: R }, fixedBy?: { r
   return { state: st, entries };
 }
 
+/** 迟到补偿产生的流水（§5.6 第 4 条），写库时 flags 加 late_before_count */
+export type LateDraft = Draft & { late: true };
+
+/**
+ * 迟到流水补偿（§5.6 第 4 条）：op 的 occurred_at 早于这个商品的 last_count_at，盘点时这些货已经算进数到的数里了。
+ * 原流水照记（step 不改），再追加一条 count 补偿行，数量和货值正好抵消这一步全部流水（含 cost_adjust）对库存的影响：
+ * qty_delta = −Σ qty_delta，value_delta = −Σ value_delta，按盘点的记法 cogs = −value_delta；k 为假且数量有变化时标 cost_missing。
+ * 库存回到这一步之前的 q、v；c、k 用这一步之后的（k 只增不减，c 是最近一次的进价）。
+ * 之后若违反 I3，或这一步让 k 由假变真（不论库存正负，§14 S06-8），补一条 cost_adjust 到 v = q × c（同样标 late；
+ * 金额为 0 不记）。这一步对库存没有净影响时原样返回。
+ */
+function lateCompensateRaw<R>(before: CostState, step: Step<R>): Step<R> {
+  const dq = step.entries.reduce((x, e) => x + e.qty_delta, 0n);
+  const dv = step.entries.reduce((x, e) => x + e.value_delta_fen, 0n);
+  if (dq === 0n && dv === 0n) return step;
+  const after = step.state;
+  const comp: LateDraft = { ...zero("count"), qty_delta: -dq, value_delta_fen: -dv, cogs_fen: dv, cost_missing: !after.k && dq !== 0n, late: true };
+  const entries: Array<Draft | ReversalDraft<R> | CostFixDraft<R>> = [...step.entries, comp];
+  let st: CostState = { ...after, q: before.q, v: before.v };
+  if (st.k) {
+    const c = known(st);
+    // 这一步让 k 由假变真：之前的 v 只是因为进价未知才是 0，不论库存正负都归位到 q × c（裁定 S06-8）
+    if (!before.k || (st.q <= 0n && st.v !== st.q * c) || (st.q > 0n && st.v < 0n)) {
+      const adj: Draft[] = [];
+      st = adjust(adj, st, st.q * c);
+      entries.push(...adj.map((a) => ({ ...a, late: true as const })));
+    }
+  }
+  return { state: st, entries };
+}
+
+/**
+ * 写库前的最后一步（apply.ts 的 writeStep 用）：迟到的先把原流水、补偿行、I3 归位组合好，再对组合后的最终状态和每条流水检查范围。
+ * 范围检查不能放在补偿之前：未补偿的中间状态可能越界（库存已在 INT32 边上时迟到卖出 / 进货 1 个），
+ * 而补偿后的结果和每条流水都存得下，提前检查会把合法流水终局拒收（PR #16 Codex 1，§14 S05-4）。
+ */
+export function settle<R>(before: CostState, step: Step<R>, late: boolean): Step<R> {
+  return storable(late ? lateCompensateRaw(before, step) : step);
+}
+
+/** 不做范围检查的算法，给 writeStep 先组合再经 settle 检查；不经 writeStep 写库的调用方不许用 */
+export const raw = { stockIn: stockInRaw, sale: saleRaw, removeStock: removeStockRaw, voidEntry: voidEntryRaw } as const;
+
 // 对外的入口：每一步都过 storable（§14 S05-4）
 export const stockIn = <R>(...a: Parameters<typeof stockInRaw<R>>): Step<R> => storable(stockInRaw<R>(...a));
 export const sale = <R>(...a: Parameters<typeof saleRaw<R>>): Step<R> => storable(saleRaw<R>(...a));
