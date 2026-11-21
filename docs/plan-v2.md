@@ -709,7 +709,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 - 迁移前备份门禁（§14 T20，PR #22 Codex 4、S10a-8）：`deploy.sh` 跑迁移前检查最近一次备份心跳，营业时间内超过 2 小时没更新就拒绝，带一个明确的跳过开关。
 - 备份的 RAM 账号（§14 T21、S10a-6）：备份单独用一个账号，`backups/` 只写不删，删除靠生命周期；35 天生命周期只作用于 `backups/` 前缀，`exports/`、`deletions/` 怎么过期单独定；确认两个桶没开版本控制。
 - 重放删除记录（§14 T14）：`restore.sh` 重放删除记录要列举 `deletions/`，现在 `ObjectStore.list` 只认 `images/<店>/`、`exports/<店>/` 两种前缀，要加；重放后这些店的旧令牌和重传按 401 处理。
-- 返修（PR #23 Codex、Fable，§14 S10b-1 至 S10b-11，PR #23 第二轮）：恢复标记分「恢复中」「已恢复」，已恢复的库不再被清空；compose 把 `RECOVERY_MODE`（默认 0）传给 api；`backup` 加 `memswap_limit: 256m`；整机重建改成在容器里恢复（`restore.sh` 的 `RESTORE_COMPOSE_DIR`）；目标库有大对象拒绝，`pg_restore` 口令走 `PGPASSWORD`；换 epoch 用例补真实 op 重传；残留锁改 pid + 16 分钟并清残留 `work.*`；runbook 加 B10、B11，B7 和第 36 天检查移为 T23、T24。
+- 返修（PR #23 Codex、Fable 第一轮，§14 S10b-1 至 S10b-11）：恢复标记分「恢复中」「已恢复」，已恢复的库不再被清空；compose 把 `RECOVERY_MODE`（默认 0）传给 api；`backup` 加 `memswap_limit: 256m`；整机重建改成在容器里恢复（`restore.sh` 的 `RESTORE_COMPOSE_DIR`）；目标库有大对象拒绝，`pg_restore` 口令走 `PGPASSWORD`；换 epoch 用例补真实 op 重传；残留锁改 pid + 16 分钟并清残留 `work.*`；runbook 加 B10、B11，B7 和第 36 天检查移为 T23、T24。
 
 **S10c 监控与告警**
 - 要读：§9.5。
