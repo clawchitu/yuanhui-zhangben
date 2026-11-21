@@ -27,7 +27,12 @@ final class DiscountModel {
 
     let basket: Basket
     let listFen: Int64
-    private(set) var text: String
+    private(set) var text: String {
+        didSet { rejectMessage = nil }
+    }
+    /// 「就收这么多」被 ShopCore 拒了时的一句话（现在的规则下到不了；以后规则变了不会变成按了没反应的哑按钮）
+    private(set) var rejectMessage: String?
+    static let rejectedHint = "这个数收不了，换一个"
     private(set) var stage: Stage = .input
 
     static let maxIntegerDigits = 9
@@ -48,6 +53,7 @@ final class DiscountModel {
 
     /// 超出 §5.0 实收上限时的一句话；没超是 nil
     var limitMessage: String? {
+        if let rejectMessage { return rejectMessage }
         guard let p = paidFen, p > Limits.maxPaidTotalFen else { return nil }
         return "一笔最多收 ¥\(Money.yuanString(Int(Limits.maxPaidTotalFen)))"
     }
@@ -105,6 +111,7 @@ final class DiscountModel {
                 return nil
             }
         } catch {
+            rejectMessage = Self.rejectedHint
             return nil
         }
         return .paid(p)

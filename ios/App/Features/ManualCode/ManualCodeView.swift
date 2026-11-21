@@ -8,11 +8,13 @@ struct ManualCodeView: View {
     @State private var model: ManualCodeModel
     var mode: ShopMode = .sell
     var pendingCount: Int?
-    let onPick: (String) -> Void
+    /// nil = 直接塞路由进来的（没有购物篮可加）：选了就关页面
+    let onPick: ((String) -> Void)?
     @FocusState private var nameFocused: Bool
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     init(db: LocalDB, mode: ShopMode = .sell, pendingCount: Int? = nil, fixture: ManualFixture = .none,
-         onPick: @escaping (String) -> Void) {
+         onPick: ((String) -> Void)? = nil) {
         let m = ManualCodeModel(db: db)
         #if DEBUG
         if let t = fixture.tab { m.tab = t }
@@ -44,13 +46,21 @@ struct ManualCodeView: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollDismissesKeyboard(.never)
+            // 输条码时键盘钉在底部、主按钮上面：候选多或字号大时上面滚动，键盘始终在首屏（Fable 审核建议 2）
+            if model.tab == .code {
+                Keypad(showsDot: false) { model.key($0) }
+                    .accessibilityIdentifier("manual.keypad")
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .background(Tokens.Palette.paper)
+            }
             bottom
         }
         .background(Tokens.Palette.paper.ignoresSafeArea())
         // 输条码页上接硬件键盘 / 扫码枪：按键进输入框（不是进购物篮）；按名称找时按键归系统文本框
         .background(
             HIDKeyCapture(isActive: model.tab == .code) { key, _ in
-                if let code = model.hardwareKey(key) { onPick(code) }
+                if let code = model.hardwareKey(key) { deliver(code) }
             }
             .frame(width: 0, height: 0)
             .accessibilityHidden(true)
@@ -58,6 +68,10 @@ struct ManualCodeView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(Route.manualCode.pageId)
         .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private func deliver(_ code: String) {
+        if let onPick { onPick(code) } else { dismiss() }
     }
 
     private var tabs: some View {
@@ -103,13 +117,11 @@ struct ManualCodeView: View {
             .font(TypeScale.secondary)
             .foregroundStyle(model.hint == nil ? Tokens.Palette.ink2 : Tokens.Palette.sell)
             .fixedSize(horizontal: false, vertical: true)
+            .dynamicTypeSize(...DiscountPanel.labelCap)
             .accessibilityIdentifier("manual.hint")
         ForEach(model.candidates, id: \.self) { c in
             row(c.conversion, code: c.representativeBarcode, id: "manual.row.\(c.representativeBarcode)")
         }
-        Keypad(showsDot: false) { model.key($0) }
-            .padding(.top, 4)
-            .accessibilityIdentifier("manual.keypad")
     }
 
     // MARK: 15b 按名称找
@@ -168,12 +180,16 @@ struct ManualCodeView: View {
                         .font(TypeScale.body.weight(.bold))
                         .foregroundStyle(Tokens.Palette.ink)
                         .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(typeSize.isAccessibilitySize ? 1 : nil)
+                        .minimumScaleFactor(typeSize.isAccessibilitySize ? 0.6 : 1)
                     if on {
                         Text("选中了").font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
                     } else if let code {
                         Text("…" + code.suffix(4)).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
                     }
                 }
+                // 辅助字号下候选行收成一行名称（放不下缩字）、字号封顶，让键盘留在首屏
+                .dynamicTypeSize(...DiscountPanel.labelCap)
                 Spacer(minLength: 8)
                 PriceText(cents: Int((try? c.unitPrice().raw) ?? 0), size: 30)
             }
@@ -194,7 +210,7 @@ struct ManualCodeView: View {
     /// 底部主按钮：没选中时灰的「先点上面选一个」，选中了是「就是它，加进去」
     private var bottom: some View {
         PrimaryButton(model.canPick ? "就是它，加进去" : "先点上面选一个", systemImage: model.canPick ? "checkmark" : nil, mode: mode) {
-            if let code = model.pick() { onPick(code) }
+            if let code = model.pick() { deliver(code) }
         }
         .disabled(!model.canPick)
         .accessibilityIdentifier("manual.pick")

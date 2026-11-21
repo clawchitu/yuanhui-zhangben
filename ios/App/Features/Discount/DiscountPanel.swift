@@ -48,6 +48,9 @@ struct DiscountPanel: View {
 
     // MARK: 18
 
+    /// 18 上的标签和说明随系统字号放大到这一档为止：再大就把键盘挤出首屏（金额数字本来就是固定大字）
+    static let labelCap = DynamicTypeSize.xxLarge
+
     private var inputStage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -57,22 +60,27 @@ struct DiscountPanel: View {
                     .padding(.top, 22)
                 HStack(alignment: .firstTextBaseline) {
                     Text("原价").font(TypeScale.body).foregroundStyle(Tokens.Palette.ink2)
+                        .dynamicTypeSize(...Self.labelCap)
                     Spacer(minLength: 8)
                     PriceText(cents: Int(model.listFen), size: 34)
                         .accessibilityIdentifier("discount.list")
                 }
                 quickRow
                 Text("实收多少").font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2).padding(.top, 4)
+                    .dynamicTypeSize(...Self.labelCap)
                 inputField
                 summaryRow
-                Keypad { model.key($0) }
-                    .accessibilityIdentifier("discount.keypad")
             }
             .padding(.horizontal, 20)
+            .padding(.bottom, 8)
         }
         .scrollBounceBehavior(.basedOnSize)
+        // 键盘钉在底部、主按钮上面：最大辅助字号下上面的说明区滚动，键盘始终在首屏（Fable 审核建议 2）
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
+                Keypad { model.key($0) }
+                    .accessibilityIdentifier("discount.keypad")
+                    .padding(.bottom, 2)
                 PrimaryButton("就收这么多", mode: mode) {
                     if let r = model.submit() { onDone(r) }
                 }
@@ -139,11 +147,13 @@ struct DiscountPanel: View {
                 .font(TypeScale.body.weight(.semibold))
                 .foregroundStyle(Tokens.Palette.sell)
                 .fixedSize(horizontal: false, vertical: true)
+                .dynamicTypeSize(...Self.labelCap)
                 .accessibilityIdentifier("discount.limit")
         } else {
             HStack(alignment: .firstTextBaseline) {
                 Text((model.discountFen ?? 0) < 0 ? "多收" : "优惠")
                     .font(TypeScale.body).foregroundStyle(Tokens.Palette.ink2)
+                    .dynamicTypeSize(...Self.labelCap)
                 Spacer(minLength: 8)
                 if let d = model.discountFen {
                     PriceText(cents: Int(d.magnitude), size: 30)

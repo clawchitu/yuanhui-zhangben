@@ -127,7 +127,7 @@ struct RouteView: View {
             case .denied: DeniedPage()
             case .sell: SellView(db: model.db, fixture: model.sellFixture)
             // 直接塞进来的手输页（不是从卖出页推的）：能查能选，选了只是关页面，没有购物篮可加
-            case .manualCode: ManualCodeView(db: model.db) { _ in }
+            case .manualCode: ManualCodeView(db: model.db)
             // 抹零面板要对着一个购物篮，只能从卖出页的「抹零 / 改总价」弹出；直接塞路由只出一句说明
             case .discountEntry: PlaceholderPage(route: route, layout: model.layout, message: "从卖出页的「抹零 / 改总价」进")
             case .settings: SettingsView()
