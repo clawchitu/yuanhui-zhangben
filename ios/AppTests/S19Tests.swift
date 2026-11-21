@@ -212,6 +212,57 @@ final class S19Tests: XCTestCase {
         XCTAssertEqual(m.packBadge, "整箱码　1 箱 = 24 罐")
     }
 
+    /// PR #31 Fable 必须改 1 / §14 S19-1：本机有没上传的库存变动时，蓝卡不显示「加上原来的，平均进价」
+    /// （基线货值除以临时库存会算错：离线进 5 箱后再进 1 箱，旧代码显示 (6000 + 4800) / (150 + 24) = ¥0.62）
+    func testAverageHiddenWhenStockHasPendingOps() throws {
+        let db = try makeDB()
+        let m = try model(db)
+        _ = scan(m, Self.colaPack)
+        type(m, "5"); m.focus(.cost); type(m, "48")
+        XCTAssertEqual(m.averageLine, "加上原来的，平均进价 ¥2.00", "没有待传的变动：照常显示")
+        XCTAssertTrue(m.commit())
+        _ = scan(m, Self.colaPack)
+        XCTAssertEqual(m.cardSubtitle, "单罐卖 ¥3.00　店里还有 150 罐", "临时库存照旧")
+        type(m, "1"); m.focus(.cost); type(m, "48")
+        XCTAssertEqual(m.totalText, "¥48.00")
+        XCTAssertEqual(m.entryLine, "入账 24 罐，每罐进价 ¥2.00")
+        XCTAssertNil(m.averageLine, "有待传的进货：不显示预计平均")
+        // 卖出（待传）后再进货也一样
+        let db2 = try makeDB()
+        let colaId = try XCTUnwrap(db2.lookup(barcode: Self.cola)).product.id
+        let sell = SellModel(db: db2)
+        _ = sell.handle(Scan(code: Self.cola, source: .gun))
+        XCTAssertTrue(sell.commit())
+        XCTAssertNotEqual(try XCTUnwrap(db2.displayStock(colaId)).pendingDelta, 0)
+        let m2 = try model(db2)
+        _ = scan(m2, Self.colaPack)
+        type(m2, "1"); m2.focus(.cost); type(m2, "48")
+        XCTAssertNotNil(m2.entryLine)
+        XCTAssertNil(m2.averageLine)
+    }
+
+    /// PR #31 Fable 必须改 2：04b 没填数量 → 不说「库存已记上」，直接在进货页接着填这一批；填了 0 也一样；填了数量才说
+    func testRegisteredWithoutQtyContinuesStockIn() throws {
+        let db = try makeDB()
+        for (code, qty) in [("6924743919228", ""), ("6924743919235", "0")] {
+            let m = try model(db)
+            XCTAssertEqual(scan(m, code), .unknown)
+            let reg = NewProductModel(db: db, barcode: code, mode: .stock, quick: false, canLinkPack: true)
+            reg.priceKey(.digit(7)); reg.goMore()
+            reg.qtyText = qty
+            let conv = try XCTUnwrap(reg.saveMore())
+            m.finishRegistration(.registered(conv, quick: false))
+            XCTAssertNil(m.registerCode)
+            XCTAssertEqual(m.conversion?.product.id, conv.product.id, "数量\(qty.isEmpty ? "没填" : "填 0")：接着在进货页填这一批")
+            XCTAssertFalse(m.notice?.text.contains("库存已记上") ?? false, "库存没记，不能说记上了")
+            XCTAssertEqual(m.notice, .registeredNoStock(conv.product.name))
+            XCTAssertEqual(m.cardSubtitle, "单个卖 ¥7.00　店里还有 0 个")
+            type(m, "3"); m.focus(.cost); type(m, "5")
+            XCTAssertTrue(m.commit())
+            XCTAssertEqual(try XCTUnwrap(db.displayStock(conv.product.id)).qty, 3, "只记这一次，不重复")
+        }
+    }
+
     /// 收银员不能进货：路由进不去，本地库也拒
     func testCashierCannotStockIn() throws {
         let caps = Capabilities(role: .cashier)
@@ -256,17 +307,40 @@ final class S19Tests: XCTestCase {
         XCTAssertNotNil(reg2.saveMore(confirmedZero: true))
     }
 
-    /// 扫码枪打进名称框：按回车（扫码枪后缀）时末尾一串 8 位以上的数字去掉
+    /// 扫码枪打进名称框：按回车（扫码枪后缀）时末尾一串 8 位以上的数字去掉（§14 S19-9），
+    /// 但原名称留着，提示里点「不是条码，改回来」就原样恢复（PR #31 Codex 必须改 1：不悄悄丢掉合法名称）
     func testScannerDigitsStrippedFromName() throws {
         let reg = NewProductModel(db: try makeDB(), barcode: Self.newCode, mode: .stock, quick: false, canLinkPack: true)
+        // ① 扫码枪在名称后面追加了条码：去掉，提示里写清楚
         reg.name = "乐事薯片6925303770013"
         XCTAssertEqual(reg.submitName(), "6925303770013")
         XCTAssertEqual(reg.name, "乐事薯片")
         XCTAssertNotNil(reg.nameScanNotice)
+        reg.name = "乐事薯片 原味"
+        XCTAssertNil(reg.nameScanNotice, "名称一改，提示就清掉")
+        XCTAssertFalse(reg.canRestoreName)
         reg.name = "可乐 330ml"
         XCTAssertNil(reg.submitName(), "正常名称不动")
         XCTAssertEqual(reg.name, "可乐 330ml")
         XCTAssertNil(reg.nameScanNotice)
+        // ② 合法名称以数字结尾：去掉后一点就原样恢复，恢复后再按回车不再去
+        reg.name = "配件 12345678"
+        XCTAssertEqual(reg.submitName(), "12345678")
+        XCTAssertEqual(reg.name, "配件")
+        XCTAssertTrue(reg.canRestoreName)
+        reg.restoreName()
+        XCTAssertEqual(reg.name, "配件 12345678", "原名称一个字不少")
+        XCTAssertNil(reg.nameScanNotice)
+        XCTAssertNil(reg.submitName(), "人说了不是条码，就不再去")
+        XCTAssertEqual(reg.name, "配件 12345678")
+        // ③ 纯数字名称：同样能恢复，存进去的是原样
+        reg.name = "20261121"
+        XCTAssertEqual(reg.submitName(), "20261121")
+        XCTAssertEqual(reg.name, "")
+        reg.restoreName()
+        XCTAssertEqual(reg.name, "20261121")
+        reg.priceKey(.digit(5))
+        XCTAssertEqual(try XCTUnwrap(reg.saveBasic()).product.name, "20261121")
     }
 
     /// §14 S18-3：05 底部那句带上商品名

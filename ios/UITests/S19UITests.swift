@@ -103,6 +103,36 @@ final class S19UITests: XCTestCase {
         XCTAssertEqual(ledger(app)["lastExpiry"], "2027-05-12")
     }
 
+    /// PR #31 Codex 必须改 2：06b 收起键盘后、日期填完按「填好了」后，标准 / 大字 / 最大辅助字号下底部按钮都在屏幕内能点
+    func testExpiryBottomButtonAlwaysVisible() {
+        let sizes = ["UICTContentSizeCategoryL", "UICTContentSizeCategoryAccessibilityXXXL"]
+        for size in sizes {
+            for large in ["on", "off"] {
+                let app = XCUIApplication()
+                app.launchArguments = ["-uiFixture", "home", "-uiLargeText", large, "-uiProbe", "-uiRoute", "stockIn",
+                                       "-UIPreferredContentSizeCategoryName", size,
+                                       "-uiScan", Self.beerPack, "-uiStockQty", "3", "-uiStockCost", "55",
+                                       "-uiStockDate", "2026-11-12", "-uiStockMonths", "6", "-uiStockField", "none"]
+                app.launch()
+                let ctx = "\(size) 大字\(large)"
+                let commit = el(app, "stockIn.commit")
+                XCTAssertTrue(commit.waitForExistence(timeout: 15), ctx)
+                wait("06b 收起键盘：记进货在屏幕内 \(ctx)") { commit.isHittable && app.frame.contains(commit.frame) }
+                el(app, "stockIn.scroll").swipeUp()
+                el(app, "stockIn.day").tap()
+                let done = el(app, "stockIn.doneEditing")
+                XCTAssertTrue(done.waitForExistence(timeout: 3), ctx)
+                XCTAssertTrue(done.isHittable && app.frame.contains(done.frame), "填日期时「填好了」在屏幕内 \(ctx)")
+                keys(app, "12")
+                done.tap()
+                wait("填完日期：记进货在屏幕内 \(ctx)") { commit.isHittable && app.frame.contains(commit.frame) }
+                commit.tap()
+                wait("记上 \(ctx)") { ledger(app)["stockIns"] == "1" }
+                app.terminate()
+            }
+        }
+    }
+
     /// 进价填 0：要再确认一次
     func testZeroCostAsks() {
         let app = launch(["-uiScan", Self.erguotou, "-uiStockQty", "2", "-uiStockCost", "0"])
