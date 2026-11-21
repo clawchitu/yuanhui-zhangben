@@ -44,17 +44,16 @@ struct CameraStrip: View {
     static let labelSize: CGFloat = 17
 
     var body: some View {
-        VStack(spacing: 0) {   // 不用 Group：Group 会把下面的标识套到 NoCameraBand 上，盖掉 scanner.noCamera
-            if permission.access == .denied {
-                NoCameraBand(onManual: onManual)
-            } else {
-                scanning
-            }
+        // 被拒时直接用 NoCameraBand（自带 scanner.noCamera 标识）；外面再套一层带标识的容器会把它盖掉
+        if permission.access == .denied {
+            NoCameraBand(onManual: onManual)
+        } else {
+            scanning
+                .frame(maxWidth: .infinity)
+                .background(NoCameraBand.background)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("sell.camera")
         }
-        .frame(maxWidth: .infinity)
-        .background(NoCameraBand.background)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("sell.camera")
     }
 
     // MARK: 03：取景框 + 手电筒 + 手输条码
