@@ -6,16 +6,7 @@
 	# 不配 trusted_proxies：Caddy 不信任何上游，客户端自带的 X-Forwarded-For 不往下传，只写它看到的对端地址
 }
 
-https://{$PUBLIC_IP} {
-	tls {
-		issuer acme {
-			dir https://acme-v02.api.letsencrypt.org/directory
-			profile shortlived
-		}
-	}
-	import common
-}
-
+# 片段必须定义在引用它的站点之前
 (common) {
 	encode zstd gzip
 	header {
@@ -38,4 +29,14 @@ https://{$PUBLIC_IP} {
 		output stdout
 		format json
 	}
+}
+
+https://{$PUBLIC_IP} {
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+			profile shortlived
+		}
+	}
+	import common
 }
