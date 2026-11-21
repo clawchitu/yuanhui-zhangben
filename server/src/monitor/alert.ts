@@ -120,8 +120,11 @@ export function buildMessage(kind: AlertKind, a: Alert, now: Date, suppressed?: 
     details: sanitizeDetails(a.details),
     ...(suppressed ? { suppressed } : {}),
   };
+  return { id: nextId(now), ...base, text: formatText(base) };
+}
+
+/** id 按字典序递增（毫秒时间戳补零 + 进程内序号），本机探测按它记读到哪儿了 */
+export function nextId(now: Date): string {
   seq = (seq + 1) % 1_000_000;
-  // id 按字典序递增（毫秒时间戳补零 + 进程内序号），本机探测按它记读到哪儿了
-  const id = `${String(now.getTime()).padStart(15, "0")}-${String(seq).padStart(6, "0")}`;
-  return { id, ...base, text: formatText(base) };
+  return `${String(now.getTime()).padStart(15, "0")}-${String(seq).padStart(6, "0")}`;
 }

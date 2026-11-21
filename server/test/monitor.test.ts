@@ -254,6 +254,29 @@ describe("文件解析", () => {
   });
 });
 
+describe("补发", () => {
+  it("待发队列里的事件补发时换新 id，比期间已发出的都大（探测游标不会把它当成读过的丢掉，PR #25 Fable 建议 4）", async () => {
+    const clock = new TestClock();
+    const sink = new FakeSink();
+    const a = new Alerter({ sink, clock: clock.now });
+    sink.fail = true;
+    const first = (await a.event({ key: "e1", title: "一", severity: "warning" }))!;
+    sink.fail = false;
+    clock.advance(1000);
+    const later = (await a.event({ key: "e2", title: "二", severity: "warning" }))!;
+    clock.advance(60_000);
+    await a.flush();
+    const resent = sink.sent.find((m) => m.key === "e1")!;
+    expect(resent.id > later.id).toBe(true);
+    expect(resent.id).not.toBe(first.id);
+    expect(resent.at).toBe(first.at); // 发生时刻不变
+    // 探测游标停在 later（outbox 里 later 在前、补发的 e1 在后）：e1 照样转出去
+    const out = new FakeSink();
+    expect(await forwardOutbox(sink.sent.map((m) => JSON.stringify(m)).join("\n"), { outboxId: later.id }, { sink: out, clock: clock.now })).toBe(1);
+    expect(out.sent[0]!.key).toBe("e1");
+  });
+});
+
 describe("通道", () => {
   const m = () => buildMessage("event", { key: "k", title: "t", severity: "warning" }, new Date());
   it("WebhookSink：POST JSON，带 Bearer；非 2xx 抛错且错误信息不带地址和令牌", async () => {

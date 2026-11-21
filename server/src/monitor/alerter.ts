@@ -10,7 +10,7 @@
 // 重启后不会把正在告警的再发一遍，也不会漏掉恢复通知。
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { buildMessage, type Alert, type AlertMessage } from "./alert.ts";
+import { buildMessage, nextId, type Alert, type AlertMessage } from "./alert.ts";
 
 export interface AlertSink {
   send(m: AlertMessage): Promise<void>;
@@ -110,7 +110,9 @@ export class Alerter {
   async flush(): Promise<void> {
     const q = this.state.pending.splice(0);
     for (let i = 0; i < q.length; i++) {
-      if (!(await this.trySend(q[i]!))) {
+      // 补发换新 id：同一轮里排在它后面的告警可能已经写进 outbox、被本机探测拉走，游标越过了旧 id，
+      // 用旧 id 补发会被 `id <= 游标` 丢掉（PR #25 Fable 建议 4）
+      if (!(await this.trySend({ ...q[i]!, id: nextId(this.o.clock()) }))) {
         this.state.pending.unshift(...q.slice(i));
         break;
       }
