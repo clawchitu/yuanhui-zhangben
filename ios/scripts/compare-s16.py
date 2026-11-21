@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """S16 对照图：左边设计稿（docs/design/png），右边实拍，等高缩放后并排，中间留 20px 白缝。
-用法：scripts/compare-s15.py <截图目录>（shots-s16.sh 拍完自动调用）"""
+用法：scripts/compare-s16.py <截图目录>（shots-s16.sh 拍完自动调用）"""
 import sys
 from pathlib import Path
 from PIL import Image

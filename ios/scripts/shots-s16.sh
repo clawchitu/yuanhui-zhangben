@@ -38,7 +38,7 @@ shoot() {
   xcrun simctl terminate "$udid" "$bundle" >/dev/null 2>&1 || true
   xcrun simctl ui "$udid" content_size "$size"
   xcrun simctl launch "$udid" "$bundle" -uiLargeText "$large" "$@" >/dev/null
-  sleep 4
+  sleep 6   # FakeScanner：开页等 1 秒 + 每码 0.3 秒（§14 S14-3 ⑫），再留出启动时间
   xcrun simctl io "$udid" screenshot "$out/$name.png" >/dev/null 2>&1
   echo "截图 $out/$name.png" >&2
 }
