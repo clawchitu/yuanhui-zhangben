@@ -10,7 +10,16 @@ import UIKit
 final class HIDKeyCaptureView: UIView {
     var onKey: ((HIDScanParser.Key, TimeInterval) -> Void)?
     var isActive = true {
-        didSet { if isActive { reclaim() } else if isFirstResponder { resignFirstResponder() } }
+        didSet {
+            if isActive {
+                // 面板 / 手输页一关就抢回（§14 S14-4），转场动画结束后再抢一次：
+                // 推出去的页面上的文本框可能在动画期间还占着第一响应者
+                reclaim()
+                reclaimLater(0.45)
+            } else if isFirstResponder {
+                resignFirstResponder()
+            }
+        }
     }
 
     override init(frame: CGRect) {
@@ -37,6 +46,10 @@ final class HIDKeyCaptureView: UIView {
             guard let self, self.isActive, self.window != nil, !self.isFirstResponder else { return }
             self.becomeFirstResponder()
         }
+    }
+
+    func reclaimLater(_ seconds: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in self?.reclaim() }
     }
 
     static func key(for uiKey: UIKey) -> HIDScanParser.Key {
