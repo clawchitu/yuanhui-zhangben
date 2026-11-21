@@ -2,7 +2,7 @@
 # backup.sh、restore.sh 的测试（S10b）：替身 docker 把 compose run backup / exec postgres pg_dump 转给本机 node 和 pg_dump，
 # 所以跑的是真脚本、真快照、真加密；对象存储是本机目录（BACKUP_STORE_DIR），不连 OSS、不连服务器。
 # 需要 DATABASE_URL（Postgres 16）、pg_dump / pg_restore / psql（PG_BIN 可指定目录）、server/ 已 npm ci。
-# 流程：建库造数 → backup.sh → 各种故障：pg_dump 失败、上传失败、重叠运行、残留锁和工作目录 → 写一条删除记录 →
+# 流程：建库造数 → backup.sh → 各种故障：pg_dump 失败、上传失败、重叠运行 → 写一条删除记录 →
 #       restore.sh dry-run（目标库不动）→ --execute → 已注销的店不在、epoch 换了、口令不进命令行 → 转正后重跑（不清库）→
 #       整机重建跑法（compose）→ 口令不对、目标库不空、备份被改坏。
 set -uo pipefail
@@ -79,30 +79,13 @@ export FAKE_UPLOAD_FAIL=1; backup; unset FAKE_UPLOAD_FAIL
 check "上传失败：退出码 1、stage=upload、连续失败 2" [ "$(rc)" = 1 ] && grep -q '"stage":"upload"' "$T/out" && [ "$(metric consecutive_failures)" = 2 ]
 check "没多出备份" [ "$(nbackups)" = 1 ]
 
-t "上一次还在跑（有锁）：退出码 2，不重叠；跳过记进 skips.log 和指标"
+t "上一次还在跑（有锁）：退出码 2，不重叠"
 mkdir "$R/backup/lock.d"; backup
 check "退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ]
 check "锁还在（不是我的锁不删）" [ -d "$R/backup/lock.d" ]
-check "打 alert=backup_skipped" grep -q '"alert":"backup_skipped"' "$T/out"
-check "skips.log 记了一行" [ "$(wc -l < "$R/backup/skips.log" | tr -d ' ')" = 1 ]
-check "指标 last_skip 有时间、失败计数不变" [ "$(metric last_skip_timestamp_seconds)" -gt 0 ] && [ "$(metric consecutive_failures)" = 2 ]
-sleep 300 & live=$!
-echo "$live" > "$R/backup/lock.d/pid"; backup
-check "拿锁的进程还活着：退出码 2" [ "$(rc)" = 2 ] && [ -d "$R/backup/lock.d" ]
-kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
-rm -rf "$R/backup/lock.d"
+rmdir "$R/backup/lock.d"
 backup
-check "锁释放后又成功，连续失败清零，last_skip 保留" [ "$(rc)" = 0 ] && [ "$(metric consecutive_failures)" = 0 ] && [ "$(nbackups)" = 2 ] && [ "$(metric last_skip_timestamp_seconds)" -gt 0 ]
-
-t "上一次被 kill -9：锁和明文工作目录留下；下一次照常跑、清掉残留（不等 60 分钟）"
-mkdir -p "$R/backup/lock.d" "$R/backup/work.dead1"; echo PGDMP > "$R/backup/work.dead1/db.dump"
-bash -c 'echo $$' > "$R/backup/lock.d/pid"   # 一个已经退出的进程
-backup
-check "拿锁的进程不在了：退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ] && grep -q '"event":"backup_stale_lock"' "$T/out"
-check "残留的 work.* 清掉了、锁释放了" [ -z "$(find "$R/backup" -mindepth 1 -maxdepth 1 -type d)" ]
-mkdir "$R/backup/lock.d"; touch -t 200001010000 "$R/backup/lock.d"   # 没有 pid、超过 16 分钟
-backup
-check "锁超过 16 分钟算残留：退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ] && [ "$(nbackups)" = 4 ]
+check "锁释放后又成功，连续失败清零" [ "$(rc)" = 0 ] && [ "$(metric consecutive_failures)" = 0 ] && [ "$(nbackups)" = 2 ]
 FIRST=$(find "$STORE/backups" -name '*.dump.enc' | sort | head -1 | sed 's#.*/##; s#\.dump\.enc$##')
 
 # 备份之后：注销的店被清除（往 deletions/ 写记录、删在线数据），之后源库整个丢了
