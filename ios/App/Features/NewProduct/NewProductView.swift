@@ -110,6 +110,19 @@ struct NewProductView: View {
                             .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(Tokens.Palette.line, lineWidth: 2))
                             .accessibilityIdentifier("newProduct.name")
                     }
+                    // 去掉了像条码的数字：提示单独在名称框下面，名称一改就清；点一下原样恢复（PR #31 Codex 1、Fable 建议 4）
+                    if let n = model.nameScanNotice {
+                        Text(n).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.sell)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("newProduct.nameNotice")
+                        if model.canRestoreName {
+                            Button { model.restoreName() } label: {
+                                Text("不是条码，改回来").font(TypeScale.body.weight(.semibold)).underline()
+                                    .foregroundStyle(Tokens.Palette.ink).frame(minHeight: Tokens.Size.minHitTarget)
+                            }
+                            .accessibilityIdentifier("newProduct.restoreName")
+                        }
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 14)
@@ -123,7 +136,7 @@ struct NewProductView: View {
             VStack(alignment: .leading, spacing: 6) {
                 label(model.priceLabel)
                 priceField
-                if let m = model.priceMessage ?? model.error ?? model.nameScanNotice {
+                if let m = model.priceMessage ?? model.error {
                     Text(m).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.sell)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("newProduct.error")
