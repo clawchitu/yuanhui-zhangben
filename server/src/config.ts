@@ -18,6 +18,21 @@ export interface Config {
   trustProxy: boolean;
   /** 每家店在本进程里在途（排队 + 正在处理）的同步写入上限，超过直接 503（§14 S04-8，默认 32） */
   storeQueueLimit: number;
+  /** 商品图总开关（S08、§12 Q2）。默认关：关着时不抓图、GET /v1/images 一律 404、条码查询 has_image=false，手机全部显示首字 */
+  productImagesEnabled: boolean;
+  /** 快鸟条码接口（阿里云云市场 cmapi00067757）。AppCode 只从环境变量来；空 = 不调外部，查不到就是「没查到」 */
+  kuainiao: { appCode: string; endpoint: string };
+  /** 调快鸟的超时（§7：2 秒） */
+  barcodeLookupTimeoutMs: number;
+  /** 每店每天调快鸟的上限（§7：300） */
+  barcodeDailyLimit: number;
+  /** 对象存储。kind=none：不存图（图片任务不跑）；local：本机目录（开发用）；aliyun：阿里云 OSS（S10a 接） */
+  objectStore:
+    | { kind: "none" }
+    | { kind: "local"; dir: string }
+    | { kind: "aliyun"; region: string; bucket: string; accessKeyId: string; accessKeySecret: string; endpoint?: string };
+  /** GET /v1/images 的本机磁盘缓存目录，缺了回源对象存储 */
+  imageCacheDir: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -68,5 +83,36 @@ export function loadConfig(env: Env = process.env): Config {
     recoveryMode: bool(env, "RECOVERY_MODE", false),
     trustProxy: bool(env, "TRUST_PROXY", false),
     storeQueueLimit: int(env, "STORE_QUEUE_LIMIT", 32, 1, 10_000),
+    productImagesEnabled: bool(env, "PRODUCT_IMAGES_ENABLED", false),
+    kuainiao: {
+      appCode: env.KUAINIAO_APPCODE ?? "",
+      endpoint: url(env, "KUAINIAO_ENDPOINT", "https://icode.market.alicloudapi.com/getBarcode"),
+    },
+    barcodeLookupTimeoutMs: int(env, "BARCODE_LOOKUP_TIMEOUT_MS", 2000, 100, 10_000),
+    barcodeDailyLimit: int(env, "BARCODE_DAILY_LIMIT", 300, 0, 100_000),
+    objectStore: objectStore(env),
+    imageCacheDir: env.IMAGE_CACHE_DIR || "/var/cache/yuanhui/images",
   };
+}
+
+function objectStore(env: Env): Config["objectStore"] {
+  const kind = env.OBJECT_STORE || "none";
+  if (kind === "none") return { kind };
+  if (kind === "local") {
+    if (!env.OBJECT_STORE_DIR) throw new ConfigError("OBJECT_STORE=local 需要 OBJECT_STORE_DIR");
+    return { kind, dir: env.OBJECT_STORE_DIR };
+  }
+  if (kind === "aliyun") {
+    const need = ["OSS_REGION", "OSS_BUCKET", "OSS_ACCESS_KEY_ID", "OSS_ACCESS_KEY_SECRET"] as const;
+    for (const k of need) if (!env[k]) throw new ConfigError(`OBJECT_STORE=aliyun 需要 ${k}`);
+    return {
+      kind,
+      region: env.OSS_REGION!,
+      bucket: env.OSS_BUCKET!,
+      accessKeyId: env.OSS_ACCESS_KEY_ID!,
+      accessKeySecret: env.OSS_ACCESS_KEY_SECRET!,
+      ...(env.OSS_ENDPOINT ? { endpoint: url(env, "OSS_ENDPOINT", "") } : {}),
+    };
+  }
+  throw new ConfigError("OBJECT_STORE 只能是 none / local / aliyun");
 }
