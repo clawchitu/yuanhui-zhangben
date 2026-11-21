@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 模拟 docker / docker compose，状态放在 $FAKE_STATE：
+# 模拟 docker / docker compose，状态放在 ${FAKE_STATE}：
 #   pg_up        Postgres 已起来（up postgres、up 全部、或不带 --no-deps 的 run 会起依赖）
 #   api_image    正在跑的 api 镜像
 # 故障注入（环境变量）：
@@ -7,12 +7,17 @@
 #   FAKE_MIGRATE_FAIL=1         迁移失败
 #   FAKE_UP_FAIL_IMAGE=<子串>    api 镜像含这个子串时 compose up 失败
 #   FAKE_BAD_IMAGE=<子串>        api 镜像含这个子串时容器里的健康检查 / 冒烟失败（故意坏掉的镜像）
+#   FAKE_UNHEALTHY_IMAGE=<子串>  api 镜像含这个子串时只有 /healthz 探测失败，缩图冒烟照常通过（专测 healthy 这一步）
 #   FAKE_CADDY_INVALID=1        caddy validate 失败
 #   FAKE_CADDY_RELOAD_FAIL=1    caddy reload 失败
+# FAKE_REAL_COMPOSE=<真 compose 可执行文件>：每次 compose 调用再让真 Compose 对同样的 -f / --env-file / 环境
+#   跑一次 config -q，两边任一报错都算失败（CI 用真 docker compose，本机可用独立的 docker-compose v2 二进制）
+# 和真 Compose 一样：任何 compose 子命令都先对整份 compose.yml 插值，必填变量（${X:?}）解析为空就报错退出 1，
+# 不管这次只起哪个服务；shell 环境变量优先于 --env-file（PR #22 第二轮 Codex 4、Fable 必须改）。
 set -u
 printf 'docker %s\n' "$*" >> "$FAKE_LOG"
 S=$FAKE_STATE
-envfile=""
+envfile=""; cfile=""; gopts=()
 api_from_env() {
   if [ -n "${API_IMAGE:-}" ]; then echo "$API_IMAGE"; return; fi
   [ -n "$envfile" ] && sed -n 's/^API_IMAGE=//p' "$envfile" | tail -1
@@ -20,8 +25,20 @@ api_from_env() {
 api_exec() {
   local img; img=$(cat "$S/api_image" 2>/dev/null || true)
   [ -n "$img" ] || { echo "fake docker: api 没在跑" >&2; return 1; }
-  if [ -n "${FAKE_BAD_IMAGE:-}" ] && [[ $img == *"$FAKE_BAD_IMAGE"* ]]; then echo "fake docker: 健康检查失败（$img）" >&2; return 1; fi
+  if [ -n "${FAKE_BAD_IMAGE:-}" ] && [[ $img == *"$FAKE_BAD_IMAGE"* ]]; then echo "fake docker: 健康检查失败（${img}）" >&2; return 1; fi
+  case "$*" in *healthz*)
+    if [ -n "${FAKE_UNHEALTHY_IMAGE:-}" ] && [[ $img == *"$FAKE_UNHEALTHY_IMAGE"* ]]; then echo "fake docker: /healthz 失败（${img}）" >&2; return 1; fi ;;
+  esac
   return 0
+}
+# 插值：compose.yml 里 ${X:?} 的必填变量。环境变量（哪怕是空的）优先，其次 --env-file
+require_vars() {
+  local v val
+  [ -n "$cfile" ] && [ ! -f "$cfile" ] && { echo "fake compose: 找不到 $cfile" >&2; return 1; }
+  for v in API_IMAGE CADDY_IMAGE POSTGRES_IMAGE POSTGRES_PASSWORD ACME_EMAIL PUBLIC_IP; do
+    if [ -n "${!v+x}" ]; then val=${!v}; elif [ -n "$envfile" ]; then val=$(sed -n "s/^$v=//p" "$envfile" | tail -1); else val=""; fi
+    [ -n "$val" ] || { echo "fake compose: required variable $v is missing a value" >&2; return 1; }
+  done
 }
 caddy_cmd() {
   case "$*" in
@@ -33,7 +50,7 @@ caddy_cmd() {
 case "${1:-}" in
   pull) [ "${FAKE_PULL_FAIL:-0}" = 1 ] && exit 1; exit 0 ;;
   exec) shift; [ "${1:-}" = -T ] && shift; c=$1; shift
-        case "$c" in *api*) api_exec; exit ;; *caddy*) caddy_cmd "$@"; exit ;; esac; exit 0 ;;
+        case "$c" in *api*) api_exec "$@"; exit ;; *caddy*) caddy_cmd "$@"; exit ;; esac; exit 0 ;;
   run) shift; for a in "$@"; do case "$a" in caddy|*caddy:*|*/caddy*) caddy_cmd "$@"; exit ;; esac; done; exit 0 ;;
   compose) shift ;;
   *) exit 0 ;;
@@ -41,19 +58,22 @@ esac
 # docker compose [-f F] [--project-directory P] [--env-file E] <子命令> ...
 while [ $# -gt 0 ]; do
   case "$1" in
-    -f|--project-directory) shift 2 ;;
-    --env-file) envfile=$2; shift 2 ;;
+    -f) cfile=$2; gopts+=("$1" "$2"); shift 2 ;;
+    --project-directory) gopts+=("$1" "$2"); shift 2 ;;
+    --env-file) envfile=$2; gopts+=("$1" "$2"); shift 2 ;;
     *) break ;;
   esac
 done
 sub=${1:-}; shift || true
+require_vars || exit 1
+if [ -n "${FAKE_REAL_COMPOSE:-}" ]; then "$FAKE_REAL_COMPOSE" ${gopts[@]+"${gopts[@]}"} config -q || exit 1; fi
 case "$sub" in
   config|pull|ps|logs) exit 0 ;;
   up)
     svcs=(); for a in "$@"; do case "$a" in -*) ;; *) svcs+=("$a") ;; esac; done
     if [ ${#svcs[@]} = 1 ] && [ "${svcs[0]}" = postgres ]; then touch "$S/pg_up"; exit 0; fi
     img=$(api_from_env)
-    if [ -n "${FAKE_UP_FAIL_IMAGE:-}" ] && [[ $img == *"$FAKE_UP_FAIL_IMAGE"* ]]; then echo "fake compose: up 失败（$img）" >&2; exit 1; fi
+    if [ -n "${FAKE_UP_FAIL_IMAGE:-}" ] && [[ $img == *"$FAKE_UP_FAIL_IMAGE"* ]]; then echo "fake compose: up 失败（${img}）" >&2; exit 1; fi
     touch "$S/pg_up"; echo "$img" > "$S/api_image"; exit 0 ;;
   run)
     nodeps=0; for a in "$@"; do [ "$a" = --no-deps ] && nodeps=1; done
@@ -63,6 +83,6 @@ case "$sub" in
     echo "migrate $(api_from_env)" >> "$S/migrations"; exit 0 ;;
   exec)
     [ "${1:-}" = -T ] && shift; c=$1; shift
-    case "$c" in api) api_exec; exit ;; caddy) caddy_cmd "$@"; exit ;; esac; exit 0 ;;
+    case "$c" in api) api_exec "$@"; exit ;; caddy) caddy_cmd "$@"; exit ;; esac; exit 0 ;;
   *) exit 0 ;;
 esac

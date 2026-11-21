@@ -7,7 +7,7 @@ while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
 [ $# -gt 0 ] && shift
 cmd="$*"
 cmd=${cmd//\/opt\/yuanhui/$FAKE_REMOTE}
-# 初始化脚本的测试：整台机器的路径挪进沙盒 $FAKE_ROOT（新脚本认 YH_ROOT；旧写法的内联命令按字符串替换）
+# 初始化脚本的测试：整台机器的路径挪进沙盒 ${FAKE_ROOT}（新脚本认 YH_ROOT；旧写法的内联命令按字符串替换）
 if [ -n "${FAKE_ROOT:-}" ]; then
   export YH_ROOT=$FAKE_ROOT
   for p in /swapfile /etc/fstab /data/ /root/; do cmd=${cmd//$p/@@R@@$p}; done

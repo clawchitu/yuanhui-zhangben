@@ -12,7 +12,7 @@ TAG="${1:-}"; REG="${2:-}"
 IN=$(cd "$(dirname "$0")" && pwd)
 D=$(dirname "$IN")
 ENV="$D/.env"
-[ -f "$ENV" ] || { echo "缺 $ENV（按 deploy/.env.example 填好再发布）" >&2; exit 2; }
+[ -f "$ENV" ] || { echo "缺 ${ENV}（按 deploy/.env.example 填好再发布）" >&2; exit 2; }
 NEW="$REG/api:$TAG"
 envval() { sed -n "s/^$1=//p" "$ENV" | tail -1; }
 # 口令原样拼进 DATABASE_URL 和 compose 插值，只许字母数字（Codex 8、Fable 必须改 9）
@@ -33,9 +33,14 @@ healthy() {
 caddy_reload() { "${C[@]}" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; }
 
 # ── 1. 切换之前：新配置先过校验、镜像先拉下来（这里失败什么都没动）──
-docker compose -f "$IN/compose.yml" --project-directory "$D" --env-file "$ENV" config -q
+# 首次发布时 .env 的 API_IMAGE 是空的，而 compose.yml 是 ${API_IMAGE:?}，Compose 对整份文件插值、不管只起哪个服务。
+# 所以切换前的 compose 命令（这里的 config、release() 里的起库和迁移）都在命令前临时带上 API_IMAGE="$NEW"，
+# 不改 .env、也不在脚本里整体 export（那样回滚时的 up -d 会被环境变量盖过 .env，起的还是新镜像）。（PR #22 第二轮 Codex 1、Fable 必须改）
+API_IMAGE="$NEW" docker compose -f "$IN/compose.yml" --project-directory "$D" --env-file "$ENV" config -q
+# 校验容器要看到的文件和 Caddy 容器一致：新 Caddyfile，加上方案 B 时宿主机 caddy/tls/ 里的证书（Codex 第二轮 3）
+TLS_MOUNT=(); [ -d "$D/caddy/tls" ] && TLS_MOUNT=(-v "$D/caddy/tls:/etc/caddy/tls:ro")
 docker run --rm --network none -e ACME_EMAIL="$(envval ACME_EMAIL)" -e PUBLIC_IP="$(envval PUBLIC_IP)" \
-  -v "$IN/Caddyfile.ip:/etc/caddy/Caddyfile:ro" "$(envval CADDY_IMAGE)" \
+  -v "$IN/Caddyfile.ip:/etc/caddy/Caddyfile:ro" ${TLS_MOUNT[@]+"${TLS_MOUNT[@]}"} "$(envval CADDY_IMAGE)" \
   caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 docker pull "$NEW"
 
@@ -59,7 +64,7 @@ rollback() {
     exit 1
   fi
   if "${C[@]}" up -d --remove-orphans && healthy && caddy_reload; then
-    echo "已回滚到 $PREV（current-tag 仍是 $PREV）" >&2
+    echo "已回滚到 ${PREV}（current-tag 仍是 ${PREV}）" >&2
     exit 1
   fi
   echo "回滚到 $PREV 也失败，需人工处理：看 docker compose ps、docker logs yuanhui-api-1" >&2
@@ -68,7 +73,7 @@ rollback() {
 
 # ── 3. 切换到检查整段进失败处理（在 if 里 set -e 不生效，每步显式 || return 1）──
 release() {
-  "${C[@]}" up -d --wait postgres || return 1
+  API_IMAGE="$NEW" "${C[@]}" up -d --wait postgres || return 1
   API_IMAGE="$NEW" "${C[@]}" run --rm -T migrate || return 1
   set_image "$NEW" || return 1
   "${C[@]}" up -d --remove-orphans || return 1

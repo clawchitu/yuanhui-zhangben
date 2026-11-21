@@ -18,12 +18,12 @@ Compose（`deploy/compose.yml`）：
 3. `ECS_HOST=root@47.117.184.253 deploy/bootstrap-ecs.sh` → 看一遍 → `--execute`。
 4. ECS 上填 `/opt/yuanhui/.env`（`deploy/.env.example`，`POSTGRES_PASSWORD` 用 `openssl rand -hex 24`）。
 5. ECS 上 `docker login <ACR 的 VPC 地址>`。
-6. 本机发布：`ECS_HOST=root@47.117.184.253 ACR=<ACR 的 VPC 地址>/yuanhui deploy/deploy.sh <提交号>` → 看一遍 → 加 `--execute`。首次发布会先起 Postgres、等健康，再跑迁移。
+6. 本机发布：`ECS_HOST=root@47.117.184.253 ACR=<ACR 的 VPC 地址>/yuanhui deploy/deploy.sh <提交号>` → 看一遍 → 加 `--execute`。**`<提交号>` 填 40 位完整提交号**（`git rev-parse <提交>`）：`image.yml` 推的标签是 `${GITHUB_SHA}`，填 7 位短号会在拉镜像时失败（什么都没动，但白跑一趟）。首次发布时 `.env` 的 `API_IMAGE` 还是空的，脚本在切换前的 `compose config`、起 Postgres、迁移这几步临时带上新镜像，不用手填。首次发布会先起 Postgres、等健康，再跑迁移。
 7. 冒烟：`deploy/smoke.sh`；然后按下面「部署时验证」逐项做。
 
 ## 发布 / 回滚
-- 发布：同上第 6 步。`deploy.sh` 在第一条 ssh 之前校验 `ACR`、`ECS_HOST`、标签（7–40 位小写十六进制），不对退出码 2。
-- ECS 上 `remote-deploy.sh` 的顺序：校验新 compose 和新 Caddyfile → 拉镜像 → 备份当前配置到 `prev/` → 起 Postgres 等健康 → `migrate` → 换 `API_IMAGE` → `up -d` → 探 `/healthz` → 镜像内缩图冒烟 → `caddy reload`。**从起 Postgres 到重载 Caddy 任何一步失败**，自动换回 `prev/` 里的配置和上一个镜像，再探一次健康。
+- 发布：同上第 6 步（40 位完整提交号）。`deploy.sh` 在第一条 ssh 之前校验 `ACR`、`ECS_HOST`、标签（7–40 位小写十六进制），不对退出码 2。
+- ECS 上 `remote-deploy.sh` 的顺序：校验新 compose 和新 Caddyfile → 拉镜像 → 备份当前配置到 `prev/` → 起 Postgres 等健康 → `migrate` → 换 `API_IMAGE` → `up -d` → 探 `/healthz` → 镜像内缩图冒烟 → `caddy reload`。**从起 Postgres 到重载 Caddy 任何一步失败**，自动换回 `prev/` 里的配置和上一个镜像，再探一次健康、重载一次 Caddy；回滚这几步也失败则退出码 3。
 - `current-tag` 只在整套成功后写；失败时它保持上一个成功的标签。退出码：0 成功；1 失败已回滚（或首次发布没有可回的）；2 参数 / `.env` 不对，什么都没动；3 回滚也失败，需人工。
 - 手工回滚 = 用上一个标签再跑一次 `deploy.sh`。
 - 迁移前的备份门禁在 S10b 加（§14 T20）；现在库里只有假数据。
@@ -48,7 +48,14 @@ Compose（`deploy/compose.yml`）：
 
 ### 切方案 B 的服务器端步骤（只写不做，满足上面前提后才执行）
 1. 本机用钥匙串里的 CA 签好服务器证书，得到 `ip-cert.pem`（含中间证书链，若有）和 `ip-key.pem`。私钥文件只在传输时离开本机，传完本机删掉临时文件。
-2. 传到 ECS：`scp ip-cert.pem ip-key.pem root@47.117.184.253:/opt/yuanhui/caddy/tls/`；ECS 上 `chown root:root /opt/yuanhui/caddy/tls/*; chmod 644 ip-cert.pem; chmod 600 ip-key.pem; chmod 700 /opt/yuanhui/caddy/tls`。注意容器里 Caddy 以 root 运行、`./caddy` 只读挂载在 `/etc/caddy`，所以路径是 `/etc/caddy/tls/…`。
+2. 先在 ECS 上建目录：`ssh root@47.117.184.253 'mkdir -p /opt/yuanhui/caddy/tls && chmod 700 /opt/yuanhui/caddy/tls'`（目录不存在时 `scp` 会把两个文件写成同一个名为 `tls` 的文件）。再传：`scp ip-cert.pem ip-key.pem root@47.117.184.253:/opt/yuanhui/caddy/tls/`。然后 ECS 上（一律完整路径）：
+   ```sh
+   chown root:root /opt/yuanhui/caddy/tls/ip-cert.pem /opt/yuanhui/caddy/tls/ip-key.pem
+   chmod 644 /opt/yuanhui/caddy/tls/ip-cert.pem
+   chmod 600 /opt/yuanhui/caddy/tls/ip-key.pem
+   chmod 700 /opt/yuanhui/caddy/tls
+   ```
+   容器里 Caddy 以 root 运行、`./caddy` 只读挂载在 `/etc/caddy`，所以路径是 `/etc/caddy/tls/…`。`remote-deploy.sh` 校验新 Caddyfile 的临时容器在 `/opt/yuanhui/caddy/tls/` 存在时同样把它只读挂到 `/etc/caddy/tls`，所以第 4 步的校验能读到证书和私钥；这一步没做（目录不存在）第 4 步会在校验时失败，什么都不切。
 3. 改 `deploy/Caddyfile.ip` 的站点：把 `tls { issuer acme { … } }` 整段换成 `tls /etc/caddy/tls/ip-cert.pem /etc/caddy/tls/ip-key.pem`。
 4. 用当前标签跑 `deploy.sh --execute`（校验后 `caddy reload`）；本机 `openssl s_client` 看签发方已是自家 CA；`curl` 不加 `-k` 时**应失败**（公网不信这张证书，这是预期），真机 Beta 包按 S11b 的结果验证。
 5. 方案 B 期间每年证书到期前 30 天重签（有效期 ≤ 397 天）；备案切域名后按 §9.3 第 7 步删掉 IP 站点和这两个文件。

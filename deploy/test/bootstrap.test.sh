@@ -65,5 +65,5 @@ setup; boot
 check "退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
 check "没有发出 ssh" [ ! -s "$FAKE_LOG" ]
 
-echo "通过 $pass，失败 $fail"
+echo "通过 ${pass}，失败 $fail"
 [ "$fail" = 0 ]
