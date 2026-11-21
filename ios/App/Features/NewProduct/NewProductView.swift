@@ -255,6 +255,15 @@ struct NewProductView: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .scrollDismissesKeyboard(.interactively)
+            // 数字键盘没有回车：键盘上方放「好了」收起键盘
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("好了") { moreFocus = nil }
+                        .font(TypeScale.body.weight(.bold))
+                        .accessibilityIdentifier("newProduct.keyboardDone")
+                }
+            }
             PrimaryButton("存好", systemImage: "checkmark", mode: model.mode) {
                 moreFocus = nil
                 if let conv = model.saveMore() { onDone(.registered(conv, quick: false)) }

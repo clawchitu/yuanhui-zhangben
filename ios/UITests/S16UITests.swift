@@ -138,9 +138,13 @@ final class S16UITests: XCTestCase {
         XCTAssertTrue(app.buttons["sell.discount"].isEnabled)
     }
 
-    /// 没登记的码：出黄条（S18 再接登记页），篮子不变
+    /// 没登记、又进不了登记页的码（S18 起能登记的码直接去 04a，§14 S16-3；这里用 65 位、超过契约条码长度的码）：
+    /// 出黄条，篮子不变
+    static let unregistrable = String(repeating: "6", count: 65)
+
     func testUnknownCodeShowsNotice() {
-        let app = launch(["-uiScan", "\(Self.beer),6900000000000"])
+        // 扫码枪一个码最多 48 位（`HIDScanParser`），超长的码只可能从相机来
+        let app = launch(["-uiScan", "\(Self.beer),\(Self.unregistrable)", "-uiScanSource", "camera"])
         let notice = el(app, "sell.notice")
         XCTAssertTrue(notice.waitForExistence(timeout: 10))
         XCTAssertTrue(notice.label.contains("这个码还没登记"), notice.label)
@@ -149,8 +153,8 @@ final class S16UITests: XCTestCase {
 
     /// 连着扫同一个没登记的码（隔 3 秒）：第二次的黄条从第二次起停满 4 秒，不被第一次的计时提前收掉（Fable 8）
     func testRepeatedUnknownCodeRestartsTheNoticeTimer() {
-        let unknown = "6900000000000"
-        let app = launch(["-uiScan", "\(unknown),\(unknown)", "-uiScanGap", "3"])
+        let unknown = Self.unregistrable
+        let app = launch(["-uiScan", "\(unknown),\(unknown)", "-uiScanGap", "3", "-uiScanSource", "camera"])
         let notice = el(app, "sell.notice")
         XCTAssertTrue(notice.waitForExistence(timeout: 10))
         let first = Date()

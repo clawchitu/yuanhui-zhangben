@@ -77,6 +77,7 @@ final class S18UITests: XCTestCase {
         XCTAssertTrue(el(app, "newProduct.costWarning").waitForExistence(timeout: 3), "填了库存没填进价出现黄字提醒")
         XCTAssertFalse(app.textFields["newProduct.year"].exists, "没打开开关不出到期日")
         XCTAssertFalse(app.staticTexts["提前几天提醒"].exists, "没打开开关不出提前天数")
+        app.buttons["newProduct.keyboardDone"].tap()   // 收起系统数字键盘（它会盖住下面的开关）
         let toggle = app.switches["newProduct.trackExpiry"]
         toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
         XCTAssertTrue(app.textFields["newProduct.year"].waitForExistence(timeout: 3))
