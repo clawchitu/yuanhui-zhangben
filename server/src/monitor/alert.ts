@@ -73,13 +73,15 @@ export const DETAIL_KEYS = new Set([
 ]);
 
 const MAX_VALUE = 300;
-// 看着像凭据的串：连续 24 位以上的十六进制 / base64 / base64url 字符（UUID 有连字符，每段都短于 24，不受影响）
+// 看着像凭据的串：连续 24 位以上的十六进制 / base64 / base64url 字符，而且字母数字都有
+// （UUID 有连字符，每段都短于 24，不受影响；account_delete_export_failed 这种告警名没有数字，不受影响）
 const SECRETISH = /[A-Za-z0-9+/_=]{24,}/g;
+const looksSecret = (s: string) => /[0-9]/.test(s) && /[A-Za-z]/.test(s);
 // 「APPCODE xxx」「Bearer xxx」这种带前缀的，不论长短都隐去
 const AUTH_PREFIX = /\b(appcode|bearer|basic|token|password|passwd|secret)\b\s*[:=]?\s*\S+/gi;
 
 export function scrub(s: string): string {
-  return s.replace(AUTH_PREFIX, "$1 [已隐去]").replace(SECRETISH, "[已隐去]").slice(0, MAX_VALUE);
+  return s.replace(AUTH_PREFIX, "$1 [已隐去]").replace(SECRETISH, (m) => (looksSecret(m) ? "[已隐去]" : m)).slice(0, MAX_VALUE);
 }
 
 export function sanitizeDetails(d: Record<string, unknown> | undefined): Record<string, string> {

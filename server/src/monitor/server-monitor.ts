@@ -37,6 +37,8 @@ export interface ServerMonitorDeps {
   /** 看用量的磁盘（挂在 /data 上的目录）；空 = 不查 */
   diskPath: string;
   statfs?: (path: string) => Promise<{ blocks: number; bfree: number; bavail: number }>;
+  /** 只给测试用：把 ops 表的阈值调小（造 512 MB 的表太慢） */
+  limits?: { opsTableBytes?: number; opsGrowthBytesPerDay?: number };
 }
 
 type Cursors = { gateSkips?: number; restoreEvents?: number; lastSkip?: number; opsSamples?: Array<[number, number]> };
@@ -152,18 +154,20 @@ export class ServerMonitor {
     while (samples.length > 1 && samples[0]![0] < now.getTime() - 25 * 3600_000) samples.shift();
     if (samples.length > 200) samples.splice(0, samples.length - 200);
     const dayAgo = samples.find(([t]) => t <= now.getTime() - 24 * 3600_000 + 60_000) ?? (samples[0]![0] <= now.getTime() - 23 * 3600_000 ? samples[0] : undefined);
-    await this.d.alerter.condition(bytes > THRESHOLDS.opsTableBytes, {
+    const maxBytes = this.d.limits?.opsTableBytes ?? THRESHOLDS.opsTableBytes;
+    const maxGrowth = this.d.limits?.opsGrowthBytesPerDay ?? THRESHOLDS.opsGrowthBytesPerDay;
+    await this.d.alerter.condition(bytes > maxBytes, {
       key: "ops_table_size",
       title: "ops 表体积超过 512 MB（§14 T3，出现异常增长再提裁定）",
       severity: "warning",
-      details: { bytes, threshold: THRESHOLDS.opsTableBytes },
+      details: { bytes, threshold: maxBytes },
     });
     const growth = dayAgo ? bytes - dayAgo[1] : 0;
-    await this.d.alerter.condition(growth > THRESHOLDS.opsGrowthBytesPerDay, {
+    await this.d.alerter.condition(growth > maxGrowth, {
       key: "ops_table_growth",
       title: "ops 表 24 小时内增长超过 64 MB（§14 T3）",
       severity: "warning",
-      details: { bytes, growth_bytes: growth, threshold: THRESHOLDS.opsGrowthBytesPerDay },
+      details: { bytes, growth_bytes: growth, threshold: maxGrowth },
     });
   }
 
