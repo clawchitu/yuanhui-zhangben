@@ -100,6 +100,7 @@ final class S17UITests: XCTestCase {
         XCTAssertTrue(el(app, "sell.notice").waitForExistence(timeout: 10))
         XCTAssertTrue(el(app, "sell.notice").label.contains("刚才抹的零取消了"))
         wait("回到原价 58.00") { el(app, "sell.total").label == "58.00 元" }
+        XCTAssertEqual(el(app, "sell.totalLabel").label, "零取消了，按原价收", "总价上面也说一句")
     }
 
     /// 全是零价商品时改价按钮不可用

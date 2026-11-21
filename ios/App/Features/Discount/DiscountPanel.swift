@@ -83,6 +83,8 @@ struct DiscountPanel: View {
                     .foregroundStyle(Tokens.Palette.ink2)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+                    // 钉在底部的说明不跟着辅助字号无限放大：最大辅助字号下它曾占掉半屏，把键盘挤到要滚动才看得见
+                    .dynamicTypeSize(...DynamicTypeSize.xxLarge)
             }
             .padding(.horizontal, 20)
             .padding(.top, 10)

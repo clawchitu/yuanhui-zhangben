@@ -475,10 +475,16 @@ struct CheckoutPanel: View {
 
     private var totalColor: Color { empty ? Tokens.Palette.mute : Tokens.Palette.ink }
 
+    /// 「要收」/「实收」。抹的零刚被作废（黄条还在）时改成红字「零取消了，按原价收」：
+    /// 收银员眼睛盯着总价，黄条在上面容易漏看（§14 S16-1）
     private var totalLabel: some View {
-        Text(model.discountFen == nil ? "要收" : "实收")
-            .font(TypeScale.secondary)
-            .foregroundStyle(Tokens.Palette.ink2)
+        let cleared = model.notice == .paidCleared
+        return Text(cleared ? "零取消了，按原价收" : (model.discountFen == nil ? "要收" : "实收"))
+            .font(cleared ? TypeScale.secondary.weight(.bold) : TypeScale.secondary)
+            .foregroundStyle(cleared ? Tokens.Palette.sell : Tokens.Palette.ink2)
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .accessibilityIdentifier("sell.totalLabel")
     }
 
     /// 「要收」+ 总价（固定字号，放不下由外层换下一档）
