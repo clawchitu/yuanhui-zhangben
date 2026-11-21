@@ -1,0 +1,172 @@
+// 商品图任务（S08）：给新登记、还没有图、条码在缓存里有图片地址的商品抓图。
+//
+// 流程：enqueue 把候选商品放进 image_jobs（一个商品一行，主键去重）→ runDue 原子地领任务（attempts+1 并把 next_try_at
+// 推到以后，FOR UPDATE SKIP LOCKED：两个进程 / 两轮同时跑也不会领到同一个）→ 安全下载 → 缩图 → 写对象存储 →
+// 在 withStoreLock 里确认商品还没图、取一个新号，写回 image_key / image_ver（+1）/ rev。
+// 图片任务和商品保存是两件事：商品早已在同步时保存，这里失败只记 last_error，商品照常可用（显示首字）。
+// 总开关 product_images_enabled 关着时什么都不做；演示店不抓第三方图。
+import { sql, type Kysely } from "kysely";
+import type { Database } from "../db.ts";
+import { withStoreLock } from "../sync/lock.ts";
+import { imageKey, type ObjectStore } from "../lookup/oss.ts";
+import { ImageRejected, fetchImage as defaultFetch, makeThumbnail, sha256 } from "../lookup/images.ts";
+
+export const MAX_ATTEMPTS = 3;
+/** 第 1、2 次失败后隔多久再试 */
+export const RETRY_DELAYS_MS = [5 * 60_000, 60 * 60_000];
+/** 这些原因重试也没用，直接放弃 */
+const PERMANENT = new Set(["bad_url", "bad_scheme", "bad_port", "private_address", "too_large", "bad_format", "too_small", "too_big_dimensions", "empty", "bad_type"]);
+
+export interface ImageJobDeps {
+  db: Kysely<Database>;
+  store: ObjectStore | null;
+  enabled: boolean;
+  clock: () => Date;
+  /** 下载（测试里换成带放行策略的版本） */
+  fetchImage?: (url: string) => Promise<Buffer>;
+  log?: { warn(obj: object, msg: string): void; info(obj: object, msg: string): void };
+}
+
+/** 把候选商品放进队列，返回新放进去几个 */
+export async function enqueueImageJobs(d: ImageJobDeps, limit = 200): Promise<number> {
+  if (!d.enabled || !d.store) return 0;
+  const r = await sql`
+    INSERT INTO image_jobs (store_id, product_id, source_url, next_try_at)
+    SELECT store_id, product_id, image_url, ${d.clock()} FROM (
+      SELECT DISTINCT ON (p.store_id, p.id) p.store_id, p.id AS product_id, c.image_url
+      FROM products p
+      JOIN stores s ON s.id = p.store_id AND NOT s.is_demo
+      JOIN product_barcodes b ON b.store_id = p.store_id AND b.product_id = p.id AND b.deleted_at IS NULL
+      JOIN barcode_catalog c ON c.barcode = b.barcode AND c.found AND c.image_url IS NOT NULL
+      WHERE p.image_ver = 0 AND p.archived_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM image_jobs j WHERE j.store_id = p.store_id AND j.product_id = p.id)
+      ORDER BY p.store_id, p.id, b.pack_qty, b.barcode
+      LIMIT ${limit}
+    ) x
+    ON CONFLICT (store_id, product_id) DO NOTHING`.execute(d.db);
+  return Number(r.numAffectedRows ?? 0);
+}
+
+interface Claimed {
+  store_id: string;
+  product_id: string;
+  source_url: string;
+  attempts: number;
+}
+
+/** 原子地领到期的任务：领到的 attempts 已 +1，next_try_at 已推后（进程崩了也会在推后的时间重新可领） */
+export async function claimDue(d: ImageJobDeps, limit: number): Promise<Claimed[]> {
+  const now = d.clock();
+  const r = await sql<Claimed>`
+    UPDATE image_jobs j SET
+      attempts = j.attempts + 1,
+      next_try_at = ${now}::timestamptz + make_interval(secs => (CASE WHEN j.attempts = 0 THEN ${RETRY_DELAYS_MS[0]! / 1000} ELSE ${RETRY_DELAYS_MS[1]! / 1000} END))
+    FROM (
+      SELECT store_id, product_id FROM image_jobs
+      WHERE done_at IS NULL AND attempts < ${MAX_ATTEMPTS} AND next_try_at <= ${now}
+      ORDER BY next_try_at
+      LIMIT ${limit}
+      FOR UPDATE SKIP LOCKED
+    ) due
+    WHERE j.store_id = due.store_id AND j.product_id = due.product_id
+    RETURNING j.store_id, j.product_id, j.source_url, j.attempts`.execute(d.db);
+  return r.rows;
+}
+
+export interface RunResult {
+  done: number;
+  failed: number;
+  skipped: number;
+}
+
+/** 跑一轮：领 limit 个到期任务，一个一个做 */
+export async function runImageJobs(d: ImageJobDeps, limit = 20): Promise<RunResult> {
+  const out: RunResult = { done: 0, failed: 0, skipped: 0 };
+  if (!d.enabled || !d.store) return out;
+  for (const job of await claimDue(d, limit)) {
+    const r = await processJob(d, d.store, job);
+    out[r] += 1;
+  }
+  return out;
+}
+
+async function processJob(d: ImageJobDeps, store: ObjectStore, job: Claimed): Promise<keyof RunResult> {
+  const before = await d.db
+    .selectFrom("products")
+    .select(["image_ver", "archived_at"])
+    .where("store_id", "=", job.store_id)
+    .where("id", "=", job.product_id)
+    .executeTakeFirst();
+  if (!before || before.image_ver !== 0 || before.archived_at) {
+    await finish(d, job, null);
+    return "skipped";
+  }
+  try {
+    const raw = await (d.fetchImage ?? defaultFetch)(job.source_url);
+    const thumb = await makeThumbnail(raw);
+    const ver = before.image_ver + 1;
+    const key = imageKey(job.store_id, job.product_id, ver, sha256(thumb));
+    // 上传在锁外做（不拿着店铺锁等网络）；写回时在锁里再确认一次商品还没图
+    await store.put(key, thumb, "image/jpeg");
+    const wrote = await withStoreLock(d.db, job.store_id, async (tx) => {
+      const cur = await tx.trx
+        .selectFrom("products")
+        .select(["image_ver", "archived_at"])
+        .where("store_id", "=", tx.storeId)
+        .where("id", "=", job.product_id)
+        .executeTakeFirst();
+      if (!cur || cur.image_ver !== before.image_ver || cur.archived_at) return false;
+      await tx.trx
+        .updateTable("products")
+        .set({ image_key: key, image_source: "kuainiao", image_ver: ver, rev: await tx.nextRev(), updated_at: d.clock() })
+        .where("store_id", "=", tx.storeId)
+        .where("id", "=", job.product_id)
+        .execute();
+      return true;
+    });
+    await finish(d, job, null);
+    d.log?.info({ store_id: job.store_id, product_id: job.product_id, wrote }, "商品图已写回");
+    return wrote ? "done" : "skipped";
+  } catch (e) {
+    const reason = e instanceof ImageRejected ? e.reason : "error";
+    const permanent = PERMANENT.has(reason);
+    // last_error 只记原因代码，不记地址和响应内容
+    await d.db
+      .updateTable("image_jobs")
+      .set({ last_error: reason, ...(permanent ? { attempts: MAX_ATTEMPTS } : {}) })
+      .where("store_id", "=", job.store_id)
+      .where("product_id", "=", job.product_id)
+      .execute();
+    d.log?.warn({ store_id: job.store_id, product_id: job.product_id, reason, attempt: job.attempts, permanent }, "商品图抓取失败");
+    return "failed";
+  }
+}
+
+async function finish(d: ImageJobDeps, job: Claimed, err: string | null) {
+  await d.db
+    .updateTable("image_jobs")
+    .set({ done_at: d.clock(), last_error: err })
+    .where("store_id", "=", job.store_id)
+    .where("product_id", "=", job.product_id)
+    .execute();
+}
+
+/** 进程里定时跑（server.ts 在开关打开、配了对象存储时启动）。一轮跑完才排下一轮，不会叠着跑 */
+export function startImageFetchLoop(d: ImageJobDeps, intervalMs = 30_000): () => void {
+  let stopped = false;
+  let timer: NodeJS.Timeout | undefined;
+  const tick = async () => {
+    try {
+      await enqueueImageJobs(d);
+      await runImageJobs(d);
+    } catch (e) {
+      d.log?.warn({ err: (e as Error).message }, "商品图任务这一轮出错");
+    }
+    if (!stopped) timer = setTimeout(tick, intervalMs);
+  };
+  timer = setTimeout(tick, intervalMs);
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+  };
+}
