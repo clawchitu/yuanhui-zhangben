@@ -7,6 +7,8 @@ struct SellFixture: Equatable, Sendable {
     var scanner: ScannerFeed?
     /// 喂完码后把实收改成这个数（代替 S17 的抹零面板，03b 截图用）
     var paidFen: Int64?
+    /// 改完实收后再扫一个码（`-uiScanAfterPaid`，「抹的零取消了」黄条截图用）
+    var scanAfterPaid: String?
     /// 喂完后自动按「记账」（03d 截图用）
     var autoCommit = false
     /// 「记好了」黑卡不自动消失（截图用）
@@ -43,6 +45,7 @@ extension SellFixture {
     ///   -uiHoldDone              「记好了」不自动消失
     ///   -uiCamera denied|authorized|notDetermined   `CameraPermission.forcedAccess`；不给时当作 authorized
     ///   -uiProbe                 放调试探针
+    ///   -uiScanAfterPaid 码     改完实收后再扫这个码（看「抹的零取消了」黄条）
     ///   -uiDiscount [键]         喂完打开抹零面板并按这些键（例如 5、53.5）；-uiDiscountSubmit 再按「就收这么多」
     ///   -uiManual [code|name]    喂完推到手输条码页；-uiManualInput 69025143 / -uiManualQuery 康师傅 / -uiManualSelect 0
     @MainActor static func from(_ args: [String]) -> SellFixture {
@@ -58,6 +61,7 @@ extension SellFixture {
             if i + 1 < args.count, !args[i + 1].hasPrefix("-") { f.discountKeys = args[i + 1] }
         }
         f.discountSubmit = args.contains("-uiDiscountSubmit")
+        f.scanAfterPaid = UIFixture.value(for: "-uiScanAfterPaid", in: args)
         if let i = args.firstIndex(of: "-uiManual") {
             f.openManual = true
             if i + 1 < args.count { f.manual.tab = ManualCodeModel.Tab(rawValue: args[i + 1]) }

@@ -177,6 +177,8 @@ struct SellView: View {
             if let scanner = fixture.scanner { await scanner.run(into: hub) }
             #endif
             if let paid = fixture.paidFen { try? model.setPaid(paid) }
+            // 抹完零再扫一个（S16-1 黄条截图）：和手输一样走扫码层
+            if let code = fixture.scanAfterPaid { hub.receive(code, from: .manual) }
             if fixture.openDiscount { showDiscount = true }
             if fixture.openManual { showManual = true }
             if fixture.autoCommit {
