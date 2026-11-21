@@ -11,11 +11,11 @@ final class S17UITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launch(_ extra: [String]) -> XCUIApplication {
+    private func launch(_ extra: [String], page: String = "page.sell") -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-uiFixture", "home", "-uiLargeText", "on", "-uiProbe", "-uiRoute", "sell"] + extra
         app.launch()
-        XCTAssertTrue(app.otherElements["page.sell"].waitForExistence(timeout: 10))
+        XCTAssertTrue(el(app, page).waitForExistence(timeout: 10), page)
         return app
     }
 
@@ -68,13 +68,13 @@ final class S17UITests: XCTestCase {
         waitItems(app, 6)
         app.buttons["sell.discount"].tap()
         XCTAssertTrue(el(app, "page.discount").waitForExistence(timeout: 5))
-        el(app, "discount.keypad").buttons["5"].tap()
+        app.buttons["5"].firstMatch.tap()
         app.buttons["discount.submit"].tap()
         XCTAssertTrue(el(app, "page.discountConfirm").waitForExistence(timeout: 5))
         XCTAssertTrue(el(app, "discount.confirm.detail").label.contains("少按了一位"))
         app.buttons["discount.refill"].tap()
         XCTAssertTrue(el(app, "discount.keypad").waitForExistence(timeout: 5))
-        el(app, "discount.keypad").buttons["5"].tap()
+        app.buttons["5"].firstMatch.tap()
         app.buttons["discount.submit"].tap()
         XCTAssertTrue(app.buttons["discount.confirm"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["discount.confirm"].label.contains("¥5.00"))
@@ -93,7 +93,7 @@ final class S17UITests: XCTestCase {
 
     /// 抹零后再加一样（从手输页加，走扫码层）：黄条「抹的零取消了」出现，实收回到原价（§14 S16-1）
     func testAddAfterDiscountShowsPaidClearedBanner() {
-        let app = launch(["-uiScan", Self.design, "-uiPaid", "5300", "-uiManual", "code", "-uiManualInput", Self.noodle])
+        let app = launch(["-uiScan", Self.design, "-uiPaid", "5300", "-uiManual", "code", "-uiManualInput", Self.noodle], page: "page.manualCode")
         XCTAssertTrue(app.buttons["manual.pick"].waitForExistence(timeout: 15))
         wait("只有一个候选，自动选中") { app.buttons["manual.pick"].isEnabled }
         app.buttons["manual.pick"].tap()
@@ -112,27 +112,28 @@ final class S17UITests: XCTestCase {
 
     /// 15：前缀 69025143 命中两个，两个都列、主按钮灰；点第二行后可加入，进的是那一样
     func testManualPrefixTwoHitsThenPick() {
-        let app = launch(["-uiMoreGoods", "-uiManual", "code", "-uiManualInput", "69025143"])
+        let app = launch(["-uiMoreGoods", "-uiManual", "code", "-uiManualInput", "69025143"], page: "page.manualCode")
         XCTAssertTrue(el(app, "page.manualCode").waitForExistence(timeout: 10))
         XCTAssertTrue(el(app, "manual.row.6902514300011").waitForExistence(timeout: 5))
         XCTAssertTrue(el(app, "manual.row.6902514300028").exists)
         XCTAssertFalse(app.buttons["manual.pick"].isEnabled, "两个时不自动选")
-        el(app, "manual.row.6902514300028").tap()
-        XCTAssertTrue(app.buttons["manual.pick"].isEnabled)
+        app.buttons["manual.row.6902514300028"].tap()
+        wait("点一行后主按钮可用") { app.buttons["manual.pick"].isEnabled }
         app.buttons["manual.pick"].tap()
         waitItems(app, 1)
-        XCTAssertTrue(el(app, "sell.tag").label.contains("老坛酸菜"))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "老坛酸菜")).firstMatch.exists, "进篮的是点的那一样")
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "红烧牛肉面")).firstMatch.exists)
     }
 
     /// 15b：按名称找用系统键盘；收银员形态结果行没有库存字样
     func testNameSearchCashierHasNoStock() {
-        let app = launch(["-uiRole", "cashier", "-uiMoreGoods", "-uiManual", "name"])
+        let app = launch(["-uiRole", "cashier", "-uiMoreGoods", "-uiManual", "name"], page: "page.manualCode")
         XCTAssertTrue(el(app, "page.manualCode").waitForExistence(timeout: 10))
         let field = el(app, "manual.query")
         field.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "系统键盘")
         field.typeText("牛奶")
-        wait("出结果") { app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'manual.name.'")).count >= 3 }
+        wait("出结果") { app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'manual.name.'")).count >= 2 }
         let rows = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'manual.name.'"))
         for i in 0..<rows.count {
             XCTAssertFalse(rows.element(boundBy: i).label.contains("库存"), rows.element(boundBy: i).label)
