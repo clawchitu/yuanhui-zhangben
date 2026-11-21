@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 在 ECS 上执行的发布步骤：由 deploy/deploy.sh 传到 /opt/yuanhui/incoming/ 后调用，不要在本机跑。
-# 用法：bash /opt/yuanhui/incoming/remote-deploy.sh <提交号> <镜像仓库> [--skip-backup-gate]
+# 用法：bash /opt/yuanhui/incoming/remote-deploy.sh <提交号> <镜像仓库> [--skip-backup-gate] [--load-images <incoming/ 下的 tar>]
+#   --load-images：先 docker load 这个 tar（image.yml 产出，含 api、caddy、postgres），之后不 docker pull；load 完删掉 tar
 # 状态：/opt/yuanhui/current-tag 只在整套发布成功后写；.env 的 API_IMAGE 在切换时改、失败时改回；
 #       上一份 compose.yml / Caddyfile 备在 prev/，失败时一起换回（Codex 3、Fable 必须改 2）。
 # 迁移前备份门禁（S10b，§14 T20）：动任何东西之前看 backup/last-success（backup.sh 上传和心跳都成功才写）。
@@ -9,13 +10,24 @@
 # 发布成功后装上 backup.sh 和备份定时器（yuanhui-backup.timer）；装不上退出码 4（发布本身已成功）。
 set -euo pipefail
 umask 077
-TAG="${1:-}"; REG="${2:-}"; SKIP_GATE=0
-[ "${3:-}" = --skip-backup-gate ] && SKIP_GATE=1
+TAG="${1:-}"; REG="${2:-}"; SKIP_GATE=0; LOAD=""
+shift 2 || true
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --skip-backup-gate) SKIP_GATE=1 ;;
+    --load-images) LOAD="${2:-}"; shift ;;
+    *) echo "不认识的参数：$1" >&2; exit 2 ;;
+  esac
+  shift
+done
 [[ $TAG =~ ^[0-9a-f]{7,40}$ ]] || { echo "标签不对：$TAG" >&2; exit 2; }
 [[ $REG =~ ^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9][a-z0-9._-]*$ || $REG == "<ACR>/yuanhui" ]] || { echo "镜像仓库不对：$REG" >&2; exit 2; }
 IN=$(cd "$(dirname "$0")" && pwd)
 D=$(dirname "$IN")
 ENV="$D/.env"
+if [ -n "$LOAD" ]; then
+  [[ $LOAD == "$IN"/* && $(basename "$LOAD") =~ ^[A-Za-z0-9._-]+\.tar(\.gz)?$ && -f $LOAD ]] || { echo "--load-images 只收 ${IN}/ 下存在的 .tar / .tar.gz：$LOAD" >&2; exit 2; }
+fi
 [ -f "$ENV" ] || { echo "缺 ${ENV}（按 deploy/.env.example 填好再发布）" >&2; exit 2; }
 NEW="$REG/api:$TAG"
 envval() { sed -n "s/^$1=//p" "$ENV" | tail -1; }
@@ -54,6 +66,13 @@ backup_gate() {
 }
 backup_gate
 
+# 镜像从 tar 来（不用 ACR）：在校验 Caddyfile（要用 CADDY_IMAGE）之前载入，载入失败什么都没动
+if [ -n "$LOAD" ]; then
+  docker load -i "$LOAD"
+  rm -f "$LOAD"
+  docker image inspect "$NEW" > /dev/null || { echo "tar 里没有 ${NEW}（IMAGES_TAR 和提交号对不上？）" >&2; exit 1; }
+fi
+
 healthy() {
   for _ in $(seq 1 30); do
     "${C[@]}" exec -T api node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))" && return 0
@@ -73,7 +92,7 @@ TLS_MOUNT=(); [ -d "$D/caddy/tls" ] && TLS_MOUNT=(-v "$D/caddy/tls:/etc/caddy/tl
 docker run --rm --network none -e ACME_EMAIL="$(envval ACME_EMAIL)" -e PUBLIC_IP="$(envval PUBLIC_IP)" \
   -v "$IN/Caddyfile.ip:/etc/caddy/Caddyfile:ro" ${TLS_MOUNT[@]+"${TLS_MOUNT[@]}"} "$(envval CADDY_IMAGE)" \
   caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-docker pull "$NEW"
+[ -n "$LOAD" ] || docker pull "$NEW"
 
 # ── 2. 备份当前配置，装上新配置 ──
 mkdir -p "$D/prev" "$D/caddy"

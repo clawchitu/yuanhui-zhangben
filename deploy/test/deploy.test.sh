@@ -195,6 +195,22 @@ setup; with_prev; export FAKE_SYSTEMCTL_FAIL=1; deploy "$NEW" --execute
 check "退出码 4（实际 $(rc)）" [ "$(rc)" = 4 ]
 check "current-tag 已是新标签（发布成功）" [ "$(tag)" = "$NEW" ]
 
+t "IMAGES_TAR（不用 ACR）：tar 传到 incoming/，先 docker load 再校验，不 docker pull；ACR 不填时用 local/yuanhui"
+setup; with_prev; printf x > "$T/yuanhui-images-$NEW.tar.gz"
+IMAGES_TAR="$T/yuanhui-images-$NEW.tar.gz" A='' deploy "$NEW" --execute
+check "退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
+check "scp 传了 tar" grep -q "^scp .*yuanhui-images-$NEW.tar.gz" "$FAKE_LOG"
+check "docker load 了 incoming/ 里的 tar" grep -q "^docker load -i $T/remote/incoming/yuanhui-images-$NEW.tar.gz" "$FAKE_LOG"
+check "load 在 caddy validate 之前" [ "$(grep -n '^docker load' "$FAKE_LOG" | cut -d: -f1)" -lt "$(grep -n 'caddy validate' "$FAKE_LOG" | cut -d: -f1)" ]
+check "没有 docker pull" no grep -q "^docker pull" "$FAKE_LOG"
+check "load 完删掉了 tar" [ ! -e "$T/remote/incoming/yuanhui-images-$NEW.tar.gz" ]
+check ".env 指向 local/yuanhui/api:新标签（实际 $(envimg)）" [ "$(envimg)" = "local/yuanhui/api:$NEW" ]
+unset A
+setup; with_prev; IMAGES_TAR="$T/nope.tar.gz" deploy "$NEW" --execute
+check "tar 不存在：退出码 2、没有 ssh（实际 $(rc)）" [ "$(rc)" = 2 ] && [ ! -s "$FAKE_LOG" ]
+setup; with_prev; printf x > "$T/a;b.tar"; IMAGES_TAR="$T/a;b.tar" deploy "$NEW" --execute
+check "tar 文件名带分号：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ] && [ ! -s "$FAKE_LOG" ]
+
 t "部署脚本里没有紧贴非 ASCII 字符的 \$变量（Bash 3.2 + UTF-8 下会被读成另一个变量名；一律写成 \${变量}）"
 # shellcheck disable=SC2016
 LC_ALL=C grep -nE '^[^#]*\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' "$HERE"/../*.sh > "$T/out" 2>&1

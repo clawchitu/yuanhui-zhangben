@@ -5,7 +5,8 @@
 #   db（172.30.1.0/24，internal: true）：api、postgres、migrate。不出网，caddy 不在上面、连不到数据库。
 # 固定地址：caddy 172.30.0.2（api 只信这个地址给的 X-Forwarded-For，TRUSTED_PROXY）、api 172.30.0.3；
 # 动态分配限制在 ip_range（.128/25）里，和固定地址错开（§14 S10a-1）。
-# 镜像一律从 ACR 拉（ECS 拉不动 Docker Hub），三个镜像变量都必填，不给 Docker Hub 默认值（Fable 必须改 4）。
+# 镜像不从 Docker Hub 拉（ECS 拉不动）：GitHub Actions 打成 tar、deploy.sh 传上去 docker load（IMAGES_TAR），或从 ACR 拉；
+# 三个镜像变量都必填，不给 Docker Hub 默认值（Fable 必须改 4）。
 # 不开 443/udp（HTTP/3，§14 S10a-5）。
 name: yuanhui
 
@@ -126,7 +127,10 @@ services:
       BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:-}
       BACKUP_OSS_REGION: ${OSS_REGION:-}
       BACKUP_OSS_ENDPOINT: ${OSS_ENDPOINT:-}
-      BACKUP_OSS_BUCKET: ${OSS_ARCHIVE_BUCKET:-}
+      # 备份桶开了合规保留（WORM，35 天），只放 backups/；心跳和 deletions/ 在存档桶（S10 部署实测，负责人 11/22 决定）。
+      # BACKUP_BUCKET 没填时退回老布局（全部在存档桶）
+      BACKUP_OSS_BUCKET: ${BACKUP_BUCKET:-${OSS_ARCHIVE_BUCKET:-}}
+      BACKUP_OSS_ARCHIVE_BUCKET: ${OSS_ARCHIVE_BUCKET:-}
       BACKUP_OSS_ACCESS_KEY_ID: ${BACKUP_OSS_ACCESS_KEY_ID:-}
       BACKUP_OSS_ACCESS_KEY_SECRET: ${BACKUP_OSS_ACCESS_KEY_SECRET:-}
     networks: [db, edge]
