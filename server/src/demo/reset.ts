@@ -61,23 +61,27 @@ export async function setupDemoStore(db: Kysely<Database>, input: SetupDemoInput
   return { storeId, accountId };
 }
 
-export type ResetOutcome = "reset" | "deferred";
+export type ResetOutcome = "reset" | "deferred" | "skipped";
 
 /**
  * 重置一家演示店。force=false 时先看有没有人在用（锁内判断），有就把 next_reset_at 顺延 1 小时、返回 deferred。
+ * onlyIfDue（定时任务用）：锁内重查 next_reset_at，还没到（别的进程刚重置或顺延过这个周期）→ skipped，什么都不动。
+ * 到期检查在锁外做过一次，但两个进程可能都看到「到点」，只有锁内这次重查算数（PR #20 Codex 6）。
  * 店不是演示店（demo_stores 里没有）直接抛错：这个函数绝不碰真实店。
  */
-export async function resetDemoStore(db: Kysely<Database>, storeId: string, now: Date, o: { force?: boolean } = {}): Promise<ResetOutcome> {
+export async function resetDemoStore(db: Kysely<Database>, storeId: string, now: Date, o: { force?: boolean; onlyIfDue?: boolean } = {}): Promise<ResetOutcome> {
   return withStoreLock(db, storeId, async (tx) => {
     const demo = await tx.trx
       .selectFrom("demo_stores as d")
       .innerJoin("stores as s", "s.id", "d.store_id")
       .innerJoin("accounts as a", "a.store_id", "d.store_id")
-      .select(["d.review_password_hash", "s.is_demo", "a.id as account_id", "a.kind"])
+      .select(["d.review_password_hash", "d.next_reset_at", "s.is_demo", "a.id as account_id", "a.kind"])
       .where("d.store_id", "=", storeId)
       .forUpdate("d")
       .executeTakeFirst();
     if (!demo || !demo.is_demo || demo.kind !== "review") throw new Error(`店 ${storeId} 不是演示店，拒绝重置`);
+    // demo_stores 行已 FOR UPDATE 锁住（外面还有店铺锁）：并发的另一个进程在这里等，轮到它时读到的是已推后的 next_reset_at
+    if (o.onlyIfDue && new Date(demo.next_reset_at).getTime() > now.getTime()) return "skipped";
     // 和登录、演示登录同一把账号锁：已经建好的设备这里看得见（算作有人在用、或者被这次重置撤销），还没建的等重置完再建
     const lock = await lockAccount(tx.trx, demo.account_id);
     if (!lock) throw new Error("审核号不见了");
@@ -123,13 +127,13 @@ export async function resetDemoStore(db: Kysely<Database>, storeId: string, now:
   });
 }
 
-/** 定时任务：把到点的演示店逐个重置（或顺延）。店铺排队满了就留到下一轮 */
+/** 定时任务：把到点的演示店逐个重置（或顺延）。锁内重查到别的进程已处理了这个周期 → skipped。店铺排队满了就留到下一轮 */
 export async function runDemoResets(db: Kysely<Database>, now: Date): Promise<Record<string, ResetOutcome | "busy">> {
   const due = await db.selectFrom("demo_stores").select("store_id").where("next_reset_at", "<=", now).execute();
   const out: Record<string, ResetOutcome | "busy"> = {};
   for (const d of due) {
     try {
-      out[d.store_id] = await resetDemoStore(db, d.store_id, now);
+      out[d.store_id] = await resetDemoStore(db, d.store_id, now, { onlyIfDue: true });
     } catch (e) {
       if (e instanceof StoreBusy) out[d.store_id] = "busy";
       else throw e;

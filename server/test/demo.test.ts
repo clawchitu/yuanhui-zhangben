@@ -3,7 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "kysely";
-import { createTestDb, type TestDb } from "./helpers/db.ts";
+import { createTestDb, databaseUrl, type TestDb } from "./helpers/db.ts";
+import { createDb } from "../src/db.ts";
 import { bearer, makeApp, PASSWORD, TestClock } from "./helpers/auth.ts";
 import { expectContract, op, pullAll, sync, syncOk } from "./helpers/sync.ts";
 import { nextResetAfter, resetDemoStore, runDemoResets, setupDemoStore } from "../src/demo/reset.ts";
@@ -162,6 +163,25 @@ describe("每日重置", () => {
     const ds = await tdb.kysely.selectFrom("demo_stores").selectAll().where("store_id", "=", d.storeId).executeTakeFirstOrThrow();
     expect(ds.next_reset_at.toISOString()).toBe("2026-11-21T08:00:00.000Z");
     await app.close();
+  });
+
+  it("两个进程（两个连接池）同时跑每日重置：同一个周期只重置一次，另一个锁内重查到已处理就跳过（PR #20 Codex 6）", async () => {
+    const clock = new TestClock(Date.parse("2026-11-20T07:00:00Z")); // 北京 15:00
+    const d = await newDemo(clock);
+    clock.advance(61 * 60_000); // 16:01，到点、没人在用
+    const pools = [createDb({ connectionString: databaseUrl(), searchPath: tdb.schema, max: 2 }), createDb({ connectionString: databaseUrl(), searchPath: tdb.schema, max: 2 })];
+    try {
+      for (let round = 0; round < 3; round++) {
+        const rs = await Promise.all(pools.map((p) => runDemoResets(p.kysely, clock.now())));
+        const mine = rs.map((r) => r[d.storeId]).filter((x) => x !== undefined).sort();
+        expect(mine, `第 ${round + 1} 轮`).toEqual(["reset", "skipped"]);
+        const ds = await tdb.kysely.selectFrom("demo_stores").selectAll().where("store_id", "=", d.storeId).executeTakeFirstOrThrow();
+        expect(ds.seeded_at.getTime()).toBe(clock.t);
+        clock.advance(86_400_000);
+      }
+    } finally {
+      for (const p of pools) await p.close();
+    }
   });
 
   it("一台在重置前登录、带着未传 op 的手机跨过重置：得到 revoked + discard_outbox，旧 op 没进库；重新登录看到干净的种子数据", async () => {
