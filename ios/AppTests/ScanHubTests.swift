@@ -173,11 +173,15 @@ final class ScanHubTests: XCTestCase {
         XCTAssertEqual(recorder.played, [])
     }
 
-    func testBlankCodesAreDroppedAndCodesAreTrimmed() {
+    /// 空码、全是空白的码不收；带首尾空白的码整串不收、不裁剪（§14 S14-5，见下面的字符集测试）
+    func testBlankCodesAreDroppedAndCodesAreNotTrimmed() {
         let hub = makeHub()
+        XCTAssertNil(hub.receive("", from: .manual))
         XCTAssertNil(hub.receive("   ", from: .manual))
-        XCTAssertEqual(hub.receive(" 6921168509256\n", from: .manual), .known)
+        XCTAssertNil(hub.receive(" 6921168509256\n", from: .manual))
+        XCTAssertEqual(hub.receive("6921168509256", from: .manual), .known)
         XCTAssertEqual(scans.map(\.code), ["6921168509256"])
+        XCTAssertEqual(recorder.played, [.known])
     }
 
     // MARK: 字符集（§14 S14-5 ⑭）：三个入口同一个规则
@@ -192,6 +196,21 @@ final class ScanHubTests: XCTestCase {
         gun(hub, "ABC-6921168509256")
         XCTAssertEqual(scans, [], "含其他字符的码整串不交给页面、不截断")
         XCTAssertEqual(recorder.played, [], "也不出声")
+    }
+
+    /// §14 S14-5：首尾带空格、Tab、换行的码也算「含其他字符」，整串不收——不先裁掉空白再校验
+    /// （否则「 6901035600016\n」会被洗成合法码进篮、出声）
+    func testLeadingOrTrailingWhitespaceIsRejectedNotTrimmed() {
+        let hub = makeHub(known: ["6921168509256"])
+        for bad in [" 6921168509256", "6921168509256 ", "\t6921168509256", "6921168509256\t", "6921168509256\n",
+                    "\n6921168509256", "6921168509256\r\n", " 6921168509256\n", "\u{3000}6921168509256"] {
+            XCTAssertNil(hub.receive(bad, from: .camera), "相机：\(bad.debugDescription)")
+            XCTAssertNil(hub.receive(bad, from: .manual), "手输：\(bad.debugDescription)")
+            now += 2
+        }
+        XCTAssertEqual(scans, [], "没有交给页面")
+        XCTAssertEqual(recorder.played, [], "没有提示音")
+        XCTAssertEqual(hub.receive("6921168509256", from: .camera), .known, "被挡掉的码不占相机去重的计时")
     }
 
     func testLettersAreKeptAsIsOnEveryEntrance() {
