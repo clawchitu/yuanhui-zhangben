@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# 测试替身：fallocate -l <大小> <文件>。FAKE_FALLOCATE_FAIL=1 时留下半个文件并失败（模拟磁盘不够）
+printf 'fallocate %s\n' "$*" >> "$FAKE_LOG"
+f=${!#}; : > "$f"
+[ "${FAKE_FALLOCATE_FAIL:-0}" = 1 ] && exit 1
+exit 0
