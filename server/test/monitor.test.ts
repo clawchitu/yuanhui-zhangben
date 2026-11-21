@@ -36,6 +36,14 @@ describe("告警内容不含密码、令牌、开通码（S10c 验收）", () =>
     for (const s of [secrets.password, secrets.token, secrets.code, "0123456789abcdef", "Bearer abc"]) expect(text).not.toContain(s);
     expect(scrub("Bearer abc.def")).toBe("Bearer [已隐去]");
   });
+  it("导出包位置原样保留（真实格式 exports/<uuid>/<13 位毫秒>-<16 位十六进制>.zip），带 / 的 base64 令牌仍隐去（PR #25 Fable 建议 2）", () => {
+    const key = "exports/3f2a1b4c-1111-4222-8333-0123456789ab/1732000000000-0123456789abcdef.zip";
+    expect(sanitizeDetails({ object_key: key }).object_key).toBe(key);
+    expect(scrub(`deletions/3f2a1b4c-1111-4222-8333-0123456789ab/1732000000000-0123456789abcdef.zip`)).not.toContain("[已隐去]");
+    const b64 = "q8Zr/3xWm9Kp2Lt7Vn4Ys1Hd6Jf0Bc5G";
+    expect(scrub(`x ${b64} y`)).toBe("x [已隐去] y");
+    expect(scrub("x 4f1c0e9a8b7d6c5e4f3a2b1c0d9e8f7a6b5c y")).toBe("x [已隐去] y");
+  });
   it("从日志转来的告警同样洗过：日志行里带了令牌、口令、开通码也不会出现在消息里", async () => {
     const tap = new LogTap();
     tap.line(JSON.stringify({ level: 50, alert: "account_delete_export_failed", store_id: "s1", attempts: 3, ...secrets, req: { headers: { authorization: `Bearer ${secrets.token}` } }, msg: "导出包生成失败" }));

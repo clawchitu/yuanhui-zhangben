@@ -76,7 +76,10 @@ const MAX_VALUE = 300;
 // 看着像凭据的串：连续 24 位以上的十六进制 / base64 / base64url 字符，而且字母数字都有
 // （UUID 有连字符，每段都短于 24，不受影响；account_delete_export_failed 这种告警名没有数字，不受影响）
 const SECRETISH = /[A-Za-z0-9+/_=]{24,}/g;
-const looksSecret = (s: string) => /[0-9]/.test(s) && /[A-Za-z]/.test(s);
+// 带 / 的串如果是由几段短的小写十六进制 / 数字路径段拼成的（导出包位置 exports/<uuid>/<毫秒>-<16 位十六进制>.zip 里
+// uuid 末段和毫秒时间戳会连成一串），是路径不是凭据，留着；随机 base64 令牌几乎一定有大写或 g–z 的字母，照样隐去（PR #25 Fable 建议 2）
+const pathLike = (s: string) => s.includes("/") && s.split("/").every((seg) => seg.length < 24 && /^[0-9a-f]*$/.test(seg));
+const looksSecret = (s: string) => /[0-9]/.test(s) && /[A-Za-z]/.test(s) && !pathLike(s);
 // 「APPCODE xxx」「Bearer xxx」这种带前缀的，不论长短都隐去
 const AUTH_PREFIX = /\b(appcode|bearer|basic|token|password|passwd|secret)\b\s*[:=]?\s*\S+/gi;
 
