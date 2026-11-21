@@ -4,6 +4,10 @@
 // 键只由服务器生成（imageKey、exportKey、deletionKey），读写前都校验格式，不接受外部传来的路径（防路径穿越）。
 // 三种前缀（S09）：images/<店>/…（商品图）、exports/<店>/…（注销导出包）、deletions/<店>.json（删除记录，不随备份回滚，§9.4）。
 // 按店列举和删除只接受 images/<店>/、exports/<店>/ 两种前缀：一次调用只可能碰到一家店的对象。
+// S10b 加了备份用的键（只在存档桶 yuanhui-backup，由备份专用的 RAM 账号读写，§14 T21）：
+//   backups/<UTC 时间>-<随机 16 位>.dump.enc / .manifest.enc（加密的 pg_dump 和清单，35 天生命周期只作用于 backups/）、
+//   heartbeat/backup.json（心跳，不加密、不含业务数据）。
+// 另外两个整前缀只许列举（§14 T14）：deletions/（restore 重放删除记录）、backups/（找最新的备份、看生命周期有没有生效）。
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
@@ -49,7 +53,9 @@ const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const KEY_RE = new RegExp(`^images/${UUID}/${UUID}/[1-9][0-9]{0,9}-[0-9a-f]{16}\\.jpg$`);
 const EXPORT_RE = new RegExp(`^exports/${UUID}/[0-9]{13}-[0-9a-f]{16}\\.zip$`);
 const DELETION_RE = new RegExp(`^deletions/${UUID}\\.json$`);
-const PREFIX_RE = new RegExp(`^(images|exports)/${UUID}/$`);
+const BACKUP_RE = /^backups\/[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}\.(dump|manifest)\.enc$/;
+const HEARTBEAT_KEY = "heartbeat/backup.json";
+const PREFIX_RE = new RegExp(`^(?:(images|exports)/${UUID}/|deletions/|backups/)$`);
 const UUID_RE = new RegExp(`^${UUID}$`);
 
 /** 注销导出包的键：exports/<店>/<申请时间毫秒>-<随机 16 位>.zip（随机部分让键猜不出来） */
@@ -66,6 +72,25 @@ export function deletionKey(storeId: string): string {
   return k;
 }
 
+/** 列举全部删除记录（restore 重放用，§14 T14）、全部备份 */
+export const DELETIONS_PREFIX = "deletions/";
+export const BACKUPS_PREFIX = "backups/";
+export { HEARTBEAT_KEY };
+
+/** 一次备份的两个键：backups/<YYYYMMDDTHHMMSSZ>-<随机 16 位>.dump.enc / .manifest.enc */
+export function backupKeys(at: Date, rand16hex: string): { dump: string; manifest: string; id: string } {
+  const id = `${at.toISOString().replace(/[-:]/g, "").replace(/\.[0-9]{3}Z$/, "Z")}-${rand16hex}`;
+  const out = { id, dump: `backups/${id}.dump.enc`, manifest: `backups/${id}.manifest.enc` };
+  assertKey(out.dump);
+  assertKey(out.manifest);
+  return out;
+}
+
+/** 删除记录的键 → 店 id；不是删除记录返回 null */
+export function deletionStoreId(key: string): string | null {
+  return DELETION_RE.test(key) ? key.slice("deletions/".length, -".json".length) : null;
+}
+
 /** 一家店的对象前缀：images/<店>/ 或 exports/<店>/ */
 export function storePrefix(kind: "images" | "exports", storeId: string): string {
   const id = storeId.toLowerCase();
@@ -75,7 +100,7 @@ export function storePrefix(kind: "images" | "exports", storeId: string): string
 
 /** 任何一种合法的对象键 */
 export function isObjectKey(k: string): boolean {
-  return KEY_RE.test(k) || EXPORT_RE.test(k) || DELETION_RE.test(k);
+  return KEY_RE.test(k) || EXPORT_RE.test(k) || DELETION_RE.test(k) || BACKUP_RE.test(k) || k === HEARTBEAT_KEY;
 }
 
 export function assertKey(k: string): void {
@@ -83,7 +108,7 @@ export function assertKey(k: string): void {
 }
 
 export function assertStorePrefix(p: string): void {
-  if (!PREFIX_RE.test(p)) throw new Error("前缀格式不对：只能是 images/<店>/ 或 exports/<店>/");
+  if (!PREFIX_RE.test(p)) throw new Error("前缀格式不对：只能是 images/<店>/、exports/<店>/、deletions/ 或 backups/");
 }
 
 /** 商品图的键：images/<店>/<商品>/<image_ver>-<内容哈希前 16 位>.jpg */
@@ -356,7 +381,7 @@ export class AliOssObjectStore implements ObjectStore {
     let marker: string | undefined;
     for (;;) {
       const r = await c.list({ prefix, "max-keys": 1000, ...(marker ? { marker } : {}) }, {});
-      for (const o of r.objects ?? []) if (o.name.startsWith(prefix)) out.push(o.name);
+      for (const o of r.objects ?? []) if (o.name.startsWith(prefix) && isObjectKey(o.name)) out.push(o.name);
       if (!r.isTruncated || !r.nextMarker) break;
       marker = r.nextMarker;
     }

@@ -29,7 +29,7 @@ import path from "node:path";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { Database } from "../db.ts";
 import { DELETE_GRACE_MS } from "../auth/session.ts";
-import { withStoreLock } from "../sync/lock.ts";
+import { withStoreLock, type StoreTx } from "../sync/lock.ts";
 import { wipeStoreData } from "../demo/wipe.ts";
 import { deletionKey, exportKey, pendingUploadOf, removeStoreDir, storePrefix, type ObjectStore } from "../lookup/oss.ts";
 import { writeStoreExport } from "../export/store-export.ts";
@@ -386,18 +386,45 @@ export async function purgeStore(
     if (!acct || acct.is_demo || !acct.delete_requested_at) return "skipped";
     if (now.getTime() - new Date(acct.delete_requested_at).getTime() <= DELETE_GRACE_MS) return "skipped";
     await archive.put(deletionKey(storeId), deletionRecord(storeId, now), "application/json");
-    await wipeStoreData(tx);
-    await tx.trx.deleteFrom("devices").where("store_id", "=", storeId).execute();
-    await tx.trx.deleteFrom("export_jobs").where("store_id", "=", storeId).execute();
-    await tx.trx.deleteFrom("demo_stores").where("store_id", "=", storeId).execute();
-    await tx.trx.deleteFrom("accounts").where("store_id", "=", storeId).execute();
-    await tx.trx.deleteFrom("stores").where("id", "=", storeId).execute();
+    await deleteStoreRows(tx);
     // purged_at 取在线数据删完、提交之前这一刻的钟（PR #20 Codex 第三轮 1）：复扫的「满 1 小时」从这里起算。
     // 用整轮开始时的 now 的话，前面的店清除耗时或等锁超过 1 小时，这家店刚提交，第一遍就会被当成复扫记清完
     const purgedAt = new Date(Math.max(now.getTime(), clock().getTime()));
     await tx.trx.insertInto("store_purges").values({ store_id: storeId, purged_at: purgedAt }).onConflict((oc) => oc.column("store_id").doNothing()).execute();
     return "purged";
   });
+}
+
+/** 删掉一家店在数据库里的全部行（业务数据、设备、导出任务、演示店标记、账号、店）。必须在 withStoreLock 里调 */
+async function deleteStoreRows(tx: StoreTx): Promise<void> {
+  const storeId = tx.storeId;
+  await wipeStoreData(tx);
+  await tx.trx.deleteFrom("devices").where("store_id", "=", storeId).execute();
+  await tx.trx.deleteFrom("export_jobs").where("store_id", "=", storeId).execute();
+  await tx.trx.deleteFrom("demo_stores").where("store_id", "=", storeId).execute();
+  await tx.trx.deleteFrom("accounts").where("store_id", "=", storeId).execute();
+  await tx.trx.deleteFrom("stores").where("id", "=", storeId).execute();
+}
+
+/**
+ * 从备份恢复之后重放一条删除记录（§9.4、S10b、§14 T14）：不看注销申请（恢复出来的可能是申请之前的备份），店在就整家删掉，
+ * 设备行跟着没了，旧令牌和重传一律 401。store_purges 记上原来的清除时间、objects_cleared_at 置空，
+ * 对象清理那边照常按前缀再扫一遍（恢复不会让 OSS 上的对象回来，扫一遍只是保险）。重复重放结果一样（幂等）。
+ * 返回这家店在恢复出来的库里本来在不在。
+ */
+export async function replayDeletion(db: Kysely<Database>, storeId: string, purgedAt: Date): Promise<"deleted" | "absent"> {
+  const existed = !(await storeGone(db, storeId));
+  if (existed) {
+    await withStoreLock(db, storeId, async (tx) => {
+      await deleteStoreRows(tx);
+    });
+  }
+  await db
+    .insertInto("store_purges")
+    .values({ store_id: storeId, purged_at: purgedAt })
+    .onConflict((oc) => oc.column("store_id").doUpdateSet({ objects_cleared_at: null, swept_at: null }))
+    .execute();
+  return existed ? "deleted" : "absent";
 }
 
 /** 一轮：找出到期的店逐个清除，再清理已清除店的对象。返回每家店的结果 */
