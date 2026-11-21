@@ -149,6 +149,32 @@ describe("服务器监控", () => {
     await app.close();
   });
 
+  it("营业时间无同步：21:00 打烊、次日 8:00–11:00 不算恢复，没真的同步过就一直在告警；同步一次才发「已恢复」（PR #25 Fable 建议 7）", async () => {
+    const shop = await makeLoginShop(tdb, { name: "无同步打烊测试店" });
+    const clock = new TestClock(sh("2026-11-20T08:00:00"));
+    const r = rig({ clock });
+    const app = buildApp({ config: testConfig(), db: tdb, logger: false, clock: clock.now });
+    await login(app, shop.username); // 有在用的设备才在监控范围
+    await app.close();
+    const key = `no_sync:${shop.storeId}`;
+    clock.advance(3 * H + 60_000);
+    await r.run();
+    expect(r.alerter.firing(key)).toBe(true);
+    for (const t of ["2026-11-20T21:00:00", "2026-11-21T03:00:00", "2026-11-21T08:30:00", "2026-11-21T10:59:00"]) {
+      clock.t = sh(t);
+      await r.run();
+      expect(r.alerter.firing(key), t).toBe(true);
+    }
+    expect(r.sink.kinds()).not.toContain(`resolved:${key}`);
+    clock.t = sh("2026-11-21T11:00:01");
+    await r.run();
+    expect(r.sink.kinds().filter((k) => k.endsWith(key))).toEqual([`fire:${key}`, `repeat:${key}`]);
+    r.syncSeen.ok(shop.storeId, clock.now());
+    clock.advance(60_000);
+    await r.run();
+    expect(r.alerter.firing(key)).toBe(false);
+    expect(r.sink.kinds()).toContain(`resolved:${key}`);
+  });
   it("被退出手机暂存的账超过 24 小时没处理告警，处理后恢复", async () => {
     const shop = await makeLoginShop(tdb);
     const app = buildApp({ config: testConfig(), db: tdb, logger: false });

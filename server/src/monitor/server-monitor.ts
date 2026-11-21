@@ -117,7 +117,12 @@ export class ServerMonitor {
       const key = `no_sync:${s.id}`;
       live.add(key);
       const last = this.d.syncSeen.get(s.id) ?? this.d.startedAt;
-      const v = noSyncVerdict(last > this.d.startedAt ? last : this.d.startedAt, now);
+      const eff = last > this.d.startedAt ? last : this.d.startedAt;
+      const v = noSyncVerdict(eff, now);
+      // 打烊（21:00 起）和次日 8:00–11:00 判定是「不报」，但不等于恢复了：告警以后没真的同步过就留着，
+      // 不发「已恢复」也不提醒；次日 11:00 还没同步再按 6 小时规则提醒（PR #25 Fable 建议 7）
+      const cur = this.d.alerter.state.conditions[key];
+      if (!v.active && cur && eff.getTime() < Date.parse(cur.since)) continue;
       await this.d.alerter.condition(v.active, { key, title: "营业时间内超过 3 小时没有任何设备同步成功（店里断网或 App 出问题）", severity: "warning", details: { store_id: s.id, ...v.details } });
     }
     for (const k of Object.keys(this.d.alerter.state.conditions)) {
