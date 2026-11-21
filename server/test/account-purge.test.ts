@@ -16,8 +16,8 @@ import { readZip } from "./helpers/zip.ts";
 import { parseCsv } from "../src/export/csv.ts";
 import { EXPORT_FILES, MONTH_HEADER, writeStoreExport } from "../src/export/store-export.ts";
 import { reportMonth } from "../src/reports/month.ts";
-import { LocalDirObjectStore, MemoryObjectStore, archiveStoreFromConfig, deletionKey, imageKey, storePrefix } from "../src/lookup/oss.ts";
-import type { Config } from "../src/config.ts";
+import { AliOssObjectStore, LocalDirObjectStore, MemoryObjectStore, archiveStoreFromConfig, objectStoreFromConfig, deletionKey, imageKey, storePrefix } from "../src/lookup/oss.ts";
+import { loadConfig, type Config } from "../src/config.ts";
 import { clearPurgedObjects, purgeStore, runAccountPurges, runExportJobs, type AccountJobDeps } from "../src/jobs/account-purge.ts";
 import { authenticate } from "../src/auth/authenticate.ts";
 import { Guard } from "../src/auth/guard.ts";
@@ -461,7 +461,30 @@ describe("导出包", () => {
     await s.app.close();
   });
 
-  it("存档桶按配置取：本机目录和商品图共用；阿里云在 S10a 配第二个桶之前按没配处理，不落到商品图桶（S09-11、T13）", () => {
+  it("失败分支删包前复查：写回其实提交了、应答前连接断开 → 包不删，任务记完成（§14 T18）", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "写回断线店");
+    const t = await login(s.app, s.username);
+    expect((await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } })).statusCode).toBe(200);
+    const d = deps(clock, {
+      afterExportWriteBack: async () => {
+        throw Object.assign(new Error("Connection terminated unexpectedly"), { code: "ECONNRESET" });
+      },
+    });
+    const out = await runExportJobs(d);
+    const mine = out.find((x) => x.store_id === s.storeId)!;
+    expect(mine.result).toBe("done");
+    const j = await tdb.kysely.selectFrom("export_jobs").selectAll().where("store_id", "=", s.storeId).executeTakeFirstOrThrow();
+    expect(j.done_at).not.toBe(null);
+    expect(j.object_key).toBe(mine.object_key);
+    expect(await d.archive.list(storePrefix("exports", s.storeId))).toEqual([j.object_key]);
+    expect(j.stale_cleared_at).not.toBe(null);
+    expect(await tdb.kysely.selectFrom("object_discards").select("object_key").where("store_id", "=", s.storeId).execute()).toEqual([]);
+    expect(j.stale_cleared_at).not.toBe(null);
+    await s.app.close();
+  });
+
+  it("存档桶按配置取：本机目录和商品图共用；阿里云用第二个桶，缺了或和商品图桶相同按没配处理，不落到商品图桶（S09-11、T13）", () => {
     const base = { databaseUrl: "postgres://x" } as never as Config;
     const local = new MemoryObjectStore();
     expect(archiveStoreFromConfig({ ...base, objectStore: { kind: "local", dir: "/tmp/x" } }, local)).toBe(local);
@@ -469,6 +492,21 @@ describe("导出包", () => {
     expect(
       archiveStoreFromConfig({ ...base, objectStore: { kind: "aliyun", region: "r", bucket: "yuanhui-img", accessKeyId: "a", accessKeySecret: "b" } }, local),
     ).toBe(null);
+    expect(
+      archiveStoreFromConfig({ ...base, objectStore: { kind: "aliyun", region: "r", bucket: "yuanhui-img", archiveBucket: "yuanhui-img", accessKeyId: "a", accessKeySecret: "b" } }, local),
+    ).toBe(null);
+    const ali = { kind: "aliyun" as const, region: "r", bucket: "yuanhui-img", archiveBucket: "yuanhui-backup", accessKeyId: "a", accessKeySecret: "b" };
+    const archive = archiveStoreFromConfig({ ...base, objectStore: ali }, objectStoreFromConfig({ ...base, objectStore: ali }));
+    expect(archive).toBeInstanceOf(AliOssObjectStore);
+    expect(archive).not.toBe(local);
+    expect((archive as AliOssObjectStore).bucket).toBe("yuanhui-backup");
+  });
+
+  it("配置：OBJECT_STORE=aliyun 必须同时配存档桶，且不能和商品图桶同名（Fable 第二轮裁定 ①）", () => {
+    const env = { DATABASE_URL: "x", OBJECT_STORE: "aliyun", OSS_REGION: "oss-cn-shanghai", OSS_BUCKET: "yuanhui-img", OSS_ACCESS_KEY_ID: "a", OSS_ACCESS_KEY_SECRET: "b" };
+    expect(() => loadConfig(env)).toThrow(/OSS_ARCHIVE_BUCKET/);
+    expect(() => loadConfig({ ...env, OSS_ARCHIVE_BUCKET: "yuanhui-img" })).toThrow(/同一个桶/);
+    expect(loadConfig({ ...env, OSS_ARCHIVE_BUCKET: "yuanhui-backup" }).objectStore).toMatchObject({ bucket: "yuanhui-img", archiveBucket: "yuanhui-backup" });
   });
 
   it("旧任务清理旧包时又撤回、重新申请、新包已生成：旧任务只删它那一版之前的包，不删新包（PR #20 Codex 3）", async () => {

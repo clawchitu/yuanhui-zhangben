@@ -54,6 +54,8 @@ export interface AccountJobDeps {
   exportPageSize?: number;
   /** 只给测试用：导出包上传之后、写回之前调用（测「生成期间撤回」） */
   afterExportUpload?: () => Promise<void>;
+  /** 只给测试用：写回之后调用，抛错模拟「写回其实提交了，但应答前连接断开」（§14 T18） */
+  afterExportWriteBack?: () => Promise<void>;
 }
 
 /** 领导出任务的租约：生成 + 上传超过这么久没写回，别的进程可以重新领 */
@@ -127,6 +129,7 @@ export async function runOneExportJob(d: AccountJobDeps): Promise<ExportOutcome 
       .where("done_at", "is", null)
       .executeTakeFirst();
     superseded = Number(w.numUpdatedRows) !== 1;
+    await d.afterExportWriteBack?.();
   } catch (e) {
     // 只到「写回完成」为止的失败走这里：包还没算完成，删掉刚传的、按次数退避
     const code = reason(e);
@@ -137,7 +140,23 @@ export async function runOneExportJob(d: AccountJobDeps): Promise<ExportOutcome 
       .where("requested_at", "=", requestedAt)
       .where("done_at", "is", null)
       .execute();
-    if (key) await discardExport(d, storeId, key, "failed");
+    if (key) {
+      // 当场删包之前先确认没有已完成的任务指向这个键（§14 T18，和 retryObjectDiscards 一样）：
+      // 写回其实提交了、只是应答前连接断开时，这个包是有效的，不能删。查不了（库还连不上）就不删，记待删标记交给重试去复查
+      let live: boolean | null = null;
+      try {
+        live = !!(await d.db.selectFrom("export_jobs").select("store_id").where("object_key", "=", key).where("done_at", "is not", null).executeTakeFirst());
+      } catch {
+        live = null;
+      }
+      if (live) {
+        d.log?.warn({ alert: "account_delete_export", store_id: storeId, object_key: key }, "账号注销申请：导出包已生成，请转交黄总");
+        await clearStaleExports(d, storeId);
+        return { store_id: storeId, result: "done", object_key: key };
+      }
+      if (live === null) await recordDiscard(d, storeId, key, "", "live_check_failed", "failed");
+      else await discardExport(d, storeId, key, "failed");
+    }
     // 分片上传失败、中止也失败：记下 uploadId，之后重试中止（Codex 第二轮 3）
     const pu = pendingUploadOf(e);
     if (pu) await recordDiscard(d, storeId, pu.key, pu.uploadId, "upload_abort_failed", "failed");
