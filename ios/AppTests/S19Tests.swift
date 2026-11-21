@@ -255,7 +255,7 @@ final class S19Tests: XCTestCase {
             XCTAssertNil(m.registerCode)
             XCTAssertEqual(m.conversion?.product.id, conv.product.id, "数量\(qty.isEmpty ? "没填" : "填 0")：接着在进货页填这一批")
             XCTAssertFalse(m.notice?.text.contains("库存已记上") ?? false, "库存没记，不能说记上了")
-            XCTAssertEqual(m.notice, .registeredNoStock(conv.product.name))
+            XCTAssertEqual(m.notice?.text, "登记好了：\(conv.product.name)，库存还没记，接着填这一批")
             XCTAssertEqual(m.cardSubtitle, "单个卖 ¥7.00　店里还有 0 个")
             type(m, "3"); m.focus(.cost); type(m, "5")
             XCTAssertTrue(m.commit())
@@ -307,40 +307,51 @@ final class S19Tests: XCTestCase {
         XCTAssertNotNil(reg2.saveMore(confirmedZero: true))
     }
 
-    /// 扫码枪打进名称框：按回车（扫码枪后缀）时末尾一串 8 位以上的数字去掉（§14 S19-9），
-    /// 但原名称留着，提示里点「不是条码，改回来」就原样恢复（PR #31 Codex 必须改 1：不悄悄丢掉合法名称）
-    func testScannerDigitsStrippedFromName() throws {
+    /// PR #31 Codex 必须改 1（丢数据）：按回车不自动删名称。合法的数字后缀、纯数字名称都原样存进去
+    /// （旧代码回车就把「配件 12345678」改成「配件」、把「20261121」清空，这条在旧代码上失败）
+    func testNameDigitsKeptWithoutConfirm() throws {
+        let db = try makeDB()
+        // ① 合法名称以数字结尾
+        let reg = NewProductModel(db: db, barcode: Self.newCode, mode: .stock, quick: false, canLinkPack: true)
+        reg.name = "配件 12345678"
+        XCTAssertEqual(reg.submitName(), "12345678", "像条码，提示一句")
+        XCTAssertNotNil(reg.nameScanNotice)
+        XCTAssertEqual(reg.name, "配件 12345678", "名称一个字不动")
+        reg.priceKey(.digit(5))
+        XCTAssertEqual(try XCTUnwrap(reg.saveBasic()).product.name, "配件 12345678")
+        // ② 纯数字名称
+        let reg2 = NewProductModel(db: db, barcode: "6924743919242", mode: .stock, quick: false, canLinkPack: true)
+        reg2.name = "20261121"
+        XCTAssertEqual(reg2.submitName(), "20261121")
+        XCTAssertEqual(reg2.name, "20261121")
+        reg2.priceKey(.digit(5))
+        XCTAssertEqual(try XCTUnwrap(reg2.saveBasic()).product.name, "20261121", "不会变成占位名")
+        // 正常名称：不提示
+        let reg3 = NewProductModel(db: db, barcode: "6924743919259", mode: .stock, quick: false, canLinkPack: true)
+        reg3.name = "可乐 330ml"
+        XCTAssertNil(reg3.submitName(), "正常名称不动")
+        XCTAssertEqual(reg3.name, "可乐 330ml")
+        XCTAssertNil(reg3.nameScanNotice)
+    }
+
+    /// ③ 扫码枪在名称后面追加了条码（§14 S19-9）：提示在名称框下，人点「是条码，去掉这串数字」才去；名称一改提示就清
+    func testScannerDigitsStrippedOnConfirm() throws {
         let reg = NewProductModel(db: try makeDB(), barcode: Self.newCode, mode: .stock, quick: false, canLinkPack: true)
-        // ① 扫码枪在名称后面追加了条码：去掉，提示里写清楚
         reg.name = "乐事薯片6925303770013"
         XCTAssertEqual(reg.submitName(), "6925303770013")
+        XCTAssertEqual(reg.name, "乐事薯片6925303770013", "没确认前不删")
+        XCTAssertTrue(reg.canStripCode)
+        reg.stripScannedCode()
         XCTAssertEqual(reg.name, "乐事薯片")
-        XCTAssertNotNil(reg.nameScanNotice)
+        XCTAssertNil(reg.nameScanNotice)
+        XCTAssertFalse(reg.canStripCode)
+        reg.name = "乐事薯片 原味6925303770013"
+        XCTAssertNotNil(reg.submitName())
         reg.name = "乐事薯片 原味"
         XCTAssertNil(reg.nameScanNotice, "名称一改，提示就清掉")
-        XCTAssertFalse(reg.canRestoreName)
-        reg.name = "可乐 330ml"
-        XCTAssertNil(reg.submitName(), "正常名称不动")
-        XCTAssertEqual(reg.name, "可乐 330ml")
-        XCTAssertNil(reg.nameScanNotice)
-        // ② 合法名称以数字结尾：去掉后一点就原样恢复，恢复后再按回车不再去
-        reg.name = "配件 12345678"
-        XCTAssertEqual(reg.submitName(), "12345678")
-        XCTAssertEqual(reg.name, "配件")
-        XCTAssertTrue(reg.canRestoreName)
-        reg.restoreName()
-        XCTAssertEqual(reg.name, "配件 12345678", "原名称一个字不少")
-        XCTAssertNil(reg.nameScanNotice)
-        XCTAssertNil(reg.submitName(), "人说了不是条码，就不再去")
-        XCTAssertEqual(reg.name, "配件 12345678")
-        // ③ 纯数字名称：同样能恢复，存进去的是原样
-        reg.name = "20261121"
-        XCTAssertEqual(reg.submitName(), "20261121")
-        XCTAssertEqual(reg.name, "")
-        reg.restoreName()
-        XCTAssertEqual(reg.name, "20261121")
-        reg.priceKey(.digit(5))
-        XCTAssertEqual(try XCTUnwrap(reg.saveBasic()).product.name, "20261121")
+        XCTAssertFalse(reg.canStripCode)
+        reg.stripScannedCode()
+        XCTAssertEqual(reg.name, "乐事薯片 原味", "提示清掉后不会再去")
     }
 
     /// §14 S18-3：05 底部那句带上商品名

@@ -59,6 +59,7 @@ final class S19UITests: XCTestCase {
         XCTAssertEqual(el(app, "stockIn.total").label, "¥240.00")
         XCTAssertEqual(el(app, "stockIn.entryLine").label, "入账 120 罐，每罐进价 ¥2.00")
         XCTAssertTrue(el(app, "stockIn.commit").isHittable, "记进货固定在底部可见")
+        XCTAssertEqual(el(app, "stockIn.cardName").label, "可口可乐 330ml", "大字下蓝卡上带商品名（Fable 建议 1）")
         el(app, "stockIn.commit").tap()
         wait("记上一笔进货") { ledger(app)["stockIns"] == "1" }
         let l = ledger(app)
