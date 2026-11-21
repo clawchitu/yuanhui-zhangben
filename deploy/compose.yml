@@ -69,6 +69,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       MIN_BUILD: ${MIN_BUILD:-0}
       DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-0}
+      # 恢复模式（§4.6）：平时 0。整机恢复后临时开 1，让重新开通的设备补交保留的 op，补完改回 0（runbook「恢复模式」）
+      RECOVERY_MODE: ${RECOVERY_MODE:-0}
       PRODUCT_IMAGES_ENABLED: ${PRODUCT_IMAGES_ENABLED:-0}
       KUAINIAO_APPCODE: ${KUAINIAO_APPCODE:-}
       OBJECT_STORE: ${OBJECT_STORE:-none}
@@ -105,7 +107,9 @@ services:
     image: ${API_IMAGE:?}
     security_opt: ["no-new-privileges:true"]
     logging: *logging
+    # 上限是真的 256 MB（§14 S10a-7、S10b-8）
     mem_limit: 256m
+    memswap_limit: 256m
     environment:
       <<: *api-env
       BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:-}

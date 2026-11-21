@@ -21,6 +21,11 @@ NEW="$REG/api:$TAG"
 envval() { sed -n "s/^$1=//p" "$ENV" | tail -1; }
 # 口令原样拼进 DATABASE_URL 和 compose 插值，只许字母数字（Codex 8、Fable 必须改 9）
 [[ $(envval POSTGRES_PASSWORD) =~ ^[A-Za-z0-9]{16,}$ ]] || { echo "POSTGRES_PASSWORD 只许字母数字、至少 16 位（openssl rand -hex 24）" >&2; exit 2; }
+# 备份配置有空的只警告不拒绝（首次发布可能还没配；Fable 建议 5）
+for v in BACKUP_OSS_ACCESS_KEY_ID BACKUP_OSS_ACCESS_KEY_SECRET BACKUP_PASSPHRASE; do
+  [ -n "$(envval "$v")" ] || echo "警告：.env 里 ${v} 是空的，备份会失败（见 docs/cloud-manual-steps.md 第 4 步）" >&2
+done
+[ "$(envval RECOVERY_MODE)" = 1 ] && echo "警告：.env 里 RECOVERY_MODE=1（恢复模式开着），补交完要改回 0" >&2
 C=(docker compose -f "$D/compose.yml" --project-directory "$D" --env-file "$ENV")
 set_image() { { grep -v '^API_IMAGE=' "$ENV" || true; echo "API_IMAGE=$1"; } > "$ENV.tmp" && mv "$ENV.tmp" "$ENV"; }
 PREV=$(cat "$D/current-tag" 2>/dev/null || true)

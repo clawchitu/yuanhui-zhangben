@@ -91,6 +91,10 @@ jobs:
           docker compose -f deploy/compose.yml --env-file /tmp/ci.env --profile tools config --format json > /tmp/compose-tools.json
           jq -e '(.services.api.environment | keys | map(select(startswith("BACKUP_"))) | length) == 0' /tmp/compose-tools.json
           jq -e '.services.backup.environment | has("BACKUP_PASSPHRASE") and has("BACKUP_OSS_ACCESS_KEY_ID")' /tmp/compose-tools.json
+          # backup 服务内存上限也不许靠 swap 顶（S10b-8）；恢复模式默认关、确实传给了 api（PR #23 Codex 4、Fable 必须改 2、7）
+          jq -e '.services.backup.mem_limit == "268435456" and .services.backup.memswap_limit == "268435456"' /tmp/compose-tools.json
+          jq -e '.services.api.environment.RECOVERY_MODE == "0"' /tmp/compose.json
+          RECOVERY_MODE=1 docker compose -f deploy/compose.yml --env-file /tmp/ci.env config --format json | jq -e '.services.api.environment.RECOVERY_MODE == "1"'
           docker run --rm -v "$PWD/deploy:/etc/caddy:ro" -e ACME_EMAIL=ci@example.invalid -e PUBLIC_IP=47.117.184.253 caddy:2.10.2 caddy validate --config /etc/caddy/Caddyfile.ip --adapter caddyfile
       - name: 镜像冒烟：迁移 → 启动 → /healthz 200 → 停库后 503
         working-directory: .
