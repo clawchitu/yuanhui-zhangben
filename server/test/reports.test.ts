@@ -463,6 +463,26 @@ describe("返修（PR #18 Codex / Fable 第一轮）", () => {
     await s.app.close();
     await s2.app.close();
   });
+
+  it("月界处的月末货值（Codex 3，§14 S07-4）：11-30 23:59 收到 12-01 00:01 的卖出 → 11 月月末 = 12 月第一刻之前的流水之和（900），不是商品投影（800）；11 月月末 = 12 月月初", async () => {
+    const s = await setup(Date.parse(SH("2026-11-30T23:59:00")));
+    const a = await s.product({ price: 300, name: "a" });
+    await s.send(stockInOp(a, 9, 100, SH("2026-11-01T08:00:00")));
+    await s.send(saleOp([{ pid: a, n: 1, price: 300 }], SH("2026-12-01T00:01:00")).op);
+    const nov = await s.get("/v1/reports/month?month=2026-11", "ReportMonth");
+    const dec = await s.get("/v1/reports/month?month=2026-12", "ReportMonth");
+    expect([nov.stock_value_end_fen, nov.reconciliation.stock_value_end_fen, await storeValue(s.shop.storeId)]).toEqual([900, 900, 800]);
+    expect([dec.reconciliation.stock_value_start_fen, dec.stock_value_end_fen]).toEqual([900, 800]);
+    expect(dec.reconciliation.rows.find((r: any) => r.key === "sale").amount_fen).toBe(-100);
+    // 没带参数 = 服务器所在的月（11 月），同样是 900
+    expect((await s.get("/v1/reports/month")).stock_value_end_fen).toBe(900);
+    // 契约的说法跟着改准确：不再写「本月 = 现在」
+    const { readFileSync } = await import("node:fs");
+    const line = readFileSync(new URL("../../contracts/openapi.yaml", import.meta.url), "utf8").split("\n").find((l) => /^\s+stock_value_end_fen: .*description/.test(l))!;
+    expect(line).toContain("下个月第一刻（上海时间）之前全部流水");
+    expect(line).not.toContain("本月则为现在");
+    await s.app.close();
+  });
 });
 
 describe("性能", () => {

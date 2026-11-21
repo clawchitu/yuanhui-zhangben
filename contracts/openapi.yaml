@@ -1023,7 +1023,7 @@ components:
         month: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$" }
         sold_fen: { $ref: "#/components/schemas/SignedFen" }
         profit_fen: { $ref: "#/components/schemas/SignedFen" }
-        stock_value_end_fen: { $ref: "#/components/schemas/SignedFen", description: 现在店里货值（本月则为现在，过去的月份为月末） }
+        stock_value_end_fen: { $ref: "#/components/schemas/SignedFen", description: 月末货值 = 下个月第一刻（上海时间）之前全部流水的 value_delta_fen 之和，与 reconciliation.stock_value_end_fen 相同、等于下个月的月初货值。不保证等于商品投影的货值之和：时钟超前 5 分钟以内又跨月的流水算在下个月，那几分钟里本月月末比投影少这一笔（§14 S07-4） }
         discount_fen: { $ref: "#/components/schemas/SignedFen" }
         expire_loss_fen: { $ref: "#/components/schemas/SignedFen", description: Σ expire_loss 行 cogs_fen }
         cost_missing_count: { type: integer, minimum: 0, description: 有 N 样进价没填（尚未补记的 cost_missing 卖出涉及的商品种数） }

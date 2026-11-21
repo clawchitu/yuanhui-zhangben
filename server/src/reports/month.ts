@@ -26,7 +26,8 @@ export interface ReportMonth {
 
 /**
  * month：YYYY-MM（上海）。now：服务器时间，决定柱状图画到哪一天（本月画到今天，过去的月份画满，将来的月份为空）。
- * 本月的「月末货值」就是现在店里货值（时钟校正保证 occurred_at 最多比收到时晚 5 分钟，§4.4）。
+ * 月末货值一律 = 下月第一刻之前全部流水的 value_delta 之和（§14 S07-4），本月也一样，不说「本月 = 现在」：
+ * 时钟超前 5 分钟以内又跨月的流水（§4.4）算在下个月，那几分钟里本月月末比商品投影少这一笔；本月月末 = 下月月初照样成立。
  */
 export async function reportMonth(db: Kysely<Database>, storeId: string, month: string, now: Date): Promise<ReportMonth> {
   const firstDay = `${month}-01`;
