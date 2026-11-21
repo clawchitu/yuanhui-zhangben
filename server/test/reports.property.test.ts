@@ -1,7 +1,7 @@
 // S07 性质测试：随机账本 → 报表 = 从流水按 §5.3 的定义独立重算（JS 逐行求和），对账等式恒成立。
 // 随机生成进货（带 / 不带到期日）、期初（填 / 不填进价）、卖出（多行、优惠）、撤销（单行 / 整批，可能跨天跨月）、盘点、
 // 待确认补全（补记成本）、扔掉 / 退货，occurred_at 随机落在 10 月 25 日到 11 月 20 日之间、按随机顺序到达（盘点之后才到的更早流水走迟到补偿）。
-// 每组结束后比对：两个月的月报、每个有流水的日子和几个空日子的日报、07c 逐页拼起来 = 重算的日子列表；本月月末货值 = 全部商品投影货值之和（I2）。
+// 每组结束后比对：两个月的月报、每个有流水的日子和几个空日子的日报、07c 逐页拼起来 = 重算的日子列表（只列笔数 > 0 或金额非零的日子）；本月月末货值 = 全部商品投影货值之和（I2）。
 // 组数：REPORT_PROP_RUNS（默认 300）。
 import { randomUUID } from "node:crypto";
 import fc from "fast-check";
@@ -159,10 +159,13 @@ async function run(s: Scenario) {
       if (page.length < 2) break;
       before = page[page.length - 1].date;
     }
-    expect(got).toEqual([...r0.days].reverse().map((d) => {
+    // 只列笔数 > 0 或金额非零的日子（§14 S07-7）：只有冲销行、金额又是 0 的日子（比如只撤销了别天的进货）不列
+    const listed = [...r0.days].reverse().map((d) => {
       const r = recompute(es, d);
       return { date: d, count: r.records, amount_fen: r.sold };
-    }));
+    });
+    if (listed.some((x) => x.count === 0 && x.amount_fen === 0)) mark("zero_day_hidden");
+    expect(got).toEqual(listed.filter((x) => x.count > 0 || x.amount_fen !== 0));
   } finally {
     await app.close();
   }

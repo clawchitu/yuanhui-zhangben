@@ -504,6 +504,28 @@ describe("返修（PR #18 Codex / Fable 第一轮）", () => {
     ]);
     await s.app.close();
   });
+
+  it("07c 不列「0 笔 ¥0.00」的日子（Fable 2，§14 S07-7）：10 日进货、12 日撤销这笔进货 → 12 日不列；只有冲销行但金额非零的日子照列", async () => {
+    const s = await setup();
+    const a = await s.product({ price: 300, name: "a" });
+    const si = stockInOp(a, 5, 100, SH("2026-11-10T09:00:00"));
+    await s.send(si);
+    await s.send(voidOp({ entry_id: si.payload.entry_id as string }, SH("2026-11-12T09:00:00")));
+    await s.send(stockInOp(a, 5, 100, SH("2026-11-13T09:00:00")), saleOp([{ pid: a, n: 1, price: 300 }], SH("2026-11-13T10:00:00")).op);
+    const sale = saleOp([{ pid: a, n: 1, price: 300 }], SH("2026-11-14T10:00:00"));
+    await s.send(sale.op);
+    await s.send(voidOp({ batch_id: sale.batch_id }, SH("2026-11-15T10:00:00")));
+    expect((await s.get("/v1/entries/days?before=2026-11-20&limit=31")).days).toEqual([
+      { date: "2026-11-15", count: 0, amount_fen: -300 },
+      { date: "2026-11-14", count: 1, amount_fen: 300 },
+      { date: "2026-11-13", count: 2, amount_fen: 300 },
+      { date: "2026-11-10", count: 1, amount_fen: 0 },
+    ]);
+    // 12 日照样能查（列表为空），日报 0 笔
+    expect((await s.get("/v1/entries?date=2026-11-12")).entries).toEqual([]);
+    expect((await s.get("/v1/reports/today?date=2026-11-12")).count).toBe(0);
+    await s.app.close();
+  });
 });
 
 describe("性能", () => {

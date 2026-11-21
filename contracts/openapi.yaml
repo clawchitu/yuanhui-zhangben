@@ -308,7 +308,7 @@ paths:
       tags: [查询]
       operationId: listEntryDays
       summary: 更早的记录，每天一行（07c）
-      description: 只列有流水的日子，从近到远；翻页时下一页的 before = 本页最后一天。
+      description: 只列笔数 > 0 或金额非零的日子，从近到远；笔数 0、金额 0 的日子（只有冲销行且金额相抵，比如只撤销了别天的进货）不列。翻页时下一页的 before = 本页最后一天。
       x-permission: GET /v1/entries/days
       parameters:
         - name: before
@@ -339,7 +339,7 @@ paths:
                       properties:
                         date: { $ref: "#/components/schemas/Date" }
                         count: { type: integer, minimum: 0, description: 笔数，与 ReportToday.count 同一口径（原行的不同 op 个数，不算 cost_adjust） }
-                        amount_fen: { $ref: "#/components/schemas/SignedFen", description: 那天的「卖了」（卖出行含冲销行的 amount 之和，与日报 sold_fen 相同）；只有冲销行的日子也列出 }
+                        amount_fen: { $ref: "#/components/schemas/SignedFen", description: 那天的「卖了」（卖出行含冲销行的 amount 之和，与日报 sold_fen 相同）；只有冲销行的日子金额非零才列出 }
         "403": { $ref: "#/components/responses/Error" }
   /v1/pairing-tokens:
     post:

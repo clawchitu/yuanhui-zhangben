@@ -37,7 +37,8 @@ export async function entriesOfDay(db: Kysely<Database>, storeId: string, date: 
 /**
  * 07c：before（不含）之前有流水的日子，从近到远，最多 limit 天。
  * count = 笔数（RECORD_COUNT_SQL），amount_fen = 那天的「卖了」（卖出行含冲销行的 amount 之和，与日报 sold_fen 同一口径）。
- * 只有冲销行的日子（比如那天只撤销了前一天的卖出）也列出，count 为 0、amount 为负，免得那天的钱在列表里消失。
+ * 只列笔数 > 0 或金额非零的日子（§14 S07-7）：只有冲销行的日子（比如那天只撤销了前一天的卖出）金额非零才列出，count 为 0，
+ * 免得那天的钱在列表里消失；笔数 0、金额 0 的日子（比如只撤销了别天的进货）点进去是空的，也没有钱要交代，不列。
  * 翻页：下一页的 before = 本页最后一天。
  */
 export async function entryDays(db: Kysely<Database>, storeId: string, before: string, limit: number) {
@@ -47,6 +48,8 @@ export async function entryDays(db: Kysely<Database>, storeId: string, before: s
            ${RECORD_COUNT_SQL} AS n,
            COALESCE(SUM(amount_fen) FILTER (WHERE type = 'sale'), 0)::text AS amount
     FROM entries WHERE store_id = ${storeId} AND occurred_at < ${to}
-    GROUP BY 1 ORDER BY 1 DESC LIMIT ${limit}`.execute(db);
+    GROUP BY 1
+    HAVING ${RECORD_COUNT_SQL} > 0 OR COALESCE(SUM(amount_fen) FILTER (WHERE type = 'sale'), 0) <> 0
+    ORDER BY 1 DESC LIMIT ${limit}`.execute(db);
   return { days: r.rows.map((x) => ({ date: x.day, count: Number(x.n), amount_fen: int(x.amount) })) };
 }
