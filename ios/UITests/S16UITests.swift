@@ -161,6 +161,16 @@ final class S16UITests: XCTestCase {
         wait("黄条最终消失", timeout: 6) { !notice.exists }
     }
 
+    /// 收银员身份的卖出页上没有「进价」「库存」字样（Fable 建议项：防以后有人往价签里加东西）
+    func testCashierSellPageShowsNoCostOrStock() {
+        let app = launch(["-uiRole", "cashier", "-uiScan", "\(Self.beer),\(Self.noodle)"])
+        waitItems(app, 2)
+        let texts = app.descendants(matching: .any).allElementsBoundByIndex.map(\.label).joined(separator: "|")
+        for word in ["进价", "库存", "成本"] {
+            XCTAssertFalse(texts.contains(word), "收银员卖出页出现「\(word)」：\(texts)")
+        }
+    }
+
     /// 相机被拒：27a（S14 的 NoCameraBand），扫码枪照常进购物篮
     func testCameraDeniedShowsBandAndGunStillSells() {
         let app = launch(["-uiCamera", "denied", "-uiScan", Self.beer])
