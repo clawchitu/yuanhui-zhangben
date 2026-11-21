@@ -208,6 +208,40 @@ describe("图片任务", () => {
     await app.close();
   });
 
+  it("一次领一个（可控时钟，每张 18 秒）：做到第 306 秒时，另一个进程领不到这个进程手里的任务（PR #19 审核）", async () => {
+    const app = mkApp();
+    const ps = [];
+    for (let i = 0; i < 20; i++) ps.push(await productWithImage(app));
+    const byUrl = new Map<string, string>(ps.map((x) => [`https://img.example-cdn.com/${x.barcode}.jpg`, x.productId]));
+    // 时钟放在很早以前：别的测试留下的任务都还没到期，只有这 20 个能领
+    const clock = new TestClock(Date.parse("2001-01-01T00:00:00Z"));
+    const t0 = clock.t;
+    const mine = new Set<string>(ps.map((x) => x.productId));
+    const processedByA: string[] = [];
+    let claimedByB: string[] | null = null;
+    const store = new MemoryObjectStore();
+    const b = deps({ store, clock: clock.now });
+    const a = deps({
+      store,
+      clock: clock.now,
+      fetchImage: async (u) => {
+        processedByA.push(byUrl.get(u)!);
+        clock.advance(18_000); // 下载 8 秒 + 上传 10 秒
+        if (claimedByB === null && clock.t - t0 >= 306_000) {
+          claimedByB = (await claimDue(b, 1000)).map((x) => x.product_id).filter((id) => mine.has(id));
+        }
+        return picture;
+      },
+    });
+    expect(await enqueueImageJobs(a, 1000)).toBeGreaterThanOrEqual(20);
+    await runImageJobs(a, 20);
+    expect(claimedByB).not.toBeNull();
+    // B 领到的只能是 A 还没领的；A 手里的（正在做的、排着的）一个都不能被 B 领走
+    expect(claimedByB!.filter((id) => processedByA.includes(id))).toEqual([]);
+    expect(new Set([...processedByA, ...claimedByB!])).toEqual(mine);
+    await app.close();
+  });
+
   it("领任务是原子的：同时领，任务不会被两边都领到", async () => {
     const app = mkApp();
     const ps = [];

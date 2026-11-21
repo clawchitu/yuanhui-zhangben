@@ -1,6 +1,6 @@
 // 商品图任务（S08）：给新登记、还没有图、条码在缓存里有图片地址的商品抓图。
 //
-// 流程：enqueue 把候选商品放进 image_jobs（一个商品一行，主键去重）→ runDue 原子地领任务（attempts+1 并把 next_try_at
+// 流程：enqueue 把候选商品放进 image_jobs（一个商品一行，主键去重）→ runImageJobs 一次一个、原子地领任务（attempts+1 并把 next_try_at
 // 推到以后，FOR UPDATE SKIP LOCKED：两个进程 / 两轮同时跑也不会领到同一个）→ 安全下载 → 缩图 → 写对象存储 →
 // 在 withStoreLock 里确认商品还没图、取一个新号，写回 image_key / image_ver（+1）/ rev。
 // 图片任务和商品保存是两件事：商品早已在同步时保存，这里失败只记 last_error，商品照常可用（显示首字）。
@@ -79,11 +79,17 @@ export interface RunResult {
   skipped: number;
 }
 
-/** 跑一轮：领 limit 个到期任务，一个一个做 */
+/**
+ * 跑一轮：一次领一个、做完再领下一个，最多做 limit 个。
+ * 不一次领一批：领到时租约（next_try_at 推后 5 分钟）就开始算，一批 20 张串行做、单张最慢 18 秒（下载 8 + 上传 10）
+ * 就会做到租约过期，发布时新旧进程重叠会把排着的任务再领一遍（PR #19 审核）。一次一个，租约只需盖住单张。
+ */
 export async function runImageJobs(d: ImageJobDeps, limit = 20): Promise<RunResult> {
   const out: RunResult = { done: 0, failed: 0, skipped: 0 };
   if (!d.enabled || !d.store) return out;
-  for (const job of await claimDue(d, limit)) {
+  for (let i = 0; i < limit; i++) {
+    const [job] = await claimDue(d, 1);
+    if (!job) break;
     const r = await processJob(d, d.store, job);
     out[r] += 1;
   }

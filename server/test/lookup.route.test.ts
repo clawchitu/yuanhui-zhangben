@@ -186,6 +186,43 @@ describe("超时与失败降级", () => {
   });
 });
 
+describe("AppCode 不进日志、业务错误不进缓存（PR #19 审核）", () => {
+  it("网关错误头回显 AppCode（Invalid AppCode `<码>`）：全部日志行里都找不到 AppCode", async () => {
+    const APPCODE = `appcode-${randomUUID()}`;
+    const lines: string[] = [];
+    const f = (async () => new Response("x", { status: 403, headers: { "X-Ca-Error-Message": `Invalid AppCode \`${APPCODE}\`` } })) as typeof fetch;
+    const app = mk({
+      source: new KuainiaoClient({ appCode: APPCODE, endpoint: "https://h.example/getBarcode", fetch: f }),
+      logStream: { write: (l) => void lines.push(l) },
+    });
+    const a = await shop(app);
+    expect((await get(app, a.token, newBarcode())).json()).toEqual({ found: false });
+    await app.close();
+    const failed = lines.filter((l) => l.includes("外部条码库查询失败"));
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toContain("403");
+    expect(lines.join("\n")).not.toContain(APPCODE);
+  });
+
+  it("HTTP 200 里的业务错误（{code:\"500\"}、{code:403,name:\"QuotaExhausted\"}）：返回没查到，不写缓存，下次还调外部", async () => {
+    for (const body of [{ code: "500", msg: "系统繁忙" }, { code: 403, name: "QuotaExhausted" }, { code: "1", msg: "未查询到该条码信息", data: null }]) {
+      let calls = 0;
+      const f = (async () => {
+        calls++;
+        return Response.json(body);
+      }) as typeof fetch;
+      const app = mk({ source: new KuainiaoClient({ appCode: "x", endpoint: "https://h.example/getBarcode", fetch: f }) });
+      const a = await shop(app);
+      const code = newBarcode();
+      expect((await get(app, a.token, code)).json()).toEqual({ found: false });
+      expect((await get(app, a.token, code)).json()).toEqual({ found: false });
+      expect(calls).toBe(2);
+      expect(await tdb.kysely.selectFrom("barcode_catalog").selectAll().where("barcode", "=", code).executeTakeFirst()).toBeUndefined();
+      await app.close();
+    }
+  });
+});
+
 describe("并发去重", () => {
   it("同一条码 8 个请求同时到（不同设备、不同店）：只调外部一次，只占一次额度，结果一致", async () => {
     const src = new FakeSource();

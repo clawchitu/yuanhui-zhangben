@@ -49,7 +49,15 @@ export async function runTrial(source: BarcodeSource, items: TrialItem[], timeou
           : { ...it, found: false, hasImage: false, raw: r.raw },
       );
     } catch (e) {
-      rows.push({ ...it, found: false, hasImage: false, error: e instanceof SourceError ? `${e.kind}: ${e.message}` : "unexpected" });
+      // 认不出的响应（format）也留原文：T9 要靠录制件定「明确没查到」凭哪个字段认
+      const raw = e instanceof SourceError ? e.raw : undefined;
+      rows.push({
+        ...it,
+        found: false,
+        hasImage: false,
+        error: e instanceof SourceError ? `${e.kind}: ${e.message}` : "unexpected",
+        ...(raw !== undefined ? { raw } : {}),
+      });
     }
   }
   return rows;

@@ -4,7 +4,7 @@
 //       否则先查 barcode_catalog（全局缓存，不分店）：查到的永久有效，查不到的 7 天内有效；
 //       缓存没有 → 同一条码正在外部查询就跟着等那一次（进程内去重，不再占额度）；
 //       → 占本店今天的额度（每店每天 300 次，超了 429 lookup_quota_exceeded）→ 调外部，2 秒超时。
-// 外部超时、出错一律当「没查到」返回，不写缓存（下次还能再查）；接口最慢 = 超时 + 一点余量（验收：2 秒超时时 2.5 秒内返回）。
+// 外部超时、出错、响应认不出（含 HTTP 200 里的业务错误）一律当「没查到」返回，不写缓存（下次还能再查）；接口最慢 = 超时 + 一点余量（验收：2 秒超时时 2.5 秒内返回）。
 import { sql, type Kysely } from "kysely";
 import type { Database } from "../db.ts";
 import { SourceError, type BarcodeSource, type CatalogHit } from "./kuainiao.ts";
@@ -53,7 +53,10 @@ export function shanghaiDay(now: Date): { day: string; secondsToMidnight: number
 
 /**
  * 每店每天的额度。单实例服务器，放内存里（与按 IP 限速同一做法，见 auth/ratelimit.ts）：重启后当天的计数清零，
- * 最多多花一份当天额度。只数「真的调了外部」的次数：缓存命中、跟着别人等的、演示店都不算。
+ * 每重启一次可能多用一份当天额度（上界 = 当天重启次数 × 上限）。能重启服务的只有我们自己，持令牌的设备触发不了。
+ * 按 §14 S08-3 的裁定放内存，带两个条件：T9 接 AppCode 前确认快鸟是预付次数包、用完即停（不是的话先挪进数据库，
+ * 按「店 + 上海日期」原子计数）；S10c 的「快鸟余量」告警接 app.catalog.quota。以后改成多实例时必须挪进数据库。
+ * 只数「真的调了外部」的次数：缓存命中、跟着别人等的、演示店都不算。
  */
 export class DailyQuota {
   private counts = new Map<string, number>();
@@ -143,7 +146,8 @@ export class CatalogService {
       return r.kind === "found" ? { kind: "found", hit: r.hit } : { kind: "not_found" };
     } catch (e) {
       const kind = e instanceof SourceError ? e.kind : "unknown";
-      // 只记条码和失败类型；错误信息里没有 AppCode（KuainiaoClient 保证），也不记响应体
+      // 只记条码、失败类型和固定文字的错误信息（状态码 + 固定分类）；不记网关报错头、响应体（SourceError.raw 不记）。
+      // 不是 SourceError 的异常一律记成 unexpected，不记它的 message（来源不明，可能带凭据）
       log.warn({ barcode, source: source.name, kind, err: e instanceof SourceError ? e.message : "unexpected" }, "外部条码库查询失败，按没查到返回");
       return { kind: "unavailable" };
     } finally {
