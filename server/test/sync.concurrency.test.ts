@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb, type Db } from "../src/db.ts";
 import { buildApp } from "../src/app.ts";
 import { takeRev, storeLockKey, withStoreLock } from "../src/sync/lock.ts";
+import { TestClock } from "./helpers/auth.ts";
 import { createTestDb, testConfig, type TestDb } from "./helpers/db.ts";
 import { makeFastShop, makeTokenDevice } from "./helpers/ledger.ts";
 import { newBarcode, op, sync, upsertFull, upsertQuick } from "./helpers/sync.ts";
@@ -21,7 +22,7 @@ afterAll(async () => {
 
 /** 三个「进程」，请求轮流发给它们 */
 function cluster() {
-  const apps = pools.map((db) => buildApp({ config: testConfig(), db, logger: false }));
+  const apps = pools.map((db) => buildApp({ config: testConfig(), db, logger: false, clock: new TestClock().now }));
   let i = 0;
   return {
     next: () => apps[i++ % apps.length]!,

@@ -25,10 +25,10 @@ afterAll(() => tdb.drop());
 const noon = (day: string) => `${day}T04:00:00.000Z`;
 const AT = noon("2026-11-20");
 
-/** today：服务器时间取上海这天下午（op 时间不晚于服务器，不触发时钟校正）；不给就用真实时间 */
-async function setup(today?: string) {
+/** today：服务器时间取上海这天下午（op 时间不晚于服务器，不触发时钟校正）；默认 2026-11-20，和 AT 配套 */
+async function setup(today = "2026-11-20") {
   const shop = await makeLoginShop(tdb);
-  const app = today ? makeApp(tdb, { clock: new TestClock(Date.parse(noon(today)) + 3600_000) }) : makeApp(tdb);
+  const app = makeApp(tdb, { clock: new TestClock(Date.parse(noon(today)) + 3600_000) });
   const boss = await login(app, shop.username);
   const send = async (...ops: ReturnType<typeof op>[]) => (await syncOk(app, boss.token, { epoch: shop.epoch, ops, pull: false })).results;
   const newProduct = async (track = true) => {

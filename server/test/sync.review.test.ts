@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, testConfig, type TestDb } from "./helpers/db.ts";
-import { bearer, login, makeApp, makeLoginShop, pair } from "./helpers/auth.ts";
+import { bearer, login, makeApp, makeLoginShop, pair, TestClock } from "./helpers/auth.ts";
 import { expectContract, newBarcode, op, sync, syncOk, upsertFull, upsertQuick } from "./helpers/sync.ts";
 import { BODY_LIMIT, buildApp } from "../src/app.ts";
 import { opSchemaValid } from "../src/sync/validate.ts";
@@ -375,7 +375,7 @@ describe("S04-13 savepoint 兜底（注入故障）", () => {
   async function setupLogged() {
     const shop = await makeLoginShop(tdb);
     const lines: Array<Record<string, unknown>> = [];
-    const app = buildApp({ config: testConfig(), db: tdb, logStream: { write: (l) => void lines.push(JSON.parse(l)) } });
+    const app = buildApp({ config: testConfig(), db: tdb, clock: new TestClock().now, logStream: { write: (l) => void lines.push(JSON.parse(l)) } });
     const boss = await login(app, shop.username);
     return { shop, app, boss, lines };
   }
