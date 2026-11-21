@@ -175,7 +175,9 @@ struct FocusLineCard: View {
     }
 
     /// 「刚扫的 · 单价」；整件码写明 1 件是几个（「刚扫的 · 每箱（24 罐）」）；已停用的商品照卖，标一句
-    private var caption: String {
+    private var caption: String { Self.caption(for: line) }
+
+    static func caption(for line: Basket.Line) -> String {
         var s = line.packQty > 1 ? "刚扫的 · 每\(line.conversion.unitLabel)" : "刚扫的 · 单价"
         if line.conversion.product.archived { s += " · 已停用" }
         return s
