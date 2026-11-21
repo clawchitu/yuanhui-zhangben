@@ -12,6 +12,7 @@
 #   release-<提交号前 12 位>，并把移动标签 release-current 强制移到它，都推到 origin（幂等，见该脚本头部）。
 #   镜像 tar 的 artifact 只留 3 天，ECS 整机丢了以后按 release-current 取版本、按 release-<前 12 位> 重打同一个提交的镜像
 #   （workflow_dispatch 的 ref 只收分支或标签，不收提交号）。手工回滚 = 用旧提交再发布一次，release-current 跟着回到旧提交。
+#   没推上时的补救命令是 ECS_HOST=… deploy/release-tag.sh --from-ecs（不带提交号，按 ECS 当时的 current-tag 补，Codex 第三轮）。
 #   RELEASE_GIT_DIR（默认本仓库）、RELEASE_REMOTE（默认 origin）只给测试换成沙盒仓库。
 # 幂等：同一个标签重复发布只会重建有变化的容器；迁移本身幂等（「没有新的迁移」）。
 set -euo pipefail
@@ -50,7 +51,7 @@ remote bash "$D/incoming/remote-deploy.sh" "$TAG" "$REG" ${GATE[@]+"${GATE[@]}"}
 if [ "$DRY_RUN" = 1 ]; then
   printf '[dry-run] 发布成功后：deploy/release-tag.sh %s（打 release-<前 12 位> 并把 release-current 移到它，推到 origin）\n' "$TAG"
 elif ! ECS_HOST="$ECS_HOST" bash "$HERE/release-tag.sh" "$TAG"; then
-  echo "发布本身已成功，但发布标签没打上 / 没推上去：修好后重跑 deploy/release-tag.sh ${TAG}（幂等，见 runbook「发布 / 回滚」），否则 3 天后 artifact 过期就没法按标签重打这次的镜像，整机恢复也取不到这一版" >&2
+  echo "发布本身已成功，但发布标签没打上 / 没推上去：修好后跑 ECS_HOST=$ECS_HOST deploy/release-tag.sh --from-ecs（按 ECS 上当时的 current-tag 补，之后又发布过也不会拨回这一版；幂等，见 runbook「发布 / 回滚」），否则 3 天后 artifact 过期就没法按标签重打这次的镜像，整机恢复也取不到这一版" >&2
   [ "$rc" = 0 ] && rc=6
 fi
 exit "$rc"

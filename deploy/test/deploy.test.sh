@@ -18,7 +18,7 @@ pass=0; fail=0; T=""
 # LC_ALL=C 时测不出来，PR #23 Codex 5、Fable 必须改 3）。Mac 上 C.UTF-8 测不出来，先挑 en_US.UTF-8；CI 的 Ubuntu 只有 C.UTF-8
 for _l in en_US.UTF-8 C.UTF-8; do if locale -a 2>/dev/null | grep -ix "$_l" > /dev/null; then export LC_ALL=$_l; break; fi; done
 
-setup() {
+setup0() {
   T=$(mktemp -d)
   mkdir -p "$T/remote" "$T/state"
   export FAKE_REMOTE="$T/remote" FAKE_STATE="$T/state" FAKE_LOG="$T/log"
@@ -32,6 +32,7 @@ setup() {
   git init -q --bare "$T/origin.git"; git -C "$G" remote remove origin 2>/dev/null; git -C "$G" remote add origin "$T/origin.git"
   for x in $(git -C "$G" tag -l 'release-*'); do git -C "$G" tag -d "$x" > /dev/null; done
 }
+setup() { setup0; }
 rtags() { git -C "$T/origin.git" for-each-ref --format='%(refname:short) %(objecttype) %(*objectname)' 'refs/tags/release-*' | grep -v '^release-current ' || true; }
 # origin 上 release-current 指向的提交（没有就空）
 rcur() { git -C "$T/origin.git" rev-parse --verify --quiet 'refs/tags/release-current^{commit}' || true; }
@@ -264,12 +265,14 @@ setup; with_prev; printf '#!/bin/sh\nexit 1\n' > "$T/origin.git/hooks/pre-receiv
 rm "$T/origin.git/hooks/pre-receive"
 check "origin 拒收：退出码 6（实际 $(rc)）" [ "$(rc)" = 6 ]
 check "推不上之后：本机已有发布标签（实际 $(git -C "$G" tag -l 'release-*' | tr '\n' ' ')）" [ -n "$(git -C "$G" tag -l "release-${NEW:0:12}")" ]
-ok() { RELEASE_GIT_DIR=$G bash "$HERE/../release-tag.sh" "$(cat "$T/remote/current-tag")" > "$T/out" 2>&1; }
-check "按 runbook 补救：用 ECS 的 current-tag 重跑 release-tag.sh，退出码 0" ok
+ok() { PATH="$HERE/fakes:$PATH" ECS_HOST=root@47.117.184.253 bash "$HERE/../release-tag.sh" --from-ecs > "$T/out" 2>&1; }
+check "按 runbook 补救：ECS_HOST=… release-tag.sh --from-ecs（按 ECS 的 current-tag），退出码 0" ok
 ok() { [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ] && [ "$(rcur)" = "$NEW" ]; }; check "补救后 origin 上有发布标签，release-current 是这次的（实际 $(rtags)、$(rcur)）" ok
 
 t "release-tag.sh 单独跑（runbook 的补救命令，PR #27 Codex 第二轮 1）：三种情况幂等或报错退出"
-rt() { RELEASE_GIT_DIR=$G bash "$HERE/../release-tag.sh" "$@" > "$T/out" 2>&1; echo $? > "$T/rc"; }
+# 第三轮起要 ECS_HOST 先核对 ECS 的 current-tag：用 ssh 替身，current-tag 默认是 NEW
+rt() { PATH="$HERE/fakes:$PATH" ECS_HOST="${H-root@47.117.184.253}" RELEASE_GIT_DIR=$G bash "$HERE/../release-tag.sh" "$@" > "$T/out" 2>&1; echo $? > "$T/rc"; }
+setup() { setup0; echo "$NEW" > "$T/remote/current-tag"; }
 setup; rt "$NEW"
 ok() { [ "$(rc)" = 0 ] && [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ] && [ "$(rcur)" = "$NEW" ]; }; check "都没有：打上并推送，release-current 指向它（实际 $(rc)）" ok
 before=$(git -C "$T/origin.git" rev-parse refs/tags/release-current); rt "$NEW"
@@ -286,6 +289,16 @@ ok() { [ "$(rc)" = 0 ] && [ "$(git -C "$G" rev-parse "release-${NEW:0:12}^{commi
 setup; rt 4444444; check "找不到提交：退出码 1（实际 $(rc)）" [ "$(rc)" = 1 ]
 rt "abc;x"; check "提交号格式不对：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ]
 rt --current; check "origin 上还没有 release-current：--current 退出码 1（实际 $(rc)）" [ "$(rc)" = 1 ]
+setup; H='' rt "$NEW"; ok() { [ "$(rc)" = 2 ] && [ -z "$(rcur)" ]; }; check "没给 ECS_HOST：退出码 2、不动标签（实际 $(rc)）" ok
+setup; H='' rt --from-ecs; check "--from-ecs 没给 ECS_HOST：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ]
+setup; rm "$T/remote/current-tag"; rt --from-ecs; ok() { [ "$(rc)" = 1 ] && [ -z "$(rcur)" ] && [ -z "$(rtags)" ]; }; check "读不到 ECS 的 current-tag：退出码 1、不动标签（实际 $(rc)）" ok
+setup; echo "x;y" > "$T/remote/current-tag"; rt --from-ecs; check "ECS 的 current-tag 不是提交号：退出码 1（实际 $(rc)）" [ "$(rc)" = 1 ]
+setup; echo "${NEW:0:7}" > "$T/remote/current-tag"; rt --from-ecs
+ok() { [ "$(rc)" = 0 ] && [ "$(rcur)" = "$NEW" ] && [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ]; }; check "ECS 的 current-tag 是 7 位短号：--from-ecs 照样补上（实际 $(rc)）" ok
+setup; echo "${NEW:0:7}" > "$T/remote/current-tag"; rt "$NEW"; check "ECS 是短号、参数是 40 位，同一个提交：退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
+setup; rt "$OLD"; ok() { [ "$(rc)" = 3 ] && [ -z "$(rcur)" ] && [ -z "$(rtags)" ] && [ -z "$(git -C "$G" tag -l 'release-*')" ]; }
+check "参数不是 ECS 的 current-tag：退出码 3，本机和 origin 都不打（实际 $(rc)）" ok
+setup() { setup0; }
 
 t "发布 A → 发布 B → 手工回滚到 A（用 A 再发布一次）→ 整机恢复按 release-current 取到 A（PR #27 Codex 第二轮 2）"
 setup; deploy "$OLD" --execute; a1=$(rc); sleep 1; deploy "$NEW" --execute; a2=$(rc); sleep 1; deploy "$OLD" --execute
@@ -304,6 +317,23 @@ ok() { [ "$(RELEASE_GIT_DIR=$G bash "$HERE/../release-tag.sh" --current 2> "$T/o
 check "本机 release-current 是旧的（指向 B）：--current 强制取 origin 的，仍取到 A" ok
 case "$(tag)" in "${OLD:0:${#OLD}}"*) okc=1;; *) okc=0;; esac
 check "取到的提交和 ECS current-tag 一致" [ "$okc" = 1 ]
+
+t "A 发布后标签没推上 → B 发布成功 → 隔了一阵照 A 的失败提示补救：release-current 仍是 B（PR #27 Codex 第三轮）"
+setup; with_prev
+printf '#!/bin/sh\nexit 1\n' > "$T/origin.git/hooks/pre-receive"; chmod +x "$T/origin.git/hooks/pre-receive"
+deploy "$OLD" --execute; a1=$(rc); cp "$T/out" "$T/outA"; rm "$T/origin.git/hooks/pre-receive"
+deploy "$NEW" --execute
+check "A 退出码 6、B 退出码 0（实际 $a1 $(rc)）" [ "$a1$(rc)" = 60 ]
+check "B 之后 release-current 是 B（实际 $(rcur)）" [ "$(rcur)" = "$NEW" ]
+# 原样取 A 失败时打印的补救命令（含前面的环境变量），在仓库根目录的位置上跑
+fix=$(grep -o '\(ECS_HOST=[^ ]* \)\{0,1\}deploy/release-tag\.sh [^（ ]*' "$T/outA" | head -1)
+check "A 的输出里有补救命令（实际「${fix}」）" [ -n "$fix" ]
+ok() { (cd "$HERE/../.." && PATH="$HERE/fakes:$PATH" eval "env $fix") > "$T/out" 2>&1; echo $? > "$T/rc"; }; ok
+check "照 A 的提示补救：退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
+check "补救后 release-current 仍是 B（实际 $(rcur)），线上也是 B（$(tag)）" [ "$(rcur)" = "$NEW" ] && [ "$(tag)" = "$NEW" ]
+PATH="$HERE/fakes:$PATH" ECS_HOST=root@47.117.184.253 bash "$HERE/../release-tag.sh" "$OLD" > "$T/out" 2>&1; echo $? > "$T/rc"
+ok() { [ "$(rc)" = 3 ] && [ "$(rcur)" = "$NEW" ] && grep -q -- "--from-ecs" "$T/out"; }
+check "旧写法（带 A 的提交号）直接跑：和 ECS current-tag 不一致，退出码 3、不动 release-current、提示用 --from-ecs（实际 $(rc)、$(rcur)）" ok
 
 t "image.yml 能按发布标签重打（PR #27 Codex）：workflow_dispatch 触发、tar 那一步不限于 PR、标签 = 检出的提交号"
 Y="$HERE/../../.github/workflows/image.yml"
