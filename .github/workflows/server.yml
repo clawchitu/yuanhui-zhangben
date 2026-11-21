@@ -50,14 +50,15 @@ jobs:
       - name: 部署脚本语法检查（bash -n、shellcheck）、单元测试（模拟 ssh / docker）、Caddyfile 校验、compose 配置解析
         working-directory: .
         run: |
-          for f in deploy/*.sh deploy/test/*.sh deploy/test/fakes/*; do bash -n "$f"; done
-          shellcheck -S warning deploy/*.sh deploy/test/*.sh deploy/test/fakes/*
+          for f in deploy/*.sh deploy/probe/*.sh deploy/test/*.sh deploy/test/fakes/*; do bash -n "$f"; done
+          shellcheck -S warning deploy/*.sh deploy/probe/*.sh deploy/test/*.sh deploy/test/fakes/*
           bash deploy/test/deploy.test.sh
           # 同一套测试再跑一遍，替身 docker 每次 compose 调用都先让真 Compose 对同样的文件和环境做一次插值（config -q）
           printf '#!/bin/sh\nexec /usr/bin/docker compose "$@"\n' > /tmp/real-compose && chmod +x /tmp/real-compose
           FAKE_REAL_COMPOSE=/tmp/real-compose bash deploy/test/deploy.test.sh
           bash deploy/test/bootstrap.test.sh
           bash deploy/test/smoke.test.sh
+          bash deploy/test/probe.test.sh
           # S10b：backup.sh / restore.sh 跑真脚本（替身 docker 转给本机 node、pg_dump），连 CI 的 Postgres 服务
           pg_dump --version
           bash deploy/test/backup.test.sh
