@@ -22,16 +22,19 @@ final class SellModel {
     enum Notice: Equatable {
         /// 没登记过的码（登记新商品在 S18 接：扫到后去 04a）
         case unknownBarcode(String)
-        /// 超出 §5.0 上限等，篮子没变
+        /// 超出 §5.0 上限，篮子没变。原因是店里人看得懂的话（`limitReason`），不是 ShopCore 的内部原因（§14 S16-6）
         case rejected(String)
         /// 记账失败（本地库写不进去），购物篮原样留着
         case saveFailed(String)
+        /// 抹零后篮子变了，抹的零作废、回到按原价收（§14 S16-1：不悄悄变）
+        case paidCleared
 
         var text: String {
             switch self {
             case .unknownBarcode(let code): "这个码还没登记：\(code)"
             case .rejected(let why): "加不进去：\(why)"
             case .saveFailed(let why): "没记上，再按一次试试（\(why)）"
+            case .paidCleared: "东西变了，刚才抹的零取消了，要抹请再抹一次"
             }
         }
     }
@@ -42,6 +45,8 @@ final class SellModel {
     private(set) var focusId: UUID?
     private(set) var done: Done?
     private(set) var notice: Notice?
+    /// 每出一次黄条加一（同样的黄条再出一次也加），界面按它重新计时（Fable 8）
+    private(set) var noticeSeq = 0
     /// 顶栏「N 笔待传」（来自本地库）
     private(set) var pendingCount: Int
     /// 记账次数（测试、调试探针用）
@@ -100,15 +105,22 @@ final class SellModel {
         notice = nil
         do {
             guard let conv = try db.lookup(barcode: code) else {
-                notice = .unknownBarcode(code)
+                show(.unknownBarcode(code))
                 return .unknown
             }
-            let i = try basket.add(conv)
+            let reason = limitReason(adding: conv)
+            let i: Int
+            do {
+                i = try basket.add(conv)
+            } catch {
+                show(.rejected(reason ?? "超出上限"))
+                return .unknown
+            }
             focusId = basket.lines[i].id
             clearPaidOverride()
             return .known
         } catch {
-            notice = .rejected(Self.describe(error))
+            show(.rejected(Self.describe(error)))
             return .unknown
         }
     }
@@ -122,19 +134,55 @@ final class SellModel {
     func setCount(lineId: UUID, _ n: Int) {
         guard let i = basket.lines.firstIndex(where: { $0.id == lineId }) else { return }
         notice = nil
+        let line = basket.lines[i]
         do {
             try basket.setCount(at: i, Int64(n))
             if basket.lines.first(where: { $0.id == focusId }) == nil { focusId = basket.lines.last?.id }
             clearPaidOverride()
         } catch {
-            notice = .rejected(Self.describe(error))
+            show(.rejected(Self.limitReason(line.conversion, count: Int64(n)) ?? "超出上限"))
         }
     }
 
     /// 篮子一变（扫进新东西、改件数），之前抹的零作废，回到按原价收：抹零是对着当时的原价定的，
-    /// 原价变了还留着旧实收，会把多出来的东西白送或把七折检查绕过去（S16 自行决定，PR 里说明）
+    /// 原价变了还留着旧实收，会把多出来的东西白送或把七折检查绕过去。作废的那一刻出黄条（§14 S16-1）
     private func clearPaidOverride() {
-        if basket.paidOverrideFen != nil { try? basket.setPaid(nil) }
+        guard basket.paidOverrideFen != nil else { return }
+        try? basket.setPaid(nil)
+        show(.paidCleared)
+    }
+
+    private func show(_ n: Notice) {
+        notice = n
+        noticeSeq &+= 1
+    }
+
+    /// 扫到 `conv` 时会超哪条 §5.0 上限，用店里人看得懂的话说（§14 S16-6）；不超是 nil
+    private func limitReason(adding conv: PackConversion) -> String? {
+        let same = basket.lines.first {
+            $0.conversion.product.id == conv.product.id && $0.packQty == conv.packQty
+                && $0.conversion.barcode.unitName == conv.barcode.unitName
+                && (try? $0.unitPrice()) == (try? conv.unitPrice())
+        }
+        if same == nil, basket.lines.count >= Limits.maxSaleLines {
+            return "一单最多 \(Limits.maxSaleLines) 样，先把这一单记了再扫"
+        }
+        return Self.limitReason(conv, count: (same?.packCount ?? 0) + 1)
+    }
+
+    /// 一行买 `count` 件时会超哪条上限：件数、按基本单位的数量、这一行的金额
+    static func limitReason(_ conv: PackConversion, count: Int64) -> String? {
+        if count > Limits.maxPackCount { return "这一样最多 \(Limits.maxPackCount) 件" }
+        let (base, o1) = conv.packQty.multipliedReportingOverflow(by: count)
+        if o1 || base > Limits.maxBaseQty {
+            return "这一样最多 \(Limits.maxBaseQty) \(conv.product.baseUnit)"
+        }
+        let price = (try? conv.unitPrice().raw) ?? 0
+        let (amount, o2) = price.multipliedReportingOverflow(by: count)
+        if o2 || amount > Limits.maxFen {
+            return "这一行最多 ¥\(Money.yuanString(Int(Limits.maxFen)))，分两单记"
+        }
+        return nil
     }
 
     /// 抹零 / 改总价的结果（面板本身在 S17 做；这里只接住结果，03b 的显示和记账要用）
@@ -160,7 +208,7 @@ final class SellModel {
             refreshPending()
             return true
         } catch {
-            notice = .saveFailed(Self.describe(error))
+            show(.saveFailed(Self.describe(error)))
             return false
         }
     }
@@ -170,6 +218,11 @@ final class SellModel {
     }
 
     func dismissNotice() { notice = nil }
+
+    /// 计时到了收黄条：只收那一次的（期间又出了新黄条就不收）
+    func dismissNotice(seq: Int) {
+        if seq == noticeSeq { notice = nil }
+    }
 
     func refreshPending() {
         pendingCount = (try? db.pendingOps().count) ?? pendingCount

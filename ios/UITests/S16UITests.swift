@@ -146,6 +146,20 @@ final class S16UITests: XCTestCase {
         XCTAssertEqual(el(app, "sell.itemCount").label, "一共 1 件")
     }
 
+    /// 连着扫同一个没登记的码（隔 3 秒）：第二次的黄条从第二次起停满 4 秒，不被第一次的计时提前收掉（Fable 8）
+    func testRepeatedUnknownCodeRestartsTheNoticeTimer() {
+        let unknown = "6900000000000"
+        let app = launch(["-uiScan", "\(unknown),\(unknown)", "-uiScanGap", "3"])
+        let notice = el(app, "sell.notice")
+        XCTAssertTrue(notice.waitForExistence(timeout: 10))
+        let first = Date()
+        // 第一次计时在约 4 秒时到；第二次在约 3 秒时出，应停到约 7 秒
+        RunLoop.current.run(until: first.addingTimeInterval(5.5))
+        XCTAssertTrue(notice.exists, "第二次的黄条被第一次的计时提前收掉了")
+        XCTAssertTrue(notice.label.contains(unknown))
+        wait("黄条最终消失", timeout: 6) { !notice.exists }
+    }
+
     /// 相机被拒：27a（S14 的 NoCameraBand），扫码枪照常进购物篮
     func testCameraDeniedShowsBandAndGunStillSells() {
         let app = launch(["-uiCamera", "denied", "-uiScan", Self.beer])

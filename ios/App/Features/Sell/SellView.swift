@@ -67,7 +67,7 @@ struct SellView: View {
         }
         .task { await feedFixture() }
         .task(id: model.done?.id) { await autoDismissDone() }
-        .task(id: model.notice) { await autoDismissNotice() }
+        .task(id: model.noticeSeq) { await autoDismissNotice() }
     }
 
     // MARK: 购物篮
@@ -113,13 +113,16 @@ struct SellView: View {
     private func autoDismissDone() async {
         guard let id = model.done?.id, !fixture.holdDone else { return }
         try? await Task.sleep(for: .seconds(2.5))
-        model.dismissDone(id)
+        if !Task.isCancelled { model.dismissDone(id) }
     }
 
+    /// 黄条停 4 秒。按 `noticeSeq` 计时：同样的黄条再出一次（连扫同一个没登记的码）重新数 4 秒，
+    /// 不会被上一次的计时提前收掉（Fable 8）
     private func autoDismissNotice() async {
         guard model.notice != nil else { return }
+        let seq = model.noticeSeq
         try? await Task.sleep(for: .seconds(4))
-        if !Task.isCancelled { model.dismissNotice() }
+        if !Task.isCancelled { model.dismissNotice(seq: seq) }
     }
 
     /// 测试夹具（只在 Debug 有内容）：开页后由 FakeScanner 把码喂进扫码层（和真扫码走同一条路：去重、出声），

@@ -238,4 +238,113 @@ final class SellModelTests: XCTestCase {
         b.wrappedValue += 1
         XCTAssertEqual(m.basket.lines.map(\.barcode), [Self.noodle], "删掉的行不会被旧按钮加回来")
     }
+    // MARK: 被拒的扫码、记账失败（Fable 7）、抹零作废的黄条（S16-1）、上限文案（S16-6）、黄条计时（Fable 8）
+
+    private func scanDesign(_ m: SellModel) {
+        for c in [Self.beer, Self.beer, Self.beer, Self.beer, Self.erguotou, Self.noodle] { scan(m, c) }
+    }
+
+    /// 抹零后扫到没登记的码、超上限的码：篮子没变，实收保留（S16-1：被拒的扫码不算篮子变了）
+    func testRejectedScansKeepThePaidAmount() throws {
+        let m = try makeModel()
+        scanDesign(m)
+        try m.setPaid(5300)
+        XCTAssertEqual(scan(m, "6900000000000"), .unknown)
+        XCTAssertEqual(m.paidTotalFen, 5300, "没登记的码不动实收")
+        XCTAssertEqual(m.discountFen, 50)
+        XCTAssertEqual(m.notice, .unknownBarcode("6900000000000"))
+
+        let noodle = try XCTUnwrap(m.basket.lines.first { $0.barcode == Self.noodle })
+        m.setCount(lineId: noodle.id, Int(Limits.maxPackCount))
+        try m.setPaid(m.listTotalFen - 50)
+        let paid = m.paidTotalFen
+        XCTAssertEqual(scan(m, Self.noodle), .unknown, "超上限")
+        XCTAssertEqual(m.paidTotalFen, paid, "超上限的码不动实收")
+        XCTAssertEqual(m.discountFen, 50)
+        XCTAssertEqual(m.count(lineId: noodle.id), Limits.maxPackCount)
+    }
+
+    /// 记账失败（本地库写不进去）：篮子、实收原样留着，出「没记上」黄条，不算记了一笔；修好后再按能记上
+    func testFailedCommitKeepsTheBasket() throws {
+        let m = try makeModel()
+        scanDesign(m)
+        try m.setPaid(5300)
+        try m.db.writer.write { db in
+            try db.execute(sql: "CREATE TEMP TRIGGER fail_sale BEFORE INSERT ON sale_batch BEGIN SELECT RAISE(ABORT, '磁盘满了'); END")
+        }
+        let pending = m.pendingCount
+        XCTAssertFalse(m.commit())
+        guard case .saveFailed = m.notice else { return XCTFail("应出「没记上」黄条，实际 \(String(describing: m.notice))") }
+        XCTAssertTrue(m.notice?.text.hasPrefix("没记上") == true)
+        XCTAssertEqual(m.commitCount, 0)
+        XCTAssertNil(m.done)
+        XCTAssertEqual(m.basket.lines.count, 3, "篮子原样")
+        XCTAssertEqual(m.itemCount, 6)
+        XCTAssertEqual(m.paidTotalFen, 5300, "实收原样")
+        XCTAssertEqual(m.pendingCount, pending)
+        XCTAssertTrue(try m.db.entries().filter { $0.type == .sale }.isEmpty, "一行流水都没写")
+        XCTAssertTrue(m.canCommit, "还能再按")
+
+        try m.db.writer.write { db in try db.execute(sql: "DROP TRIGGER fail_sale") }
+        XCTAssertTrue(m.commit())
+        XCTAssertEqual(m.commitCount, 1)
+        XCTAssertNil(m.notice)
+        XCTAssertEqual(m.done?.paidFen, 5300)
+    }
+
+    /// S16-1：抹零后再扫码或改数量，实收作废的那一刻出黄条（不悄悄变）；没抹零时改篮子不出
+    func testDiscountClearedByABasketChangeShowsANotice() throws {
+        let m = try makeModel()
+        scanDesign(m)
+        scan(m, Self.noodle)
+        XCTAssertNil(m.notice, "没抹零：不出")
+        try m.setPaid(5700)
+        scan(m, Self.noodle)
+        XCTAssertEqual(m.notice, .paidCleared)
+        XCTAssertEqual(m.notice?.text, "东西变了，刚才抹的零取消了，要抹请再抹一次")
+        scan(m, Self.noodle)
+        XCTAssertNil(m.notice, "下一次扫码黄条消失（实收已经是原价，不再提示）")
+
+        try m.setPaid(m.listTotalFen - 10)
+        m.setCount(lineId: try XCTUnwrap(m.focusLine?.id), 1)
+        XCTAssertEqual(m.notice, .paidCleared, "改数量同样提示")
+        XCTAssertNil(m.discountFen)
+    }
+
+    /// S16-6：超上限的黄条说店里人看得懂的话，不出 ShopCore 的内部原因
+    func testOverLimitNoticeIsInPlainWords() throws {
+        let m = try makeModel()
+        scan(m, Self.beer)
+        m.setCount(lineId: try XCTUnwrap(m.focusLine?.id), Int(Limits.maxPackCount))
+        scan(m, Self.beer)
+        XCTAssertEqual(m.notice?.text, "加不进去：这一样最多 99999 件")
+
+        // 单行金额超上限（§5.0：一行最多 ¥999999.99）
+        let db = try makeDB()
+        let p = try Product(id: UUID(), name: "整箱茅台", baseUnit: "箱", priceFen: Fen(40_000_000))
+        try db.applyBaseline(CatalogBaseline(products: [p], barcodes: [try BarcodeRecord(barcode: "6900000000307", productId: p.id,
+                                                                                            unitName: "箱")]))
+        let m2 = SellModel(db: db)
+        XCTAssertEqual(scan(m2, "6900000000307"), .known)
+        XCTAssertEqual(scan(m2, "6900000000307"), .known)
+        XCTAssertEqual(scan(m2, "6900000000307"), .unknown)
+        XCTAssertEqual(m2.notice?.text, "加不进去：这一行最多 ¥999999.99，分两单记")
+        for t in [m.notice?.text, m2.notice?.text] {
+            XCTAssertFalse(t?.contains("…") == true || t?.contains("超出") == true, "不是内部原因：\(t ?? "")")
+        }
+    }
+
+    /// Fable 8：连着扫同一个没登记的码，每次都是一条新黄条（序号变），界面据此重新计时
+    func testSameNoticeAgainIsANewNotice() throws {
+        let m = try makeModel()
+        scan(m, "6900000000000")
+        let first = m.noticeSeq
+        scan(m, "6900000000000")
+        XCTAssertEqual(m.notice, .unknownBarcode("6900000000000"))
+        XCTAssertNotEqual(m.noticeSeq, first, "同样的黄条再出一次也要重新计时")
+        m.dismissNotice(seq: first)
+        XCTAssertNotNil(m.notice, "第一次的计时到了，不收第二次的黄条")
+        m.dismissNotice(seq: m.noticeSeq)
+        XCTAssertNil(m.notice)
+    }
 }
