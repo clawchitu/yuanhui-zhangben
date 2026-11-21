@@ -137,7 +137,8 @@ struct PriceTag<Footer: View>: View {
     }
 
     private var captionText: some View {
-        Text(caption).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
+        // 卖出页（紧凑版）照稿子用深色：灰字压在黄底上太浅（Fable 视觉 4）
+        Text(caption).font(TypeScale.secondary).foregroundStyle(compact ? Tokens.Palette.ink : Tokens.Palette.ink2)
     }
 }
 

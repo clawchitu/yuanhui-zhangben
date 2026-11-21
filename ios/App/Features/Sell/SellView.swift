@@ -35,12 +35,9 @@ struct SellView: View {
             ModeBar(title: "卖出", mode: .sell, pendingCount: model.pendingCount, onBack: { dismiss() })
             CameraStrip(hub: hub, permission: permission, paused: covered, torchOn: torchOn, onTorch: toggleTorch,
                         onManual: { showManual = true })
-            ZStack(alignment: .top) {
-                basketArea
-                if let n = model.notice { noticeBanner(n) }
-                if let d = model.done { DoneCard(done: d).padding(.top, 150).transition(.opacity) }
-            }
-            .frame(maxHeight: .infinity)
+            basketArea
+                .frame(maxHeight: .infinity)
+                .overlay(alignment: .top) { if let n = model.notice { noticeBanner(n) } }
             CheckoutPanel(model: model, onDiscount: { showDiscount = true })
         }
         .background(Tokens.Palette.paper.ignoresSafeArea())
@@ -74,7 +71,14 @@ struct SellView: View {
 
     @ViewBuilder private var basketArea: some View {
         if model.basket.isEmpty {
-            EmptyBasket()
+            // 03d「记好了」黑卡是虚线框上的浮层，不参与布局（§14 S16-9）：任何字号下都不把顶栏、记账按钮挤出屏幕；
+            // 黑卡显示期间空篮只留虚线框
+            EmptyBasket(showsContent: model.done == nil)
+                .overlay {
+                    if let d = model.done {
+                        DoneCard(done: d).padding(12).transition(.opacity)
+                    }
+                }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
                 .padding(.bottom, 4)
@@ -127,16 +131,21 @@ struct SellView: View {
 
     /// 测试夹具（只在 Debug 有内容）：开页后由 FakeScanner 把码喂进扫码层（和真扫码走同一条路：去重、出声），
     /// 喂完改实收、自动记账
+    /// 喂码放在独立的 Task 里：推到手输页时页面的 `.task` 会被取消，喂码不能跟着一口气喂完，
+    /// 要按时间继续喂（⑨ 的界面测试靠它：在手输页期间扣的扳机不进购物篮）
     private func feedFixture() async {
         guard !fedFixture else { return }
         fedFixture = true
-        #if DEBUG
-        if let scanner = fixture.scanner { await scanner.run(into: hub) }
-        #endif
-        if let paid = fixture.paidFen { try? model.setPaid(paid) }
-        if fixture.autoCommit {
-            try? await Task.sleep(for: .milliseconds(200))
-            model.commit()
+        let (fixture, hub, model) = (fixture, hub, model)
+        Task { @MainActor in
+            #if DEBUG
+            if let scanner = fixture.scanner { await scanner.run(into: hub) }
+            #endif
+            if let paid = fixture.paidFen { try? model.setPaid(paid) }
+            if fixture.autoCommit {
+                try? await Task.sleep(for: .milliseconds(200))
+                model.commit()
+            }
         }
     }
 
@@ -211,8 +220,8 @@ struct BasketLineRow: View {
                 }
             }
         }
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
         .overlay(alignment: .bottom) { Rectangle().fill(Tokens.Palette.line).frame(height: 1) }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sell.line")
@@ -223,10 +232,14 @@ struct BasketLineRow: View {
         line.packQty > 1 ? "\(line.name) · \(line.conversion.unitLabel)" : line.name
     }
 
+    /// 小号步进器：圆钮 46pt、点按区 56pt（S11-4）。点按区上下各多出的 5pt 不撑高这一行（负留白），行距贴稿约 95pt（§14 S16-10）
     private var stepper: some View {
         QuantityStepper(value: count(line, model), range: 0...Int(Limits.maxPackCount), compact: true)
             .accessibilityIdentifier("sell.qty.\(line.barcode)")
+            .padding(.vertical, -Self.hitOverhang)
     }
+
+    static let hitOverhang = (QuantityStepper.hitSize(compact: true) - QuantityStepper.diameter(compact: true)) / 2
 
     private var subtotal: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -266,6 +279,9 @@ struct FittingPrice: View {
 // MARK: - 空篮（03c）
 
 struct EmptyBasket: View {
+    /// 黑卡盖在上面时为假：图标和文字不画（只留虚线框），读屏也不读
+    var showsContent = true
+
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: "barcode.viewfinder")
@@ -281,6 +297,8 @@ struct EmptyBasket: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        .opacity(showsContent ? 1 : 0)
+        .accessibilityHidden(!showsContent)
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card)
@@ -295,27 +313,41 @@ struct EmptyBasket: View {
 struct DoneCard: View {
     let done: SellModel.Done
 
+    /// 放得下就照稿子（对勾、记好了、实收、一句说明）；最大辅助字号下购物篮区矮，依次去掉对勾、收小留白，
+    /// 卡片高度不超过购物篮区
     var body: some View {
+        ViewThatFits(in: .vertical) {
+            card(check: true, vertical: 30)
+            card(check: false, vertical: 18)
+            card(check: false, vertical: 10, caption: false)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("sell.done")
+    }
+
+    private func card(check: Bool, vertical: CGFloat, caption: Bool = true) -> some View {
         VStack(spacing: 10) {
-            Image(systemName: "checkmark")
-                .font(.system(size: 44, weight: .bold))
+            if check {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 44, weight: .bold))
+            }
             Text("记好了").font(.system(size: 30, weight: .bold))
             PriceText(cents: Int(done.paidFen), size: 48, color: .white)
-            Text("卖出 \(done.kinds) 样 \(done.items) 件 · 可以扫下一单")
-                .font(TypeScale.secondary)
-                .foregroundStyle(Tokens.Palette.card.opacity(0.9))
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            if caption {
+                Text("卖出 \(done.kinds) 样 \(done.items) 件 · 可以扫下一单")
+                    .font(TypeScale.secondary)
+                    .foregroundStyle(Tokens.Palette.card.opacity(0.9))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .foregroundStyle(.white)
-        .padding(.vertical, 30)
+        .padding(.vertical, vertical)
         .padding(.horizontal, 20)
         .frame(maxWidth: 310)
         .background(Tokens.Palette.ink, in: RoundedRectangle(cornerRadius: Tokens.Radius.sheet))
         .shadow(color: .black.opacity(0.25), radius: 18, y: 8)
-        .padding(.horizontal, 40)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("sell.done")
+        .padding(.horizontal, 8)
     }
 }
 
@@ -331,15 +363,26 @@ struct CheckoutPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             summaryRow
+            // 总价放不下时：64pt 横排 → 48pt 横排 → 才上下排（§14 S16-10）。上下排时「要收」和按钮同一行，总价单独一行
             ViewThatFits(in: .horizontal) {
+                // 不放 Spacer：HStack 的间距会在 Spacer 两边各算一次，白占 12pt，¥9999.99 在 48pt 就放不下了
                 HStack(alignment: .bottom, spacing: 12) {
                     discountButton
-                    Spacer(minLength: 0)
-                    totalBlock
+                    totalBlock(Tokens.FixedFontSize.total).frame(maxWidth: .infinity, alignment: .trailing)
                 }
-                VStack(alignment: .trailing, spacing: 8) {
-                    totalBlock
-                    discountButton.frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .bottom, spacing: 12) {
+                    discountButton
+                    totalBlock(48).frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                VStack(alignment: .trailing, spacing: 6) {
+                    HStack(alignment: .bottom, spacing: 8) {
+                        discountButton
+                        Spacer(minLength: 0)
+                        totalLabel
+                    }
+                    FittingPrice(cents: model.paidTotalFen, sizes: [Tokens.FixedFontSize.total, 48, 36, 28], color: totalColor)
+                        .padding(.bottom, -10)
+                        .accessibilityIdentifier("sell.total")
                 }
             }
             PrimaryButton("收好钱了，记账", systemImage: "checkmark", mode: .sell) { model.commit() }
@@ -348,8 +391,7 @@ struct CheckoutPanel: View {
                 .padding(.top, 14)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+        .padding(.top, 6)
         .background(Tokens.Palette.card.ignoresSafeArea(edges: .bottom))
         .overlay(alignment: .top) { Rectangle().fill(Tokens.Palette.line).frame(height: 1) }
         .accessibilityElement(children: .contain)
@@ -392,14 +434,20 @@ struct CheckoutPanel: View {
             .accessibilityIdentifier("sell.discount")
     }
 
-    private var totalBlock: some View {
+    private var totalColor: Color { empty ? Tokens.Palette.mute : Tokens.Palette.ink }
+
+    private var totalLabel: some View {
+        Text(model.discountFen == nil ? "要收" : "实收")
+            .font(TypeScale.secondary)
+            .foregroundStyle(Tokens.Palette.ink2)
+    }
+
+    /// 「要收」+ 总价（固定字号，放不下由外层换下一档）
+    private func totalBlock(_ size: CGFloat) -> some View {
         VStack(alignment: .trailing, spacing: 0) {
-            Text(model.discountFen == nil ? "要收" : "实收")
-                .font(TypeScale.secondary)
-                .foregroundStyle(Tokens.Palette.ink2)
-            FittingPrice(cents: model.paidTotalFen, sizes: [Tokens.FixedFontSize.total, 48, 36, 28],
-                         color: empty ? Tokens.Palette.mute : Tokens.Palette.ink)
-                .padding(.vertical, -10)   // DIN 的行高比字身高出一截，收掉，让总价底边和左边按钮底边齐（03）
+            totalLabel
+            PriceText(cents: Int(model.paidTotalFen), size: size, color: totalColor)
+                .padding(.vertical, size >= 64 ? -10 : -7)   // DIN 的行高比字身高出一截，收掉，让总价底边和左边按钮底边齐（03）
                 .accessibilityIdentifier("sell.total")
         }
     }

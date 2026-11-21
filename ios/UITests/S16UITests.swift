@@ -1,3 +1,4 @@
+import Vision
 import XCTest
 
 /// S16 卖出页的界面验收。码由 Debug 的 FakeScanner 喂进扫码层（默认当作扫码枪，走真实的按键解析；
@@ -190,22 +191,165 @@ final class S16UITests: XCTestCase {
         XCTAssertLessThanOrEqual(e.frame.maxY, w.maxY + 0.5, "\(what) 出了屏幕底 \(e.frame)", file: file, line: line)
     }
 
-    /// 商品名很长时换行不截断、金额不出右边距（长名在下面的行里，和在价签里各一次）
-    func testLongNameWrapsAndAmountsStayInside() {
+    /// 页边距：容器（价签、各行）的辅助功能外框比画出来的框每边外扩 3pt（实测：价签画在 20…370，外框 17…373），
+    /// 所以按 17pt 核对，误差 1pt——出了 1pt 就是真的没留够 20pt 边距（Codex ③）
+    private func assertPageMargins(_ app: XCUIApplication, _ e: XCUIElement, _ what: String,
+                                   file: StaticString = #filePath, line: UInt = #line) {
+        let w = app.windows.firstMatch.frame
+        XCTAssertEqual(e.frame.minX, w.minX + 17, accuracy: 1, "\(what) 左边距 \(e.frame)", file: file, line: line)
+        XCTAssertEqual(e.frame.maxX, w.maxX - 17, accuracy: 1, "\(what) 右边距 \(e.frame)", file: file, line: line)
+    }
+
+    /// 两个元素不重叠
+    private func assertNoOverlap(_ a: XCUIElement, _ b: XCUIElement, _ what: String,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        let i = a.frame.intersection(b.frame)
+        XCTAssertTrue(i.isNull || i.width < 0.5 || i.height < 0.5, "\(what) 重叠：\(a.frame) / \(b.frame)", file: file, line: line)
+    }
+
+    /// 把购物篮里的某个元素整个滚进可视区（购物篮的顶到结算区的顶）
+    private func scrollIntoBasket(_ app: XCUIApplication, _ e: XCUIElement) -> Bool {
+        let basket = el(app, "sell.basket"), checkout = el(app, "sell.checkout")
+        for _ in 0..<8 {
+            let top = basket.frame.minY, bottom = checkout.frame.minY
+            if e.frame.minY >= top - 0.5 && e.frame.maxY <= bottom + 0.5 { return true }
+            let up = e.frame.maxY > bottom
+            let from = basket.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.8 : 0.2))
+            from.press(forDuration: 0.05, thenDragTo: basket.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.3 : 0.7)))
+        }
+        return false
+    }
+
+    /// 元素在屏幕上画出来的字（文字识别，去掉空白）。辅助功能标签截断了也还是全名，所以要读画出来的字（Codex ③）
+    private static func renderedText(_ e: XCUIElement) throws -> String {
+        let shot = e.screenshot()
+        let attachment = XCTAttachment(screenshot: shot)
+        attachment.lifetime = .deleteOnSuccess
+        XCTContext.runActivity(named: "识别 \(e.identifier)") { $0.add(attachment) }
+        let cg = try XCTUnwrap(shot.image.cgImage)
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["zh-Hans", "en-US"]
+        request.usesLanguageCorrection = false
+        try VNImageRequestHandler(cgImage: cg).perform([request])
+        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        return lines.joined().components(separatedBy: .whitespacesAndNewlines).joined()
+    }
+
+    /// 长名里有代表性的几段：开头、中间、结尾都要画出来（截成两行、出「…」都会少）
+    static let longNameParts = ["贵州茅台酒", "飞天", "礼盒装", "附赠两只小酒杯", "生肖纪念版"]
+
+    /// 商品名很长时换行不截断（读画出来的字）、金额不出右边距、容器留足 20pt 页边距；
+    /// 滚到长名那里能整个看见，不被固定的结算区盖住；总价、抹零按钮、记账按钮互不重叠（长名在下面的行里，和在价签里各一次）
+    func testLongNameWrapsAndAmountsStayInside() throws {
         for order in [[Self.long, Self.long, Self.long, Self.erguotou], [Self.erguotou, Self.long, Self.long, Self.long]] {
             let app = launch(["-uiLongName", "-uiScan", order.joined(separator: ",")])
             waitItems(app, 4)
             let name = app.staticTexts[Self.longName]
-            XCTAssertTrue(name.exists, "全名在（没被截成「…」）")
-            XCTAssertGreaterThan(name.frame.height, 40, "长名换了行")
+            XCTAssertTrue(name.exists, "全名在")
+            XCTAssertTrue(scrollIntoBasket(app, name), "长名能整个滚进购物篮可视区 \(name.frame)")
+            XCTAssertLessThanOrEqual(name.frame.maxY, el(app, "sell.checkout").frame.minY + 0.5, "长名不被结算区盖住")
+            let text = try Self.renderedText(name)
+            for part in Self.longNameParts {
+                XCTAssertTrue(text.contains(part), "画出来的长名缺「\(part)」：\(text)")
+            }
+            XCTAssertFalse(text.contains("…") || text.contains("..."), "长名被截断：\(text)")
             assertInsideWindow(app, name, margin: 16, "长名")
+            let containers = [el(app, "sell.tag")] + app.descendants(matching: .any).matching(identifier: "sell.line").allElementsBoundByIndex
+            for c in containers where c.exists { assertPageMargins(app, c, c.identifier) }
             for s in app.descendants(matching: .any).matching(identifier: "sell.subtotal").allElementsBoundByIndex {
                 assertInsideWindow(app, s, margin: 16, "小计")
             }
-            assertInsideWindow(app, el(app, "sell.total"), margin: 16, "总价")
-            XCTAssertEqual(el(app, "sell.total").label, "30024.97 元")
+            let total = el(app, "sell.total"), discount = app.buttons["sell.discount"], commit = commitButton(app)
+            assertInsideWindow(app, total, margin: 16, "总价")
+            assertNoOverlap(total, discount, "总价和抹零按钮")
+            assertNoOverlap(total, commit, "总价和记账按钮")
+            assertNoOverlap(discount, commit, "抹零按钮和记账按钮")
+            XCTAssertEqual(total.label, "30024.97 元")
             app.terminate()
         }
+    }
+
+    /// 总价四位数（¥9999.99）：64pt 放不下时先降到 48pt，和「抹零 / 改总价」仍排在同一行，不上下排（S16-10）
+    func testFourDigitTotalStaysBesideTheDiscountButton() {
+        let app = launch(["-uiLongName", "-uiScan", Self.long])
+        waitItems(app, 1)
+        let total = el(app, "sell.total"), discount = app.buttons["sell.discount"]
+        XCTAssertEqual(total.label, "9999.99 元")
+        XCTAssertGreaterThan(total.frame.minX, discount.frame.maxX, "总价在按钮右边：\(total.frame) / \(discount.frame)")
+        XCTAssertLessThan(abs(total.frame.midY - discount.frame.midY), 30, "同一行")
+        assertInsideWindow(app, total, margin: 16, "总价")
+    }
+
+    /// 03：iPhone 13、大字模式、稿子上的三样商品，三行完整可见，不被结算区盖住（S16-10）
+    func testDesignBasketShowsAllThreeLines() {
+        let app = launch(["-uiScan", [Self.beer, Self.beer, Self.beer, Self.beer, Self.erguotou, Self.noodle].joined(separator: ",")])
+        waitItems(app, 6)
+        let checkout = el(app, "sell.checkout"), basket = el(app, "sell.basket")
+        let rows = [el(app, "sell.tag")] + app.descendants(matching: .any).matching(identifier: "sell.line").allElementsBoundByIndex
+        XCTAssertEqual(rows.count, 3)
+        for r in rows {
+            XCTAssertGreaterThanOrEqual(r.frame.minY, basket.frame.minY - 0.5, "\(r.identifier) 顶部可见 \(r.frame)")
+            XCTAssertLessThanOrEqual(r.frame.maxY, checkout.frame.minY + 0.5, "\(r.identifier) 没被结算区盖住 \(r.frame)")
+        }
+        for q in ["sell.qty.\(Self.beer)", "sell.qty.\(Self.erguotou)"] {
+            XCTAssertTrue(el(app, q).isHittable, "\(q) 能点")
+        }
+        let lines = app.descendants(matching: .any).matching(identifier: "sell.line").allElementsBoundByIndex
+        for l in lines { XCTAssertLessThanOrEqual(l.frame.height, 100, "两行式每行贴稿约 95pt，实际 \(l.frame.height)") }
+    }
+
+    /// 最大辅助字号下「记好了」黑卡不参与布局：顶栏返回钮、记账按钮和空篮时在同一位置、整个在屏内、能点；
+    /// 黑卡在购物篮区内；黑卡后面的空篮只留虚线框（S16-9）
+    func testDoneCardAtMaxSizeDoesNotPushTheBarsOff() {
+        var frames: [String: (CGRect, CGRect)] = [:]
+        for state in ["empty", "done"] {
+            let app = XCUIApplication()
+            app.launchArguments = ["-uiFixture", "home", "-uiRoute", "sell", "-uiLargeText", "on", "-uiProbe",
+                                   "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+                + (state == "done" ? ["-uiScan", [Self.beer, Self.erguotou, Self.noodle].joined(separator: ","), "-uiAutoCommit", "-uiHoldDone"] : [])
+            app.launch()
+            let commit = commitButton(app), back = app.buttons["返回"].firstMatch
+            XCTAssertTrue(commit.waitForExistence(timeout: 10))
+            if state == "done" {
+                let done = el(app, "sell.done")
+                XCTAssertTrue(done.waitForExistence(timeout: 10))
+                let box = el(app, "sell.empty")
+                XCTAssertTrue(box.exists)
+                XCTAssertGreaterThanOrEqual(done.frame.minY, box.frame.minY - 0.5, "黑卡在购物篮区内 \(done.frame) / \(box.frame)")
+                XCTAssertLessThanOrEqual(done.frame.maxY, box.frame.maxY + 0.5, "黑卡在购物篮区内 \(done.frame) / \(box.frame)")
+                XCTAssertFalse(box.label.contains("扫第一样商品"), "黑卡后面的空篮不露文字：\(box.label)")
+            }
+            let w = app.windows.firstMatch.frame
+            XCTAssertTrue(back.isHittable, "\(state)：返回钮能点")
+            XCTAssertGreaterThanOrEqual(back.frame.minY, w.minY + 40, "\(state)：返回钮不进状态栏 \(back.frame)")
+            XCTAssertGreaterThanOrEqual(commit.frame.minY, w.minY)
+            XCTAssertLessThanOrEqual(commit.frame.maxY, w.maxY + 0.5, "\(state)：记账按钮整个在屏内 \(commit.frame)")
+            frames[state] = (back.frame, commit.frame)
+            app.terminate()
+        }
+        if let e = frames["empty"], let d = frames["done"] {
+            XCTAssertEqual(e.0, d.0, "黑卡出来时返回钮不动")
+            XCTAssertEqual(e.1, d.1, "黑卡出来时记账按钮不动")
+        }
+    }
+
+    /// ⑨：推到「手输条码」页期间扫码枪扣扳机，码不进购物篮（不出声）；返回后再扫照常进
+    func testScansWhileOnTheManualPageAreIgnored() {
+        // 1 秒：啤酒（进）；6 秒：方便面（这时在手输页，不进）；11 秒：二锅头（已返回，进）
+        let app = launch(["-uiScan", [Self.beer, Self.noodle, Self.erguotou].joined(separator: ","), "-uiScanGap", "5"])
+        waitItems(app, 1)
+        let start = Date()
+        app.buttons["scanner.manual"].tap()
+        XCTAssertTrue(app.otherElements["page.manualCode"].waitForExistence(timeout: 5))
+        RunLoop.current.run(until: start.addingTimeInterval(6.5))
+        app.otherElements["page.manualCode"].buttons["返回"].tap()
+        XCTAssertTrue(app.otherElements["page.sell"].waitForExistence(timeout: 5))
+        XCTAssertEqual(el(app, "sell.itemCount").label, "一共 1 件", "在手输页时扫的码没进购物篮")
+        XCTAssertFalse(el(app, "sell.qty.\(Self.noodle)").exists)
+        waitItems(app, 2)
+        XCTAssertTrue(el(app, "sell.qty.\(Self.erguotou)").exists || el(app, "sell.qty.focus").exists)
+        XCTAssertEqual(el(app, "sell.total").label, "31.00 元", "啤酒 6.00 + 二锅头 25.00")
     }
 
     /// 系统最大辅助字号下总价和记账按钮完整可见（大字模式开 / 关各一次）
