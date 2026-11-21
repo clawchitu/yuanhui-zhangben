@@ -33,7 +33,22 @@ else
 fi
 t0=$(date +%s)
 W=$(mktemp -d "${TMPDIR:-/tmp}/yh-restore.XXXXXX")
-trap 'rm -rf "$W"' EXIT
+STEP=fetch
+# 失败一律打一行 restore_failed（S10c，§14 T26）。整机重建（ECS 上）另外追加到 backup/restore-events.log，api 的监控读它告警；
+# 本机演练时人就在终端前，只打到 stderr。
+on_exit() {
+  local rc=$?
+  if [ "$rc" != 0 ]; then
+    local line
+    line=$(printf '{"at":"%s","event":"restore_failed","alert":"restore_failed","stage":"%s","exit_code":%s}' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$STEP" "$rc")
+    echo "$line" >&2
+    if [ -n "$CD" ]; then
+      { mkdir -p "$CD/backup" && chmod 711 "$CD/backup" && echo "$line" >> "$CD/backup/restore-events.log" && chmod 644 "$CD/backup/restore-events.log"; } || true
+    fi
+  fi
+  rm -rf "$W"
+}
+trap on_exit EXIT
 
 if [ -n "$CD" ]; then
   # 容器里是 node 用户（1000），工作目录要让它能写；/work 是同一个目录
@@ -62,6 +77,7 @@ echo "── 1. 下载、解密、核对 sha256" >&2
 node_r fetch --backup "$WHICH" --out "$WD" | tee "$W/fetch.out"
 ID=$(sed -n 's/.*"backup_id":"\([^"]*\)".*/\1/p' "$W/fetch.out" | head -1)
 [[ $ID =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$ ]] || { echo "没拿到备份 id" >&2; exit 1; }
+STEP=verify
 pg_list > /dev/null || { echo "dump 校验失败（pg_restore --list）" >&2; exit 1; }
 
 done_already() {
@@ -80,11 +96,14 @@ if [ "$EXECUTE" = 0 ]; then
   exit 0
 fi
 
+STEP=prepare
 echo "── 2. 清空目标库、打「恢复中」标记" >&2
 node_r prepare --backup-id "$ID" --execute | tee "$W/prepare.out"
 grep -q '"state":"done"' "$W/prepare.out" && done_already
+STEP=pg_restore
 echo "── 3. pg_restore" >&2
 pg_load
+STEP=finish
 echo "── 4. 比对清单 → 重放删除记录 → 再比对 → 换 epoch、标记改「已恢复」" >&2
 node_r finish --manifest "$WD/manifest.json" --execute
 printf '{"event":"restore_ok","backup_id":"%s","restore_seconds":%s}\n' "$ID" "$(( $(date +%s) - t0 ))"

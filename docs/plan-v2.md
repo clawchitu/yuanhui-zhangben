@@ -732,6 +732,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 - IP 证书（§14 T19、S10a-3）：剩余有效期低于 48 小时告警；每次续期成功 / 失败留记录，供判定方案 A 是否稳定。
 - 快鸟余量（§14 S08-3 的条件二）：告警接 `app.catalog.quota`，单店当天用到 200 次就告警。每日额度计数在内存里、每重启一次可能多用一份额度，这条告警是它的兜底之一。
 - 注销导出和清除的告警（§14 T16）：现在只是带 `alert` 字段的日志（`account_delete_export`、`account_delete_export_failed`、`export_no_archive`、`purge_no_archive`，以及 T17 带来的 `object_discard_failed`、`export_discard_lost`），接到通知渠道。
+- **本段分两个 PR**（同 S10a、S10b）：代码与配置 PR 只改仓库，告警通道是可注入接口、测试用假实现；人为触发每一项、Chitu 收到告警的验收在部署实测 PR 里做，项目列在 `docs/runbook.md`「S10c 部署时验证」M1–M12。
 
 ### 阶段 C：iOS 离线界面（不需要服务器）
 
@@ -1412,6 +1413,8 @@ S09 的 PR（#20）提了 16 条，Fable 审核裁定如下（按评论原文；
 | T25 | 隐私政策和注销页写明：注销后永久保留一条不含业务数据的删除记录（店的随机编号和时间）；导出包最长保留 30 天 | PR #23 Fable（S10b-4） | §10 |
 | T26 | 告警接上：`backup_failed`、`backup_lifecycle_stale`、`consecutive_failures ≥ 2`、备份被跳过（锁）、`gate-skips.log` 有新行、`restore_failed` | PR #23 Fable | S10c |
 | T27 | 上线前演练时再核对一次口令三份（可用指纹），并确认阿里云主账号的登录和二次验证可用 | PR #23 Fable（S10b-10） | S32 |
+| T28 | §9.5「快鸟额度：每次调用后记余量，< 50 次告警」：快鸟的响应里有没有剩余次数字段，要等 T9 ② 的真实录制件。S10c 先做了单店当天 ≥ 200 次（S08-3 条件二）和网关报额度用完 / 限流（`kuainiao_quota`）两条；T9 确认有余量字段后在 `CatalogService` 记下来、接 `< 50` 的条件告警 | S10c 代码 PR | T9 → S10c 部署实测 |
+| T29 | PR #25 Fable 建议 3 的后一半：服务器检查任务自己的心跳。返修已做每段各自 try、出错段报 `monitor_check_error:<段>`，但整个检查任务停了（scheduler 卡住、进程活着不跑任务）没人知道。做法：每轮在 `/data/monitor/` 写一个时间戳，本机探测 ssh 拉 outbox 时一起读，超过 10 分钟没动就报 `server_monitor_stale` | S10c 代码 PR 返修 | S10c 部署实测前 |
 
 T2 的 PR（#15）定了 4 条，Fable 审核裁定如下：
 

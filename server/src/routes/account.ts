@@ -124,6 +124,10 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
         return at;
       });
       if (!requestedAt) return gone(reply);
+      // 新的申请立刻告警（§9.5）；导出包生成后 account-purge 另发一条 account_delete_export，带位置
+      if (requestedAt.getTime() === now.getTime()) {
+        req.log.warn({ alert: "account_delete_request", store_id: a.store.id, reason: a.store.isDemo ? "演示店，不生成导出包" : "导出包位置：exports/<店>/，生成后另发一条" }, "有人申请注销账号");
+      }
       return { delete_pending_until: deletePendingUntil(requestedAt) };
     },
   );

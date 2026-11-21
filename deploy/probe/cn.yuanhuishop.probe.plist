@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 本机定时探测（S10c，§9.5）：每 10 分钟一次。装法见 docs/runbook.md「监控与告警」：
+     把 __REPO__ 换成仓库的绝对路径、__HOME__ 换成家目录、__NODE_DIR__ 换成 node 24 所在目录，复制到 ~/Library/LaunchAgents/，
+     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/cn.yuanhuishop.probe.plist -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>cn.yuanhuishop.probe</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/deploy/probe/run-probe.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>__NODE_DIR__:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StartInterval</key><integer>600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/yuanhui-probe.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/yuanhui-probe.log</string>
+</dict>
+</plist>
