@@ -89,6 +89,8 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
+      // 营业时间无同步的告警看它（S10c）：没被退出的设备这次同步成功了
+      if (!device.revokedAt) app.syncSeen.ok(a.store.id, now);
       // 注销期间（§14 S04-2）：results 为空，带 delete_pending_until，手机把 op 留在 outbox、停止推送
       const until = device.deletePending ? deletePendingUntil(device.deleteRequestedAt) : undefined;
       const resultScope = scopeOfRole(device.role);

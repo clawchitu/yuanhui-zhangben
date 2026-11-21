@@ -46,6 +46,18 @@ export interface Config {
       };
   /** GET /v1/images 的本机磁盘缓存目录，缺了回源对象存储 */
   imageCacheDir: string;
+  /** 监控与告警（S10c，§9.5）。dir 空 = 不起检查任务（本机开发、测试） */
+  monitor: {
+    /** 状态和 outbox（本机探测拉回去发给 Chitu）放这里；ECS 上 /data/monitor */
+    dir: string;
+    /** 只读挂进来的 /opt/yuanhui/backup（metrics.prom、gate-skips.log、restore-events.log）；空 = 不查备份 */
+    backupDir: string;
+    /** 看磁盘用量的目录（挂在数据盘上的）；空 = 不查 */
+    diskPath: string;
+    /** 可选：立刻推一份的 webhook（https）。令牌只从环境变量来，不进日志 */
+    webhookUrl: string;
+    webhookToken: string;
+  };
 }
 
 type Env = Record<string, string | undefined>;
@@ -105,6 +117,7 @@ export function loadConfig(env: Env = process.env): Config {
     barcodeDailyLimit: int(env, "BARCODE_DAILY_LIMIT", 300, 0, 100_000),
     objectStore: objectStore(env),
     imageCacheDir: env.IMAGE_CACHE_DIR || "/var/cache/yuanhui/images",
+    monitor: monitor(env),
   };
 }
 
@@ -145,4 +158,26 @@ function objectStore(env: Env): Config["objectStore"] {
     };
   }
   throw new ConfigError("OBJECT_STORE 只能是 none / local / aliyun");
+}
+
+function monitor(env: Env): Config["monitor"] {
+  const webhookUrl = env.ALERT_WEBHOOK_URL ?? "";
+  if (webhookUrl) {
+    let u: URL;
+    try {
+      u = new URL(webhookUrl);
+    } catch {
+      throw new ConfigError("ALERT_WEBHOOK_URL 不是合法 URL");
+    }
+    // 告警正文要出公网：只许 https
+    if (u.protocol !== "https:") throw new ConfigError("ALERT_WEBHOOK_URL 只能是 https");
+  }
+  if (env.ALERT_WEBHOOK_TOKEN && !webhookUrl) throw new ConfigError("配了 ALERT_WEBHOOK_TOKEN 却没配 ALERT_WEBHOOK_URL");
+  return {
+    dir: env.MONITOR_DIR ?? "",
+    backupDir: env.MONITOR_BACKUP_DIR ?? "",
+    diskPath: env.MONITOR_DISK_PATH ?? "",
+    webhookUrl,
+    webhookToken: env.ALERT_WEBHOOK_TOKEN ?? "",
+  };
 }

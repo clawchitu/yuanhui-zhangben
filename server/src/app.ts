@@ -19,6 +19,7 @@ import { sourceFromConfig, type BarcodeSource } from "./lookup/kuainiao.ts";
 import { objectStoreFromConfig, type ObjectStore } from "./lookup/oss.ts";
 import { CatalogService } from "./lookup/catalog.ts";
 import { proxyTrust } from "./auth/proxy.ts";
+import { SyncSeen } from "./monitor/server-monitor.ts";
 
 /**
  * 请求体上限 1 MiB（§4.2）。最大的合法 op（200 行的卖出、每个字符串都写满、非 ASCII 全转义成 \uXXXX）约 0.75 MiB，
@@ -50,6 +51,8 @@ export interface AppDeps {
   barcodeSource?: BarcodeSource | null;
   /** 对象存储（默认按配置；none 是 null）。测试里传内存实现 */
   objectStore?: ObjectStore | null;
+  /** 生产用：每行日志照常写 stdout，同时交给它（监控从日志里取告警、数 5xx，S10c）。测试里不用 logStream 时也可以传 */
+  logTap?: (line: string) => void;
 }
 
 export interface ResolvedDeps extends AppDeps {
@@ -67,6 +70,8 @@ declare module "fastify" {
     deps: ResolvedDeps;
     /** 条码查询服务（测试里看额度用） */
     catalog: CatalogService;
+    /** 每家店最近一次同步成功（S10c 营业时间无同步告警） */
+    syncSeen: SyncSeen;
   }
 }
 
@@ -91,7 +96,7 @@ export function buildApp(input: AppDeps): FastifyInstance {
         ? false
         : {
             level: deps.logStream ? "info" : deps.config.logLevel,
-            ...(deps.logStream ? { stream: deps.logStream } : {}),
+            ...(deps.logStream ? { stream: deps.logStream } : deps.logTap ? { stream: tee(deps.logTap) } : {}),
             // 令牌、口令、开通码不进日志
             redact: {
               paths: ["req.headers.authorization", "req.headers.cookie", "body.password", "body.code", "body.token"],
@@ -101,6 +106,7 @@ export function buildApp(input: AppDeps): FastifyInstance {
     bodyLimit: BODY_LIMIT,
   });
   app.decorate("deps", deps);
+  app.decorate("syncSeen", new SyncSeen());
   app.decorate(
     "catalog",
     new CatalogService({
@@ -141,4 +147,18 @@ export function buildApp(input: AppDeps): FastifyInstance {
   app.register(reportRoutes);
   app.register(lookupRoutes);
   return app;
+}
+
+/** 日志照常写 stdout，同时交给 tap；tap 出错不影响写日志 */
+function tee(tap: (line: string) => void): { write(line: string): void } {
+  return {
+    write(line: string) {
+      process.stdout.write(line);
+      try {
+        tap(line);
+      } catch {
+        // 监控解析出错不能把请求日志弄丢
+      }
+    },
+  };
 }
