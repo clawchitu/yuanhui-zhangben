@@ -182,6 +182,40 @@ describe("导出包", () => {
     await other.app.close();
   });
 
+  it("流水时间按 Asia/Shanghai 历史时区写，和月报归月一致：1988 年夏令时的月末那一笔归九月（PR #20 Codex 7）", async () => {
+    const clock = new TestClock(T0);
+    const shop = await makeLoginShop(tdb, { name: "夏令时店" });
+    const app = makeApp(tdb, { clock });
+    const boss = await login(app, shop.username);
+    const a = randomUUID();
+    const ca = newBarcode();
+    const sale = (at: string, n: number) =>
+      op("sale_batch", { batch_id: randomUUID(), paid_total_fen: 100 * n, lines: [{ entry_id: randomUUID(), product_id: a, barcode: ca, name: "可乐", unit_name: "罐", pack_qty: 1, pack_count: n, unit_price_fen: 100 }] }, { at });
+    const ops = [
+      upsertFull({ productId: a, barcode: ca, name: "夏令时可乐", price: 100 }),
+      op("opening", { entry_id: randomUUID(), product_id: a, counted_qty: 50, unit_cost_fen: 50 }, { at: "1988-08-01T02:00:00Z" }),
+      sale("1988-08-31T14:30:00Z", 1), // 北京（夏令时 +9）08-31 23:30
+      sale("1988-08-31T15:30:00Z", 4), // 北京（夏令时 +9）09-01 00:30；固定 +8 会写成 08-31 23:30
+    ];
+    const r = await syncOk(app, boss.token, { epoch: shop.epoch, ops });
+    expect(r.results.map((x: { status: string }) => x.status), JSON.stringify(r.results)).toEqual(ops.map(() => "applied"));
+    const now = new Date("1988-10-15T02:00:00Z");
+    const files = readZip(await zipOf(shop.storeId, now));
+    const entries = csv(files, "流水.csv");
+    const col = (n: string) => entries[0]!.indexOf(n);
+    const sales = entries.slice(1).filter((x) => x[col("类型")] === "卖出");
+    expect(sales.map((x) => x[col("时间(北京)")])).toEqual(["1988-08-31 23:30:00", "1988-09-01 00:30:00"]);
+    const months = csv(files, "月报.csv").slice(1);
+    expect(months.map((m) => m[0])).toEqual(["1988-08", "1988-09", "1988-10"]);
+    for (const m of months) {
+      const rep = await reportMonth(tdb.kysely, shop.storeId, m[0]!, now);
+      const sold = sales.filter((x) => x[col("时间(北京)")]!.startsWith(m[0]!)).reduce((s, x) => s + yuanToFen(x[col("实收金额(元)")]!), 0);
+      expect([m[0], sold, yuanToFen(m[1]!)]).toEqual([m[0], rep.sold_fen, rep.sold_fen]);
+    }
+    expect(months.map((m) => m[1])).toEqual(["1.00", "4.00", "0.00"]);
+    await app.close();
+  });
+
   it("分页导出（每页 1、2、3 行）与一次导完逐字节相同", async () => {
     const clock = new TestClock(T0);
     const s = await shopWithBooks(clock, "分页店");

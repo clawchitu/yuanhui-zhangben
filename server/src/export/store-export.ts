@@ -42,11 +42,21 @@ export const MONTH_HEADER = [
   "月末货值(元)", "进价未知的商品数", "进价未知的损耗笔数",
 ];
 
-/** 北京时间 YYYY-MM-DD HH:MM:SS */
+const SH_TIME = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+});
+/**
+ * 北京时间 YYYY-MM-DD HH:MM:SS，按 Asia/Shanghai 的历史时区（1986–1991 年有夏令时），不是固定 +8（PR #20 Codex 7）。
+ * 流水的发生时间不用这个，而是在 SQL 里由 Postgres 换算（OCCURRED_SH），和月报归日归月是同一份时区数据。
+ */
 function shTime(d: Date | null): string {
   if (!d) return "";
-  return new Date(d.getTime() + 8 * 3_600_000).toISOString().replace("T", " ").slice(0, 19);
+  const p = Object.fromEntries(SH_TIME.formatToParts(d).map((x) => [x.type, x.value]));
+  return `${String(p.year).padStart(4, "0")}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
 }
+
+/** 流水发生时间的北京时间写法：和 reports/common.ts 的 DAY_OF_SQL 一样用 `AT TIME ZONE 'Asia/Shanghai'`，按它归月的结果和月报恒一致 */
+const OCCURRED_SH = sql<string>`to_char(e.occurred_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')`;
 
 export interface ExportSummary {
   products: number;
@@ -143,6 +153,7 @@ export async function writeStoreExport(db: Kysely<Database>, storeId: string, ou
           .select([
             "e.seq", "e.id", "e.occurred_at", "e.type", "e.reverses_entry_id", "e.product_id", "e.name_snapshot", "e.barcode", "e.unit_name", "e.pack_qty", "e.pack_count",
             "e.qty_delta", "e.list_amount_fen", "e.amount_fen", "e.cogs_fen", "e.value_delta_fen", "e.cost_missing", "e.expiry_date", "e.batch_id", "d.label", "e.voided_at",
+            OCCURRED_SH.as("occurred_sh"),
           ])
           .where("e.store_id", "=", storeId)
           .where("e.seq", ">", after)
@@ -152,7 +163,7 @@ export async function writeStoreExport(db: Kysely<Database>, storeId: string, ou
         let chunk = "";
         for (const e of page) {
           chunk += row([
-            plain(e.seq), plain(e.id), plain(shTime(e.occurred_at)), plain(ENTRY_TYPE[e.type] ?? e.type), plain(e.reverses_entry_id !== null), plain(e.reverses_entry_id),
+            plain(e.seq), plain(e.id), plain(e.occurred_sh), plain(ENTRY_TYPE[e.type] ?? e.type), plain(e.reverses_entry_id !== null), plain(e.reverses_entry_id),
             plain(e.product_id), text(e.name_snapshot), text(e.barcode), text(e.unit_name), plain(e.pack_qty), plain(e.pack_count), plain(e.qty_delta),
             fenToYuan(e.list_amount_fen), fenToYuan(e.amount_fen), fenToYuan(e.cogs_fen), fenToYuan(e.value_delta_fen), plain(e.cost_missing),
             plain(e.expiry_date as unknown as string | null), plain(e.batch_id), text(e.label), plain(shTime(e.voided_at)),
