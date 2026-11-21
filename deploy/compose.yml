@@ -1,0 +1,73 @@
+# 生产 Compose（§9.1）：caddy、api、postgres。只有 caddy 映射端口到公网（80、443）；
+# api 不映射任何端口，只在内部网络 yh 上对 caddy 可达；postgres 同样不出网（§14 S03-6）。
+# caddy 固定地址 172.30.0.2，api 只信这个地址给的 X-Forwarded-For（TRUSTED_PROXY）。
+name: yuanhui
+networks:
+  yh:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+services:
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2.10.2}
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?}
+      PUBLIC_IP: ${PUBLIC_IP:?}
+    volumes:
+      - ./Caddyfile.ip:/etc/caddy/Caddyfile:ro
+      - /data/caddy/data:/data
+      - /data/caddy/config:/config
+    networks:
+      yh: { ipv4_address: 172.30.0.2 }
+    depends_on: [api]
+  api:
+    image: ${API_IMAGE:?}
+    restart: unless-stopped
+    mem_limit: 512m
+    # 不设 UV_THREADPOOL_SIZE（§14 T2-3）
+    environment:
+      DATABASE_URL: postgres://yuanhui:${POSTGRES_PASSWORD:?}@postgres:5432/yuanhui
+      HOST: 0.0.0.0
+      PORT: "3000"
+      TRUST_PROXY: "1"
+      TRUSTED_PROXY: 172.30.0.2
+      IMAGE_CACHE_DIR: /data/img
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MIN_BUILD: ${MIN_BUILD:-0}
+      DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-0}
+      PRODUCT_IMAGES_ENABLED: ${PRODUCT_IMAGES_ENABLED:-0}
+      KUAINIAO_APPCODE: ${KUAINIAO_APPCODE:-}
+      OBJECT_STORE: ${OBJECT_STORE:-none}
+      OSS_REGION: ${OSS_REGION:-}
+      OSS_ENDPOINT: ${OSS_ENDPOINT:-}
+      OSS_BUCKET: ${OSS_BUCKET:-}
+      OSS_ARCHIVE_BUCKET: ${OSS_ARCHIVE_BUCKET:-}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+    volumes:
+      # 宿主目录由 bootstrap-ecs.sh 建好并 chown 1000:1000（镜像里 node 用户）
+      - /data/img:/data/img
+    networks:
+      yh: { ipv4_address: 172.30.0.3 }
+    depends_on:
+      postgres: { condition: service_healthy }
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16}
+    restart: unless-stopped
+    command: ["postgres", "-c", "shared_buffers=256MB", "-c", "password_encryption=scram-sha-256"]
+    environment:
+      POSTGRES_USER: yuanhui
+      POSTGRES_DB: yuanhui
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      - /data/pg:/var/lib/postgresql/data
+    networks:
+      yh: { ipv4_address: 172.30.0.4 }
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yuanhui -d yuanhui"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

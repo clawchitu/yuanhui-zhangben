@@ -44,6 +44,18 @@ jobs:
       - name: 构建镜像（server/Dockerfile）
         working-directory: .
         run: docker build -f server/Dockerfile -t yuanhui-api:ci .
+      - name: 镜像冒烟：镜像里真缩一张图（sharp / libvips 编解码器，S08 要求 5）
+        working-directory: .
+        run: docker run --rm yuanhui-api:ci node scripts/smoke-image.ts
+      - name: 部署脚本语法检查（bash -n、shellcheck）、Caddyfile 校验、compose 配置解析
+        working-directory: .
+        run: |
+          for f in deploy/*.sh; do bash -n "$f"; done
+          shellcheck -S warning deploy/*.sh
+          cp deploy/.env.example /tmp/ci.env
+          sed -i 's/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=ci-only/; s/^ACME_EMAIL=$/ACME_EMAIL=ci@example.invalid/; s/^API_IMAGE=$/API_IMAGE=yuanhui-api:ci/' /tmp/ci.env
+          docker compose -f deploy/compose.yml --env-file /tmp/ci.env config -q
+          docker run --rm -v "$PWD/deploy:/etc/caddy:ro" -e ACME_EMAIL=ci@example.invalid -e PUBLIC_IP=47.117.184.253 caddy:2.10.2 caddy validate --config /etc/caddy/Caddyfile.ip --adapter caddyfile
       - name: 镜像冒烟：迁移 → 启动 → /healthz 200 → 停库后 503
         working-directory: .
         run: |

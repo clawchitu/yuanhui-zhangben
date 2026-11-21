@@ -1,0 +1,33 @@
+# 构建生产镜像（linux/amd64，S08 sharp 要求 1–3）。S10a 代码 PR 只构建、不推送：
+# 推 ACR 要 ACR 凭据（仓库 secrets ACR_REGISTRY / ACR_USERNAME / ACR_PASSWORD），配好之前推送步骤自动跳过。
+name: image
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  image:
+    name: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: 构建 linux/amd64 镜像（标签 = 提交号）
+        run: docker build --platform linux/amd64 -f server/Dockerfile -t "yuanhui-api:${GITHUB_SHA}" .
+      - name: 检查架构与 sharp 预编译包（不许是 arm64、不许缺 @img/sharp-linux-x64）
+        run: |
+          test "$(docker image inspect -f '{{.Architecture}}' "yuanhui-api:${GITHUB_SHA}")" = amd64
+          docker run --rm "yuanhui-api:${GITHUB_SHA}" sh -c 'ls node_modules/@img/ | grep -qx sharp-linux-x64 && ls node_modules/@img/ | grep -qx sharp-libvips-linux-x64'
+          docker run --rm "yuanhui-api:${GITHUB_SHA}" node scripts/smoke-image.ts
+      - name: 推 ACR（只在 main，且配了 ACR 凭据时）
+        if: github.event_name == 'push' && env.ACR_REGISTRY != ''
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          echo "$ACR_PASSWORD" | docker login "$ACR_REGISTRY" -u "$ACR_USERNAME" --password-stdin
+          docker tag "yuanhui-api:${GITHUB_SHA}" "$ACR_REGISTRY/yuanhui/api:${GITHUB_SHA}"
+          docker push "$ACR_REGISTRY/yuanhui/api:${GITHUB_SHA}"

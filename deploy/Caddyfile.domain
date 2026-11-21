@@ -1,0 +1,10 @@
+# 备案通过后才启用（§9.3、deploy/cutover-to-domain.md）：把下面两个站点追加到 Caddyfile.ip，IP 站点保留不动。
+# 备案审核期间不要加载这个文件，也不要为这两个域名申请证书。
+api.yuanhuishop.cn {
+	import common
+}
+
+yuanhuishop.cn {
+	root * /srv/site
+	file_server
+}
