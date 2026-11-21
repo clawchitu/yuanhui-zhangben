@@ -16,6 +16,40 @@ import type { AlertSink } from "./alerter.ts";
 
 export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal }) => Promise<{ ok: boolean; status: number }>;
 
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname || "?";
+  } catch {
+    return "?";
+  }
+}
+
+/** 只留异常的类名和系统错误码（ECONNREFUSED、UND_ERR_CONNECT_TIMEOUT 这种全大写的），不留 message */
+function errorClass(e: unknown): string {
+  const name = e instanceof Error && /^[A-Za-z]{1,40}$/.test(e.name) ? e.name : "Error";
+  const code = (x: unknown) => {
+    const c = (x as { code?: unknown } | null)?.code;
+    return typeof c === "string" && /^[A-Z0-9_]{1,40}$/.test(c) ? c : "";
+  };
+  const c = code(e) || code((e as { cause?: unknown } | null)?.cause);
+  return c ? `${name} ${c}` : name;
+}
+
+/** webhook 配置检查（服务器 ALERT_WEBHOOK_*、本机 PROBE_WEBHOOK_* 共用）：只许 https、地址里不许带用户名口令、令牌只许可见 ASCII。返回错误文字，没问题返回 null */
+export function webhookConfigError(url: string, token: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return "不是合法 URL";
+  }
+  // 告警正文要出公网：只许 https
+  if (u.protocol !== "https:") return "只能是 https";
+  if (u.username || u.password) return "地址里不能带用户名口令（令牌放 *_WEBHOOK_TOKEN）";
+  if (token && !/^[\x21-\x7e]+$/.test(token)) return "令牌里有空白或控制字符";
+  return null;
+}
+
 export class WebhookSink implements AlertSink {
   private readonly url: string;
   private readonly token: string;
@@ -30,7 +64,13 @@ export class WebhookSink implements AlertSink {
   async send(m: AlertMessage): Promise<void> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.token) headers.authorization = `Bearer ${this.token}`;
-    const res = await this.fetch(this.url, { method: "POST", headers, body: JSON.stringify(m), signal: AbortSignal.timeout(this.timeoutMs) });
+    let res: { ok: boolean; status: number };
+    try {
+      res = await this.fetch(this.url, { method: "POST", headers, body: JSON.stringify(m), signal: AbortSignal.timeout(this.timeoutMs) });
+    } catch (e) {
+      // fetch 的异常（连不上、超时、地址带凭据、请求头非法）里会原样带出地址和令牌：一律换成固定文字，只留主机名和错误类别
+      throw new Error(`webhook 请求失败（${hostOf(this.url)}）：${errorClass(e)}`);
+    }
     // 错误信息里不带地址（地址里可能带令牌）
     if (!res.ok) throw new Error(`webhook HTTP ${res.status}`);
   }

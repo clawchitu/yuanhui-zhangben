@@ -1,6 +1,7 @@
 // 服务器配置：全部从环境变量读，启动时校验一次。密钥（数据库口令等）只在环境变量里，不进仓库、不进日志。
 // 示例见 server/.env.example。
 import { parseProxyList } from "./auth/proxy.ts";
+import { webhookConfigError } from "./monitor/sinks.ts";
 
 export interface Config {
   databaseUrl: string;
@@ -163,14 +164,8 @@ function objectStore(env: Env): Config["objectStore"] {
 function monitor(env: Env): Config["monitor"] {
   const webhookUrl = env.ALERT_WEBHOOK_URL ?? "";
   if (webhookUrl) {
-    let u: URL;
-    try {
-      u = new URL(webhookUrl);
-    } catch {
-      throw new ConfigError("ALERT_WEBHOOK_URL 不是合法 URL");
-    }
-    // 告警正文要出公网：只许 https
-    if (u.protocol !== "https:") throw new ConfigError("ALERT_WEBHOOK_URL 只能是 https");
+    const bad = webhookConfigError(webhookUrl, env.ALERT_WEBHOOK_TOKEN ?? "");
+    if (bad) throw new ConfigError(`ALERT_WEBHOOK_URL / ALERT_WEBHOOK_TOKEN ${bad}`);
   }
   if (env.ALERT_WEBHOOK_TOKEN && !webhookUrl) throw new ConfigError("配了 ALERT_WEBHOOK_TOKEN 却没配 ALERT_WEBHOOK_URL");
   return {

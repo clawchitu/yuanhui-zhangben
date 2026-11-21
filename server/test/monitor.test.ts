@@ -8,6 +8,7 @@ import { Alerter } from "../src/monitor/alerter.ts";
 import { LogTap } from "../src/monitor/logtap.ts";
 import { certVerdict, heartbeatVerdict, noSyncVerdict, parseMetrics, readNewLines, renewalOverdue, shanghaiAt, THRESHOLDS } from "../src/monitor/checks.ts";
 import { CommandSink, MultiSink, OutboxSink, WebhookSink } from "../src/monitor/sinks.ts";
+import { sinkFromConfig } from "../src/monitor/setup.ts";
 import { forwardOutbox, runProbe, type ProbeDeps } from "../scripts/probe.ts";
 import { loadConfig, ConfigError } from "../src/config.ts";
 import { TestClock } from "./helpers/auth.ts";
@@ -248,6 +249,37 @@ describe("通道", () => {
     const err = await s.send(m()).catch((e: Error) => e.message);
     expect(err).toBe("webhook HTTP 502");
   });
+  it("WebhookSink：请求本身抛错（连不上、超时、地址带凭据）时，错误信息只留主机名和错误类别，不带地址、令牌、原始异常（PR #25 返修）", async () => {
+    const url = "https://user:pw-dummy-SECRET@notify.example/hook/PATHSECRET";
+    const s = new WebhookSink({
+      url,
+      token: "TOKSECRET",
+      fetch: async (u, init) => {
+        throw Object.assign(new TypeError(`fetch failed ${u} ${init.headers.authorization}`), { cause: Object.assign(new Error(`connect ${u}`), { code: "ECONNREFUSED" }) });
+      },
+    });
+    const err = await s.send(m()).catch((e: Error) => e.message);
+    expect(err).toBe("webhook 请求失败（notify.example）：TypeError ECONNREFUSED");
+    const t = new WebhookSink({ url: "https://notify.example/x", fetch: async () => { throw new Error("weird PATHSECRET"); } });
+    expect(await t.send(m()).catch((e: Error) => e.message)).toBe("webhook 请求失败（notify.example）：Error");
+  });
+  it("生产装配：webhook 地址带凭据、令牌带换行时，「通道发送失败」那条日志里没有令牌和凭据（真 fetch，不出网）", async () => {
+    const dir = tmp();
+    const logged: string[] = [];
+    const log = { warn: (o: object, msg: string) => logged.push(JSON.stringify({ ...o, msg })), error: (o: object, msg: string) => logged.push(JSON.stringify({ ...o, msg })) };
+    for (const [webhookUrl, webhookToken] of [
+      ["https://user:review-dummy-secret@notify.invalid/hook/PATHSECRET", "TOKSECRET"],
+      ["https://notify.invalid/hook/PATHSECRET", "TOK\nSECRET"],
+    ] as const) {
+      const sink = sinkFromConfig({ dir, backupDir: "", diskPath: "", webhookUrl, webhookToken }, log)!;
+      await sink.send(m());
+    }
+    expect(logged).toHaveLength(2);
+    for (const l of logged) {
+      expect(l).toContain("notify.invalid");
+      for (const secret of ["review-dummy-secret", "user:", "PATHSECRET", "TOKSECRET", "SECRET"]) expect(l).not.toContain(secret);
+    }
+  });
   it("OutboxSink：一行一条；超过上限留后一半", async () => {
     const f = join(tmp(), "outbox.jsonl");
     const s = new OutboxSink(f, 2000);
@@ -283,6 +315,11 @@ describe("配置", () => {
     expect(() => loadConfig({ ...base, ALERT_WEBHOOK_URL: "http://hook.example" })).toThrow(ConfigError);
     expect(() => loadConfig({ ...base, ALERT_WEBHOOK_TOKEN: "x" })).toThrow(ConfigError);
     expect(loadConfig({ ...base, ALERT_WEBHOOK_URL: "https://hook.example", MONITOR_DIR: "/data/monitor" }).monitor.webhookUrl).toBe("https://hook.example");
+    // 地址里带用户名口令、令牌里有空白或控制字符：启动时拒绝（PR #25 返修）
+    expect(() => loadConfig({ ...base, ALERT_WEBHOOK_URL: "https://u:p@hook.example" })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...base, ALERT_WEBHOOK_URL: "https://hook.example", ALERT_WEBHOOK_TOKEN: "a\nb" })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...base, ALERT_WEBHOOK_URL: "https://hook.example", ALERT_WEBHOOK_TOKEN: "a b" })).toThrow(ConfigError);
+    expect(loadConfig({ ...base, ALERT_WEBHOOK_URL: "https://hook.example", ALERT_WEBHOOK_TOKEN: "abc-123_x.y" }).monitor.webhookToken).toBe("abc-123_x.y");
   });
 });
 

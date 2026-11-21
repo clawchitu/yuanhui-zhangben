@@ -51,6 +51,9 @@ describe("本机探测进程（scripts/probe.ts）", () => {
     expect((await run({ PROBE_NOTIFY_CMD: "cat" })).code).toBe(2);
     expect((await run({ PROBE_URL: "http://127.0.0.1", PROBE_NOTIFY_CMD: "cat" })).code).toBe(2);
     expect((await run({ PROBE_URL: "https://127.0.0.1" })).code).toBe(2);
+    // PROBE_WEBHOOK_URL 同服务器侧：只许 https、不许带用户名口令（PR #25 返修）
+    expect((await run({ PROBE_URL: "https://127.0.0.1", PROBE_WEBHOOK_URL: "http://hook.example" })).code).toBe(2);
+    expect((await run({ PROBE_URL: "https://127.0.0.1", PROBE_WEBHOOK_URL: "https://u:p@hook.example" })).code).toBe(2);
   });
 
   it("证书剩 1 天 → 告警（经 PROBE_NOTIFY_CMD 发出）并记 first_seen；/healthz 连续 2 次 503 → 告警；恢复 200 → 已恢复", async () => {

@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { buildMessage, formatText, sanitizeDetails, scrub, type AlertMessage } from "../src/monitor/alert.ts";
 import { Alerter, type AlertSink } from "../src/monitor/alerter.ts";
 import { certVerdict, renewalOverdue, THRESHOLDS, type CertInfo } from "../src/monitor/checks.ts";
-import { CommandSink, MultiSink, WebhookSink } from "../src/monitor/sinks.ts";
+import { CommandSink, MultiSink, WebhookSink, webhookConfigError } from "../src/monitor/sinks.ts";
 
 export const OUTBOX_UNREACHABLE_AFTER = 3;
 
@@ -176,6 +176,13 @@ async function main(): Promise<void> {
   } catch {
     console.error("PROBE_URL 必填，形如 https://47.117.184.253");
     process.exit(2);
+  }
+  if (env.PROBE_WEBHOOK_URL) {
+    const bad = webhookConfigError(env.PROBE_WEBHOOK_URL, env.PROBE_WEBHOOK_TOKEN ?? "");
+    if (bad) {
+      console.error(`PROBE_WEBHOOK_URL / PROBE_WEBHOOK_TOKEN ${bad}`);
+      process.exit(2);
+    }
   }
   const sink = sinkFromEnv(env);
   if (!sink) {
