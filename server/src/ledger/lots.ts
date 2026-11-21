@@ -2,7 +2,7 @@
 // 下半部分是写库：进货 / 期初建批次，卖出 / 盘亏按到期日扣批次写 lot_moves，撤销时按 §5.4 生命周期表处理，
 // 以及 expiry_dispose / lot_snooze 两种 op。调用方都已在店铺锁内（StoreTx）。
 // 每改一行批次取一个新号（rev）。handle_ver 只在「处理」和「过几天再提醒」时 +1，普通卖出扣批次不改它。
-import { randomUUID } from "node:crypto";
+import { derivedId } from "./ids.ts";
 import type { Selectable } from "kysely";
 import type { Database } from "../db.ts";
 import type { StoreTx } from "../sync/lock.ts";
@@ -106,7 +106,7 @@ export async function createLot(tx: StoreTx, prod: ProductRow, sourceEntryId: st
   await tx.trx
     .insertInto("stock_lots")
     .values({
-      id: randomUUID(),
+      id: derivedId(tx.storeId, "lot", sourceEntryId.toLowerCase()),
       store_id: tx.storeId,
       product_id: prod.id,
       source_entry_id: sourceEntryId.toLowerCase(),

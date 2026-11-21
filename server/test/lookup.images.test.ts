@@ -321,7 +321,7 @@ describe("对象键与本机目录（防路径穿越）", () => {
       const mem = new MemoryObjectStore();
       await mem.put(k, Buffer.from("y"), "image/jpeg");
       let gets = 0;
-      const counted = { put: mem.put.bind(mem), get: (key: string) => (gets++, mem.get(key)) };
+      const counted = { put: mem.put.bind(mem), putFile: mem.putFile.bind(mem), get: (key: string) => (gets++, mem.get(key)), list: mem.list.bind(mem), delete: mem.delete.bind(mem), listUploads: mem.listUploads.bind(mem), abortUpload: mem.abortUpload.bind(mem) };
       const cache = new ImageCache(path.join(dir, "cache"), counted);
       const [a, b] = await Promise.all([cache.get(k), cache.get(k)]);
       expect([a?.toString(), b?.toString(), gets]).toEqual(["y", "y", 1]); // 同时缺的只回源一次

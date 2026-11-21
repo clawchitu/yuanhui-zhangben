@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { authOf } from "../auth/plugin.ts";
 import { Guard } from "../auth/guard.ts";
 import { emptyChanges, pullChanges, type Cursors } from "../sync/pull.ts";
-import { StoreBusy } from "../sync/lock.ts";
+import { StoreBusy, StoreGone } from "../sync/lock.ts";
 import { deletePendingUntil } from "../auth/session.ts";
 import { EpochMismatch, pushOps, type DeviceState, type IncomingOp, type OpResult } from "../sync/push.ts";
 import { resultOut, scopeOfRole, SCOPES, type Scope } from "../sync/projection.ts";
@@ -63,6 +63,7 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
           if (e instanceof EpochMismatch) return reply.code(409).send({ code: "epoch_mismatch", epoch: e.epoch });
           // 这家店在途的写入超过上限（§14 S04-8）：不进队列、不取连接，手机原样重发（按 id 幂等）
           if (e instanceof StoreBusy) return sendError(reply, 503, "unavailable", { retry_after_s: e.retryAfterS });
+          if (e instanceof StoreGone) return sendError(reply, 401, "unauthorized");
           throw e;
         }
       }
@@ -73,14 +74,19 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
       if (pull.ok && body.pull !== false) {
         const scope = pull.scope as Scope;
         if (!SCOPES.includes(scope)) throw new Error(`permissions.json 的 sync:pull 有不认识的 scope：${String(pull.scope)}`);
-        out = await pullChanges(db, {
-          storeId: a.store.id,
-          deviceId: a.device.id,
-          scope,
-          cursors: body.cursors,
-          pageSize: app.deps.syncPageSize,
-          now,
-        });
+        try {
+          out = await pullChanges(db, {
+            storeId: a.store.id,
+            deviceId: a.device.id,
+            scope,
+            cursors: body.cursors,
+            pageSize: app.deps.syncPageSize,
+            now,
+          });
+        } catch (e) {
+          if (e instanceof StoreGone) return sendError(reply, 401, "unauthorized");
+          throw e;
+        }
       }
 
       // 注销期间（§14 S04-2）：results 为空，带 delete_pending_until，手机把 op 留在 outbox、停止推送

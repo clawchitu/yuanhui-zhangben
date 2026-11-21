@@ -46,6 +46,16 @@ export async function withStoreLock<T>(
   );
 }
 
+/**
+ * 令牌验过之后、轮到这个请求之前，这家店被注销到期清除了（jobs/account-purge.ts 删掉了店、账号、设备）。
+ * 路由按「令牌不认识」回 401 unauthorized，和清除之后再来的请求一样，不是 500。
+ */
+export class StoreGone extends Error {
+  constructor(storeId: string) {
+    super(`店 ${storeId} 已被清除`);
+  }
+}
+
 /** 每家店在本进程里在途的写入上限（默认值；服务器用配置 STORE_QUEUE_LIMIT，§14 S04-8） */
 export const STORE_QUEUE_LIMIT = 32;
 /** 一家店在途的写入超过上限：不进队列、不取连接，调用方返回 503 unavailable */

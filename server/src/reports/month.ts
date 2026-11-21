@@ -3,7 +3,7 @@
 // 月初货值 = 本月第一刻之前全部流水的 value_delta 之和，所以跨月撤销（冲销行落在撤销那个月）不会改动上月的任何数字。
 import type { Kysely } from "kysely";
 import type { Database } from "../db.ts";
-import { addDay, dayStart, nextMonth, readSnapshot, stockValueBefore, today, totals, totalsByDay } from "./common.ts";
+import { addDay, dayStart, nextMonth, readSnapshot, type Q, stockValueBefore, today, totals, totalsByDay } from "./common.ts";
 
 export type ReconKey = "stock_in" | "sale" | "count" | "expire_loss" | "supplier_return" | "opening_and_adjust";
 
@@ -30,11 +30,16 @@ export interface ReportMonth {
  * 时钟超前 5 分钟以内又跨月的流水（§4.4）算在下个月，那几分钟里本月月末比商品投影少这一笔；本月月末 = 下月月初照样成立。
  */
 export async function reportMonth(db: Kysely<Database>, storeId: string, month: string, now: Date): Promise<ReportMonth> {
+  return readSnapshot(db, (trx) => reportMonthIn(trx, storeId, month, now));
+}
+
+/** 同上，在调用方给的事务（快照）里算。注销导出包在同一个快照里导流水和月报，两边的合计一定对得上（S09） */
+export async function reportMonthIn(trx: Q, storeId: string, month: string, now: Date): Promise<ReportMonth> {
   const firstDay = `${month}-01`;
   const nextFirst = `${nextMonth(month)}-01`;
   const from = dayStart(firstDay);
   const to = dayStart(nextFirst);
-  return readSnapshot(db, async (trx) => {
+  {
     const start = await stockValueBefore(trx, storeId, from);
     const t = await totals(trx, storeId, from, to);
     const byDay = await totalsByDay(trx, storeId, from, to);
@@ -80,5 +85,5 @@ export async function reportMonth(db: Kysely<Database>, storeId: string, month: 
       daily,
       reconciliation: { stock_value_start_fen: start, rows, stock_value_end_fen: end },
     };
-  });
+  }
 }

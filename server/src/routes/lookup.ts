@@ -10,6 +10,7 @@ import { authOf } from "../auth/plugin.ts";
 import { SlidingWindowLimiter } from "../auth/ratelimit.ts";
 import { LookupQuotaExceeded } from "../lookup/catalog.ts";
 import { ImageCache } from "../lookup/images.ts";
+import { cacheFillGuard } from "../jobs/account-purge.ts";
 import { isImageKey } from "../lookup/oss.ts";
 import { sendError } from "./errors.ts";
 
@@ -19,7 +20,8 @@ export async function lookupRoutes(app: FastifyInstance): Promise<void> {
   const { db, config } = app.deps;
   const catalog = app.catalog;
   const perDevice = new SlidingWindowLimiter(app.deps.rateLimits.barcodeLookup);
-  const images = new ImageCache(config.imageCacheDir, app.deps.objectStore);
+  // 回填后复查店还在不在（注销清除之后不在本机缓存里留图，PR #20 Codex 2）
+  const images = new ImageCache(config.imageCacheDir, app.deps.objectStore, cacheFillGuard(app.deps.db.kysely, app.log));
 
   app.get<{ Params: { barcode: string } }>(
     "/v1/barcode-lookup/:barcode",

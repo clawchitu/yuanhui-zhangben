@@ -34,7 +34,53 @@ export async function uniqueLabel(trx: Trx, storeId: string, wanted: string, exc
 
 export class DeviceIdTaken extends Error {}
 
+/**
+ * 「已经在这个事务里锁住了这个账号行」的凭据（§14 T1）。只有 lockAccount 能造出来（构造函数不导出，登记在模块内的 WeakSet 里），
+ * createDevice 进门先核对：凭据是真的、属于同一个事务、锁的就是要建设备的账号。没拿锁就调 createDevice 会直接抛错，
+ * 不再只靠注释约束「账号 → 开通码 → 设备称呼」的加锁顺序。
+ */
+export interface AccountLock {
+  readonly accountId: string;
+  readonly kind: "family" | "review";
+  readonly failedLogins: number;
+  readonly lockedUntil: Date | null;
+  readonly deleteRequestedAt: Date | null;
+}
+const issuedLocks = new WeakMap<AccountLock, Transaction<Database>>();
+
+export class AccountLockMissing extends Error {}
+
+/**
+ * 锁住账号行（FOR NO KEY UPDATE，见 createDevice 的说明）并返回锁内读到的状态。
+ * 建设备的路径（密码登录、兑码、演示登录）都必须先调它，再拿开通码、设备称呼的锁。账号不存在返回 undefined。
+ */
+export async function lockAccount(trx: Transaction<Database>, accountId: string): Promise<AccountLock | undefined> {
+  const row = await trx
+    .selectFrom("accounts")
+    .select(["id", "kind", "failed_logins", "locked_until", "delete_requested_at"])
+    .where("id", "=", accountId)
+    .forNoKeyUpdate()
+    .executeTakeFirst();
+  if (!row) return undefined;
+  const lock: AccountLock = Object.freeze({
+    accountId: row.id,
+    kind: row.kind,
+    failedLogins: row.failed_logins,
+    lockedUntil: row.locked_until,
+    deleteRequestedAt: row.delete_requested_at,
+  });
+  issuedLocks.set(lock, trx);
+  return lock;
+}
+
+function assertAccountLocked(trx: Transaction<Database>, lock: AccountLock | undefined, accountId: string): void {
+  if (!lock || issuedLocks.get(lock) !== trx) throw new AccountLockMissing("createDevice 之前必须在同一个事务里 lockAccount");
+  if (lock.accountId !== accountId) throw new AccountLockMissing("lockAccount 锁的不是要建设备的账号");
+}
+
 export interface NewDevice {
+  /** lockAccount 在同一事务里给的凭据（§14 T1） */
+  accountLock: AccountLock | undefined;
   storeId: string;
   accountId: string;
   deviceId: string;
@@ -47,12 +93,13 @@ export interface NewDevice {
 
 /**
  * 建一台设备，返回令牌原文（只在这一次响应里出现）。必须在事务里调用。
- * 调用方必须先锁住账号行（FOR NO KEY UPDATE），再调这里拿称呼锁：密码登录、兑码、演示登录统一
+ * 调用方必须先用 lockAccount 锁住账号行（进门核对凭据，没锁就抛 AccountLockMissing），再调这里拿称呼锁：密码登录、兑码、演示登录统一
  * 「账号 → 开通码 → 设备称呼锁」，否则一边拿着称呼锁、一边拿着账号锁会互等死锁（§14 S03-3）。
  * 用 FOR NO KEY UPDATE 而不是 FOR UPDATE：彼此照样互斥，但不挡插设备时外键检查要的 KEY SHARE；
  * accounts 的键列从来不改，用不着 FOR UPDATE。
  */
 export async function createDevice(trx: Transaction<Database>, d: NewDevice): Promise<{ token: string; label: string }> {
+  assertAccountLocked(trx, d.accountLock, d.accountId);
   await lockStoreLabels(trx, d.storeId);
   await d.afterLabelLock?.();
   // 设备 id 由手机每次登录或兑码新生成，从不重复使用（§3.1）；同店里撞了就是手机的 bug，明确报错

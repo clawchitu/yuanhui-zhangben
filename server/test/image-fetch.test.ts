@@ -1,7 +1,7 @@
 // 商品图任务与 GET /v1/images/:product_id（S08）：下载 → 长边 200px JPEG → 写对象存储 → 在店铺锁里取号写回 image_key / image_ver；
 // 失败不影响商品、按次数重试、坏图直接放弃；两轮同时跑不重复抓；开关关着什么都不做、接口一律 404；演示店不抓；
 // 读图走磁盘缓存、缺了回源；防路径穿越；跨店拿不到；收银员能看。真实 Postgres。
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -11,8 +11,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.ts";
 import type { Config } from "../src/config.ts";
 import { writeCache } from "../src/lookup/catalog.ts";
-import { ImageRejected } from "../src/lookup/images.ts";
-import { MemoryObjectStore, type ObjectStore } from "../src/lookup/oss.ts";
+import { ImageCache, ImageRejected } from "../src/lookup/images.ts";
+import { MemoryObjectStore, imageKey, type ObjectStore } from "../src/lookup/oss.ts";
+import { cacheFillGuard, clearPurgedObjects, runAccountPurges } from "../src/jobs/account-purge.ts";
 import { claimDue, enqueueImageJobs, runImageJobs, type ImageJobDeps } from "../src/jobs/image-fetch.ts";
 import { createTestDb, testConfig, type TestDb } from "./helpers/db.ts";
 import { TestClock, bearer, login, makeLoginShop, pair } from "./helpers/auth.ts";
@@ -178,7 +179,14 @@ describe("图片任务", () => {
       put: async () => {
         throw new Error("oss down");
       },
+      putFile: async () => {
+        throw new Error("oss down");
+      },
       get: async () => null,
+      list: async () => [],
+      listUploads: async () => [],
+      abortUpload: async () => {},
+      delete: async () => {},
     };
     await runFor(deps({ store: broken }));
     const j = await job(p.storeId, p.productId);
@@ -355,6 +363,148 @@ describe("GET /v1/images/:product_id", () => {
     await tdb.kysely.updateTable("products").set({ image_key: "../../../../etc/passwd" }).where("store_id", "=", p.storeId).where("id", "=", p.productId).execute();
     const r = await app.inject({ method: "GET", url: `/v1/images/${p.productId}?v=1`, headers: bearer(p.token) });
     expect(r.statusCode).toBe(404);
+    await app.close();
+  });
+});
+
+describe("在途的图片任务、缓存回填撞上注销清除（PR #20 Codex 2）", () => {
+  const gate = () => {
+    let open!: () => void;
+    let started!: () => void;
+    const opened = new Promise<void>((r) => (open = r));
+    const begun = new Promise<void>((r) => (started = r));
+    return { open, started, opened, begun };
+  };
+  /** 让这家店满 7 天，跑一轮到期清除（含对象清理） */
+  async function purgeNow(storeId: string, images: ObjectStore, cacheDir: string) {
+    await tdb.kysely.updateTable("accounts").set({ delete_requested_at: new Date(Date.now() - 8 * 86_400_000) }).where("store_id", "=", storeId).execute();
+    const r = await runAccountPurges({ db: tdb.kysely, images, archive: new MemoryObjectStore(), imageCacheDir: cacheDir, clock: () => new Date() });
+    expect(r.purged.includes(storeId)).toBe(true);
+  }
+  /** 清除之后隔满 1 小时的复扫（T17）：拨钟 61 分钟跑对象清理 */
+  const rescan = (images: ObjectStore, cacheDir: string) =>
+    clearPurgedObjects({ db: tdb.kysely, images, archive: new MemoryObjectStore(), imageCacheDir: cacheDir, clock: () => new Date(Date.now() + 61 * 60_000) });
+  const imagesOf = (st: MemoryObjectStore, storeId: string) => [...st.objects.keys()].filter((k) => k.startsWith(`images/${storeId}/`));
+
+  it("下载暂停 → 注销清除和对象清理都完成 → 下载恢复：对象存储里不留这家店的图", async () => {
+    const app = mkApp();
+    const p = await productWithImage(app);
+    const store = new MemoryObjectStore();
+    const g = gate();
+    const d = deps({
+      store,
+      fetchImage: async () => {
+        g.started();
+        await g.opened;
+        return picture;
+      },
+    });
+    await enqueueImageJobs(d);
+    const running = runImageJobs(d, 1000);
+    await g.begun;
+    await purgeNow(p.storeId, store, cacheRoot);
+    g.open();
+    await running;
+    expect(imagesOf(store, p.storeId)).toEqual([]);
+    expect(await rescan(store, cacheRoot)).toContain(p.storeId);
+    const pr = await tdb.kysely.selectFrom("store_purges").selectAll().where("store_id", "=", p.storeId).executeTakeFirstOrThrow();
+    expect(pr.objects_cleared_at).not.toBeNull();
+    await app.close();
+  });
+
+  it("上传暂停 → 清除完成 → 图落地后锁内发现店没了，删掉它；删不掉就把 store_purges 重新标成没清完，下一轮对象清理删掉它", async () => {
+    const app = mkApp();
+    const p = await productWithImage(app);
+    const store = new MemoryObjectStore();
+    const realDelete = store.delete.bind(store);
+    let brokenDelete = false;
+    store.delete = async (k) => {
+      if (brokenDelete) throw Object.assign(new Error("删不掉"), { code: "ECONNRESET" });
+      return realDelete(k);
+    };
+    // 这次停在上传那一步（下载完、传之前的复查已经过了）：清除和对象清理做完之后图才落进对象存储
+    const g = gate();
+    const realPut = store.put.bind(store);
+    store.put = async (k, b, c) => {
+      g.started();
+      await g.opened;
+      return realPut(k, b, c);
+    };
+    const d = deps({ store });
+    await enqueueImageJobs(d);
+    const running = runImageJobs(d, 1000);
+    await g.begun;
+    await purgeNow(p.storeId, store, cacheRoot);
+    // 先让隔满 1 小时的复扫记清完，图再迟到落地：这样下面的「没清完」只能来自撤回标记那一步（PR #20 Fable 第三轮）
+    expect(await rescan(store, cacheRoot)).toContain(p.storeId);
+    const done = await tdb.kysely.selectFrom("store_purges").selectAll().where("store_id", "=", p.storeId).executeTakeFirstOrThrow();
+    expect(done.objects_cleared_at).not.toBeNull();
+    brokenDelete = true;
+    g.open();
+    await running;
+    expect(imagesOf(store, p.storeId).length).toBe(1);
+    const pr = await tdb.kysely.selectFrom("store_purges").selectAll().where("store_id", "=", p.storeId).executeTakeFirstOrThrow();
+    expect([pr.objects_cleared_at, pr.last_error]).toEqual([null, "ECONNRESET"]);
+    brokenDelete = false;
+    expect(await rescan(store, cacheRoot)).toContain(p.storeId);
+    expect(imagesOf(store, p.storeId)).toEqual([]);
+    await app.close();
+  });
+
+  it("上传暂停 → 清除完成 → 图其实写进去了但上传报错（响应丢失）：任务记失败，图不永久留下，隔满 1 小时的复扫删掉它（PR #20 Codex 2 第二轮、T17）", async () => {
+    const app = mkApp();
+    const p = await productWithImage(app);
+    const store = new MemoryObjectStore();
+    const g = gate();
+    const realPut = store.put.bind(store);
+    store.put = async (k, b, c) => {
+      g.started();
+      await g.opened;
+      await realPut(k, b, c);
+      throw Object.assign(new Error("响应超时"), { code: "ResponseTimeoutError" });
+    };
+    const d = deps({ store });
+    await enqueueImageJobs(d);
+    const running = runImageJobs(d, 1000);
+    await g.begun;
+    await purgeNow(p.storeId, store, cacheRoot);
+    await clearPurgedObjects({ db: tdb.kysely, images: store, archive: new MemoryObjectStore(), imageCacheDir: cacheRoot, clock: () => new Date() });
+    g.open();
+    const r = await running;
+    expect(r.failed + r.skipped).toBeGreaterThanOrEqual(1);
+    await rescan(store, cacheRoot);
+    expect(imagesOf(store, p.storeId)).toEqual([]);
+    const pr = await tdb.kysely.selectFrom("store_purges").selectAll().where("store_id", "=", p.storeId).executeTakeFirstOrThrow();
+    expect(pr.objects_cleared_at).not.toBeNull();
+    await app.close();
+  });
+
+  it("GET /v1/images 回源期间这家店被清除：回填到本机缓存的图随即删掉，不留在磁盘上", async () => {
+    const app = mkApp();
+    const p = await productWithImage(app);
+    const key = imageKey(p.storeId, p.productId, 1, "ab".repeat(32));
+    const mem = new MemoryObjectStore();
+    await mem.put(key, Buffer.from("jpg"), "image/jpeg");
+    const g = gate();
+    const paused: ObjectStore = Object.assign(Object.create(mem) as MemoryObjectStore, {
+      get: async (k: string) => {
+        g.started();
+        await g.opened;
+        return mem.get(k);
+      },
+    });
+    const dir = await mkdtemp(path.join(tmpdir(), "yh-fill-"));
+    try {
+      const cache = new ImageCache(dir, paused, cacheFillGuard(tdb.kysely));
+      const pending = cache.get(key);
+      await g.begun;
+      await purgeNow(p.storeId, mem, dir);
+      g.open();
+      await pending;
+      await expect(stat(path.join(dir, ...key.split("/")))).rejects.toThrow(/ENOENT/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
     await app.close();
   });
 });

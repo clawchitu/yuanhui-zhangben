@@ -279,10 +279,16 @@ export const sha256 = (b: Buffer) => createHash("sha256").update(b).digest("hex"
 export class ImageCache {
   private readonly dir: string;
   private readonly store: ObjectStore | null;
+  private readonly afterFill: ((storeId: string, file: string) => Promise<void>) | undefined;
   private readonly inflight = new Map<string, Promise<Buffer | null>>();
-  constructor(dir: string, store: ObjectStore | null) {
+  /**
+   * afterFill：回填到磁盘之后调用（routes/lookup.ts 传 cacheFillGuard）。回源期间这家店可能被注销清除、本机缓存已经清过，
+   * 写完再复查店还在不在、不在就删掉刚写的文件（PR #20 Codex 2）。先写后查：清除提交在复查之前 → 复查看得到；在之后 → 清除的对象清理会删它。
+   */
+  constructor(dir: string, store: ObjectStore | null, afterFill?: (storeId: string, file: string) => Promise<void>) {
     this.dir = dir;
     this.store = store;
+    this.afterFill = afterFill;
   }
 
   async get(key: string): Promise<Buffer | null> {
@@ -295,7 +301,10 @@ export class ImageCache {
       const store = this.store;
       p = (async () => {
         const body = await store.get(key);
-        if (body) await atomicWrite(file, body).catch(() => {}); // 磁盘写不进去也照样返回
+        if (body) {
+          const wrote = await atomicWrite(file, body).then(() => true, () => false); // 磁盘写不进去也照样返回
+          if (wrote && this.afterFill) await this.afterFill(key.split("/")[1]!, file);
+        }
         return body;
       })().finally(() => this.inflight.delete(key));
       this.inflight.set(key, p);
