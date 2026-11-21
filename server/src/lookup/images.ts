@@ -250,7 +250,8 @@ export async function makeThumbnail(input: Buffer): Promise<Buffer> {
   const opts = { limitInputPixels: MAX_INPUT_PIXELS, failOn: "error", animated: false } as const;
   let meta: Metadata;
   try {
-    meta = await sharp(input, opts).metadata();
+    // metadata 只读文件头、不解码像素，所以这里不设像素上限，先拿到声明的尺寸自己判（解码时再由 limitInputPixels 兜底）
+    meta = await sharp(input, { ...opts, limitInputPixels: false }).metadata();
   } catch {
     throw new ImageRejected("bad_format", "图片解不开");
   }
