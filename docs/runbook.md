@@ -42,18 +42,36 @@ Compose（`deploy/compose.yml`）：
 - 手动看桶：`docker compose -f /opt/yuanhui/compose.yml --project-directory /opt/yuanhui --env-file /opt/yuanhui/.env run --rm -T backup node scripts/backup.ts status`。
 
 ### 恢复（演练和整机重建都用这一套）
-只需要：这个仓库（`cd server && npm ci`）、`pg_restore` 16 或更新、备份账号的 AccessKey、加密口令（钥匙串 / Haoqiang 的密码管理器）。不需要 ECS。
-1. 建一个**空库**做目标（演练：本机 `createdb yh_restore`；整机重建：新 ECS 上起好 Postgres，从本机经 `ssh -L` 连过去，或者在新 ECS 上装 node 跑）。脚本拒绝写非空且没有恢复标记的库，在用的库不会被覆盖。
+只需要：这个仓库（`cd server && npm ci`）、`pg_restore` 16 或更新、备份账号的 AccessKey、加密口令（见下面「口令保管」）。不需要 ECS。整机重建见下一节。
+1. 建一个**空库**做目标（本机 `createdb yh_restore`）。脚本只写空库或「恢复中」的库，在用的库不会被覆盖。
 2. 环境变量：
    ```sh
-   export DATABASE_URL=postgres://<用户>:<口令>@127.0.0.1:5432/yh_restore
+   export DATABASE_URL=postgres://<用户>:<口令>@127.0.0.1:5432/yh_restore   # 口令经 PGPASSWORD 给 pg_restore，不进命令行
    export BACKUP_PASSPHRASE="$(security find-generic-password -s yuanhui-backup-passphrase -w)"
    export BACKUP_OSS_REGION=oss-cn-shanghai BACKUP_OSS_BUCKET=yuanhui-backup BACKUP_OSS_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com
    export BACKUP_OSS_ACCESS_KEY_ID=… BACKUP_OSS_ACCESS_KEY_SECRET=…   # 钥匙串 yuanhui-backup-oss
    ```
-3. `deploy/restore.sh latest`（或指定 `<备份 id>`）：dry-run，下载、解密、核对 sha256、`pg_restore --list`、检查目标库、列出要重放的删除记录，目标库不写。
-4. `deploy/restore.sh latest --execute`：清空并标记目标库 → `pg_restore` → 按清单逐项比对（不一致就停，不换 epoch，库留着查）→ 重放 `deletions/` 里的每条删除记录（已注销的店整家删掉，设备行没了，旧令牌和重传一律 401；`store_purges` 记上，对象清理照常再扫一遍）→ 再比对（注销的店不在，其余店和清单一致）→ 全部店换新 `epoch`。最后一行 `restore_ok` 带 `restore_seconds`。重跑同一条命令结果一样。
-5. 整机重建时：把 api 指到恢复好的库，发布（`deploy.sh`，此时没有备份要加 `--skip-backup-gate`）；手机下一次同步拿到 `epoch_mismatch` → 全量拉取 → 重传保留的 op（§4.6）。备份之后才开通的设备要重新开通，再按 §4.6 临时开「恢复模式」补交。
+3. `deploy/restore.sh latest`（或指定 `<备份 id>`）：dry-run，下载、解密、核对 sha256、`pg_restore --list`、检查目标库、列出删除记录，单独一行 `restore_will_delete` 列出恢复时会被删掉的店（元辉店不许在里面），目标库不写。
+4. `deploy/restore.sh latest --execute`：清空目标库、打「恢复中」标记 → `pg_restore` → 按清单逐项比对（不一致就停，不换 epoch）→ 重放 `deletions/` 里的删除记录（已注销的店整家删掉，旧令牌和重传 401）→ 再比对 → 全部店换新 `epoch`、标记改「已恢复」。最后一行 `restore_ok` 带 `restore_seconds`。
+5. 重跑：「恢复中」的库清空重来；「已恢复」的库同一个备份报 `already_restored`、什么都不动，换一个备份拒绝（要新建空库）。已恢复完成、接上 api 记了新账的库不会被清掉（§14 S10b-5）。
+
+### 整机重建（新 ECS）
+数据库容器不映射端口，所有库操作都在容器里做（`restore.sh` 的 `RESTORE_COMPOSE_DIR` 跑法：node 步骤 `docker compose run backup`，`pg_restore` 用 `docker compose exec postgres`）。**先恢复、后发布**：先发布会跑迁移建出表，恢复会被拒绝。下面 `C` = `docker compose -f /opt/yuanhui/compose.yml --project-directory /opt/yuanhui --env-file /opt/yuanhui/.env`。
+1. 新 ECS 按 `cloud-manual-steps.md` 第 1、2、6 步准备好；填 `/opt/yuanhui/.env`，其中 `BACKUP_*` 和口令从钥匙串取，`API_IMAGE=<ACR 的 VPC 地址>/yuanhui/api:<最后一次成功发布的 40 位提交号>`，`RECOVERY_MODE=0`。
+2. 本机：`scp deploy/compose.yml deploy/restore.sh root@<新 IP>:/opt/yuanhui/`
+3. ECS 上只起 Postgres：`C up -d --wait postgres`
+4. 恢复：`RESTORE_COMPOSE_DIR=/opt/yuanhui bash /opt/yuanhui/restore.sh latest`（dry-run，看 `restore_will_delete`）→ 加 `--execute`，最后一行 `restore_ok`。
+5. 清掉恢复标记：`C run --rm -T backup node scripts/restore.ts clear-marker`（输出 `"state":"foreign"`，之后任何恢复都拒绝这个库）。
+6. 本机发布同一个提交：`ECS_HOST=root@<新 IP> ACR=<ACR 的 VPC 地址>/yuanhui deploy/deploy.sh <同一提交号> --execute --skip-backup-gate`（迁移是空操作；备份定时器随之装上）。
+7. 冒烟：`deploy/smoke.sh`，再 `bash /opt/yuanhui/backup.sh` 出 `backup_ok`。RTO 1 小时指第 1 步到这里。
+8. 手机下一次同步拿到 `epoch_mismatch` → 全量拉取 → 重传保留的 op（§4.6）。备份之后才开通的设备重新开通，再开「恢复模式」补交。
+
+### 恢复模式（平时关）
+- 开：`.env` 里改 `RECOVERY_MODE=1`，`C up -d api`，`C exec -T api printenv RECOVERY_MODE` 输出 `1`。
+- 关（补交完就关）：改回 `RECOVERY_MODE=0`，`C up -d api`，同一条命令输出 `0`。
+
+### 口令保管
+备份口令存在部署机（这台 Mac）的钥匙串（`yuanhui-backup-passphrase`），另给 Haoqiang 一份存进他 iPhone 的「密码」App（§14 S10b-10）。
 
 ## 看日志、看证书
 - 容器状态：`docker compose -f /opt/yuanhui/compose.yml --project-directory /opt/yuanhui --env-file /opt/yuanhui/.env ps`
@@ -104,15 +122,15 @@ Compose（`deploy/compose.yml`）：
 | 13 | 重启 | `reboot` 后三个容器自己起来（`restart: unless-stopped`），`swapon --show` 仍有 `/swapfile`，`smoke.sh` 通过 | 待测 |
 
 ### S10b 部署时验证（真机器上才能做，数字写回这里和部署实测 PR；没做完 S10b 不算通过）
+原 B7（真手机换 epoch 后补回）和第 36 天的生命周期检查不在这里等，记在 §14 待办 T23、T24。
 | # | 项 | 方法 | 结果 |
 |---|---|---|---|
 | B1 | 定时器在 ECS 上按时跑 | `systemctl list-timers yuanhui-backup.timer` 的下一次时间对得上（上海 8:00–22:00 整点、02:30）；跑过一个营业日后 `journalctl -u yuanhui-backup --since today` 里 15 次 `backup_ok`，桶里 `backups/` 多 15 对对象 | 待测 |
 | B2 | 跨容器快照 | 第一次 `bash /opt/yuanhui/backup.sh` 成功（`pg_dump --snapshot` 在 Postgres 容器里导入 backup 容器导出的快照）；记 `duration_s`、`dump_bytes` | 待测 |
 | B3 | 真实 OSS 读写 | 备份账号：`backups/` 分片上传（`putFile`）、读、列举，`deletions/` 列举、读，心跳读写各成功一次；`cloud-manual-steps.md` 第 4 步的负测全部 403 | 待测 |
-| B4 | 生命周期、版本控制 | `ossutil lifecycle --method get` 的输出贴进 PR：`backups/` 35 天、`exports/` 30 天、`deletions/` 无；两个桶「版本控制」未开通；第 36 天起 `backup.ts status` 的 `lifecycle_stale` 一直是 false | 待测 |
-| B5 | 口令另存两处 | Mac 钥匙串里有 `yuanhui-backup-passphrase`、`yuanhui-backup-oss`；Haoqiang 确认密码管理器里有同样两项（只确认有，不贴值） | 待测 |
+| B4 | 生命周期、版本控制 | `ossutil lifecycle --method get` 的输出贴进 PR：`backups/` 35 天、`exports/` 30 天、`deletions/` 无；两个桶「版本控制」未开通；第 36 天的检查见 §14 T24 | 待测 |
+| B5 | 口令另存 | Mac 钥匙串里有 `yuanhui-backup-passphrase`；Haoqiang 确认 iPhone「密码」App 里有一份（只确认有，不贴值） | 待测 |
 | B6 | 异机恢复演练 | 在 Mac 上只凭 OSS 和钥匙串按上面「恢复」做一遍：`restore_ok`、清单逐项一致、注销的店不在；记 `restore_seconds`（RTO 目标 1 小时以内，含下载） | 待测 |
-| B7 | 换 epoch 后补回 | 一台带保留 op 的测试手机：恢复后同步拿到 `epoch_mismatch`、全量拉取、补回备份之后的流水（需要 App 端的握手，S11b 之后做） | 待测 |
 | B8 | 迁移前门禁 | 营业时间内停掉定时器超过 2 小时后发布 → 退出码 5；`--skip-backup-gate` 能发布且 `gate-skips.log` 有记录；恢复定时器 | 待测 |
 | B9 | 失败信号 | 临时把 `.env` 的 `BACKUP_OSS_ACCESS_KEY_SECRET` 改错跑一次：`backup_failed stage=upload`、`metrics.prom` 的 `last_ok 0`、`consecutive_failures` 加 1、心跳不变；改回后下一次清零 | 待测 |
 
