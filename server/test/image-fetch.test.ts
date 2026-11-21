@@ -435,12 +435,16 @@ describe("在途的图片任务、缓存回填撞上注销清除（PR #20 Codex 
     const running = runImageJobs(d, 1000);
     await g.begun;
     await purgeNow(p.storeId, store, cacheRoot);
+    // 先让隔满 1 小时的复扫记清完，图再迟到落地：这样下面的「没清完」只能来自撤回标记那一步（PR #20 Fable 第三轮）
+    expect(await rescan(store, cacheRoot)).toContain(p.storeId);
+    const done = await tdb.kysely.selectFrom("store_purges").selectAll().where("store_id", "=", p.storeId).executeTakeFirstOrThrow();
+    expect(done.objects_cleared_at).not.toBeNull();
     brokenDelete = true;
     g.open();
     await running;
     expect(imagesOf(store, p.storeId).length).toBe(1);
     const pr = await tdb.kysely.selectFrom("store_purges").selectAll().where("store_id", "=", p.storeId).executeTakeFirstOrThrow();
-    expect(pr.objects_cleared_at).toBeNull();
+    expect([pr.objects_cleared_at, pr.last_error]).toEqual([null, "ECONNRESET"]);
     brokenDelete = false;
     expect(await rescan(store, cacheRoot)).toContain(p.storeId);
     expect(imagesOf(store, p.storeId)).toEqual([]);
