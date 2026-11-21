@@ -16,7 +16,8 @@ import { readZip } from "./helpers/zip.ts";
 import { parseCsv } from "../src/export/csv.ts";
 import { EXPORT_FILES, MONTH_HEADER, writeStoreExport } from "../src/export/store-export.ts";
 import { reportMonth } from "../src/reports/month.ts";
-import { MemoryObjectStore, deletionKey, imageKey, storePrefix } from "../src/lookup/oss.ts";
+import { MemoryObjectStore, archiveStoreFromConfig, deletionKey, imageKey, storePrefix } from "../src/lookup/oss.ts";
+import type { Config } from "../src/config.ts";
 import { clearPurgedObjects, purgeStore, runAccountPurges, runExportJobs, type AccountJobDeps } from "../src/jobs/account-purge.ts";
 import { authenticate } from "../src/auth/authenticate.ts";
 import { Guard } from "../src/auth/guard.ts";
@@ -342,6 +343,34 @@ describe("导出包", () => {
     expect((await runExportJobs(f)).map((x) => x.result)).toEqual(["done"]);
     expect((await flaky.list(storePrefix("exports", s.storeId))).length).toBe(1);
     await s.app.close();
+  });
+
+  it("没配存档桶：有未完成的导出任务就打 error 级告警（export_no_archive），不静默跳过（Fable 必须改 2）", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "没桶店");
+    const t = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    const sink = logSink();
+    expect(await runExportJobs(deps(clock, { archive: null, log: sink.log }))).toEqual([]);
+    const alerts = sink.lines.filter((l) => l.obj.alert === "export_no_archive");
+    expect(alerts.map((l) => l.level)).toEqual(["error"]);
+    expect(Number(alerts[0]!.obj.pending)).toBeGreaterThanOrEqual(1);
+    // 任务原样留着，配上桶之后照常生成
+    const j = await tdb.kysely.selectFrom("export_jobs").selectAll().where("store_id", "=", s.storeId).executeTakeFirstOrThrow();
+    expect([j.attempts, j.done_at]).toEqual([0, null]);
+    const archive = new MemoryObjectStore();
+    expect((await runExportJobs(deps(clock, { archive }))).find((x) => x.store_id === s.storeId)?.result).toBe("done");
+    await s.app.close();
+  });
+
+  it("存档桶按配置取：本机目录和商品图共用；阿里云在 S10a 配第二个桶之前按没配处理，不落到商品图桶（S09-11、T13）", () => {
+    const base = { databaseUrl: "postgres://x" } as never as Config;
+    const local = new MemoryObjectStore();
+    expect(archiveStoreFromConfig({ ...base, objectStore: { kind: "local", dir: "/tmp/x" } }, local)).toBe(local);
+    expect(archiveStoreFromConfig({ ...base, objectStore: { kind: "none" } }, null)).toBe(null);
+    expect(
+      archiveStoreFromConfig({ ...base, objectStore: { kind: "aliyun", region: "r", bucket: "yuanhui-img", accessKeyId: "a", accessKeySecret: "b" } }, local),
+    ).toBe(null);
   });
 
   it("两个进程同时跑导出任务：只生成一份", async () => {

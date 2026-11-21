@@ -36,7 +36,7 @@ export interface AccountJobDeps {
   db: Kysely<Database>;
   /** 商品图所在的桶（images/），没配是 null */
   images: ObjectStore | null;
-  /** 存档桶（exports/、deletions/），没配是 null。§9.1 是另一个桶；S10a 配好之前和商品图用同一个 */
+  /** 存档桶（exports/、deletions/），没配是 null。§9.1 是另一个桶；生产不许和商品图共用（archiveStoreFromConfig，S09-11） */
   archive: ObjectStore | null;
   /** GET /v1/images 的本机磁盘缓存目录 */
   imageCacheDir: string;
@@ -162,6 +162,13 @@ export async function clearCancelledExports(d: AccountJobDeps, limit = 20): Prom
 
 /** 一轮：先清撤回的，再把到期的导出任务一个一个做完（最多 limit 个） */
 export async function runExportJobs(d: AccountJobDeps, limit = 10): Promise<ExportOutcome[]> {
+  if (!d.archive) {
+    // 没配存档桶：导出包生成不了，而到期清除不等导出包（S09-6）。有未完成的任务就每轮打 error 级告警，不能静默跳过（Fable 必须改 2）
+    const r = await sql<{ n: string }>`SELECT count(*)::text AS n FROM export_jobs WHERE done_at IS NULL AND cancelled_at IS NULL`.execute(d.db);
+    const pending = Number(r.rows[0]?.n ?? 0);
+    if (pending > 0) d.log?.error({ alert: "export_no_archive", pending }, "有注销申请的导出包要生成，但没配存档桶");
+    return [];
+  }
   await clearCancelledExports(d);
   const out: ExportOutcome[] = [];
   for (let i = 0; i < limit; i++) {

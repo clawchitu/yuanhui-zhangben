@@ -5,6 +5,7 @@ import { buildApp } from "./app.ts";
 import { loadConfig } from "./config.ts";
 import { createDb, migrate } from "./db.ts";
 import { defaultTasks, Scheduler } from "./jobs/scheduler.ts";
+import { archiveStoreFromConfig } from "./lookup/oss.ts";
 
 const config = loadConfig();
 const db = createDb({ connectionString: config.databaseUrl });
@@ -18,7 +19,7 @@ if (process.env.MIGRATE_ON_START === "1") {
 await app.listen({ host: config.host, port: config.port });
 
 // 后台任务（jobs/scheduler.ts）：商品图（开关打开且配了对象存储才登记）、演示店每日重置、注销导出包、注销到期清除。
-// 存档桶（exports/、deletions/）在 S10a 配第二个桶之前和商品图用同一个对象存储（§9.1）。
+// 存档桶（exports/、deletions/）：本机目录和商品图共用；阿里云在 S10a 配第二个桶之前按没配处理并告警，不落到商品图桶（S09-11、T13）。
 const clock = () => new Date();
 const scheduler = new Scheduler({
   clock,
@@ -28,7 +29,7 @@ const scheduler = new Scheduler({
     clock,
     productImagesEnabled: config.productImagesEnabled,
     images: app.deps.objectStore,
-    archive: app.deps.objectStore,
+    archive: archiveStoreFromConfig(config, app.deps.objectStore),
     imageCacheDir: config.imageCacheDir,
     log: app.log,
   }),

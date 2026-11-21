@@ -223,6 +223,18 @@ export class AliOssObjectStore implements ObjectStore {
   }
 }
 
+/**
+ * 存档桶（exports/、deletions/，§9.1 的 yuanhui-backup）。S09-11：生产不许和商品图共用桶。
+ * - 本机目录（开发、测试）：和商品图同一个目录。
+ * - 阿里云：S10a 加第二个桶的配置之前一律按没配处理（返回 null），导出和清除那边会按 export_no_archive / purge_no_archive 告警，
+ *   绝不把导出包、删除记录写进商品图桶 yuanhui-img（§14 T13）。
+ */
+export function archiveStoreFromConfig(config: Config, images: ObjectStore | null): ObjectStore | null {
+  const c = config.objectStore;
+  if (c.kind === "local") return images;
+  return null;
+}
+
 export function objectStoreFromConfig(config: Config): ObjectStore | null {
   const c = config.objectStore;
   if (c.kind === "none") return null;
