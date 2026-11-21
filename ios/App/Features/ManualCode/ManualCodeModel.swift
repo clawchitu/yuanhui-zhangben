@@ -14,7 +14,7 @@ final class ManualCodeModel {
 
     let db: LocalDB
     var tab: Tab = .code {
-        didSet { if tab != oldValue { selected = nil; hint = nil } }
+        didSet { if tab != oldValue { selected = nil; hint = nil; voided = false } }
     }
     private(set) var input = ""
     var query = "" {
@@ -50,6 +50,7 @@ final class ManualCodeModel {
     // MARK: 输条码
 
     func key(_ k: Keypad.Key) {
+        voided = false   // 在自家键盘上按 = 明确重填
         switch k {
         case .digit(let d): append(Character(String(d)))
         case .delete: delete()
@@ -58,18 +59,48 @@ final class ManualCodeModel {
     }
 
     /// 硬件键盘 / 扫码枪的一个按键（输条码页上）。返回扫码枪扫完回车后该交出去的码（只剩一个候选时）
+    ///
+    /// §14 S14-5「整串不收、不截断」：一串（到回车为止）里出现数字、字母以外的字符或非法键，这一串整个作废——
+    /// 已经进框的也清掉、不选中、后面的字符不再拼进去，回车不交码；提示留着，直到下一串开始（回车之后再来的按键）
+    /// 或在自家键盘上重填。否则 `6901-035600016` 去掉「-」就成了啤酒码 `6901035600016`，卖错商品。
     func hardwareKey(_ k: HIDScanParser.Key) -> String? {
         switch k {
         case .character(let c) where c == "\u{8}" || c == "\u{7F}":
+            guard !voided else { return nil }
             delete()
-        case .character(let c):
-            if HIDScanParser.isCodeCharacter(c) { append(c) } else { hint = Self.invalidCharacterHint }
+        case .character(let c) where HIDScanParser.isCodeCharacter(c):
+            guard !voided else { return nil }
+            append(c)
+        case .character, .other:
+            voidCurrent()
         case .enter:
-            return pick()
-        case .other, .ignored:
+            if voided { voided = false; return nil }
+            if let code = pick() { return code }
+            // 回车了也没有可选的（本机没有这个码）：清掉输入框，下一枪不接在后面；提示留着
+            if input.count >= BarcodeMatch.minPrefixLength, match.candidates.isEmpty {
+                clear()
+                hint = Self.notListedHint
+            }
+        case .ignored:
             break
         }
         return nil
+    }
+
+    /// 这一串已经作废（硬件输入里出现过非法字符 / 非法键），一直丢到回车
+    private(set) var voided = false
+
+    static let notListedHint = "本机没有这个码"
+
+    private func voidCurrent() {
+        voided = true
+        clear()
+        hint = Self.invalidCharacterHint
+    }
+
+    private func clear() {
+        input = ""
+        refreshCode()
     }
 
     /// 一次交进来一整串（粘贴、测试）。含数字、字母以外的字符整串不收，出提示（§14 S14-5）

@@ -244,10 +244,67 @@ final class S17Tests: XCTestCase {
         XCTAssertEqual(m.codeHint, "条码只能是数字和字母")
         XCTAssertNil(m.hardwareKey(.character("#")))
         XCTAssertEqual(m.codeHint, "条码只能是数字和字母")
+        XCTAssertNil(m.hardwareKey(.enter))
+        XCTAssertEqual(m.codeHint, "条码只能是数字和字母", "提示留到下一串开始")
         _ = m.hardwareKey(.character("A")); _ = m.hardwareKey(.character("b"))
         XCTAssertEqual(m.input, "Ab", "大小写原样")
         _ = m.hardwareKey(.character("\u{8}"))
         XCTAssertEqual(m.input, "A")
+    }
+
+    /// 手输页上用扫码枪 / 硬件键盘「打」一串码进来，回车交出（交出的码像页面一样走 ScanHub 进篮）
+    @discardableResult
+    private func gunType(_ m: ManualCodeModel, _ keys: [HIDScanParser.Key], into sell: SellModel) -> String? {
+        let hub = ScanHub()
+        hub.handler = { sell.handle($0) }
+        var out: String?
+        for k in keys {
+            if let code = m.hardwareKey(k) { out = code; _ = hub.receive(code, from: .manual) }
+        }
+        return out
+    }
+
+    private func keys(_ s: String) -> [HIDScanParser.Key] { s.map { .character($0) } }
+
+    /// §14 S14-5：手输页上一次扫码（到回车为止）里出现任何非法字符或非法键，整串不收、不截断：
+    /// 不交码、不选中、不进篮，提示「条码只能是数字和字母」（`6901-035600016` 不能变成啤酒码 `6901035600016`）
+    func testHardwareStringWithIllegalCharacterIsDroppedWhole() throws {
+        let cases: [(String, [HIDScanParser.Key])] = [
+            ("开头", keys("-6901035600016")),
+            ("中间", keys("6901-035600016")),
+            ("末尾", keys("6901035600016-")),
+            ("中间空格", keys("690103 5600016")),
+            ("非法键", keys("6901") + [.other] + keys("035600016")),
+            ("非法键在末尾", keys("6901035600016") + [.other]),
+        ]
+        for (name, ks) in cases {
+            let db = try makeDB()
+            let sell = SellModel(db: db)
+            let m = ManualCodeModel(db: db)
+            XCTAssertNil(gunType(m, ks + [.enter], into: sell), "\(name)：回车不交码")
+            XCTAssertTrue(sell.basket.lines.isEmpty, "\(name)：篮子不变")
+            XCTAssertNil(m.selected, "\(name)：不选中")
+            XCTAssertFalse(m.canPick, "\(name)：主按钮灰")
+            XCTAssertNotEqual(m.input, Self.beer, "\(name)：不截掉符号拼成另一个码")
+            XCTAssertEqual(m.codeHint, ManualCodeModel.invalidCharacterHint, "\(name)：提示")
+            XCTAssertNil(m.pick(), "\(name)：主按钮也交不出")
+            XCTAssertTrue(try db.entries().isEmpty, "\(name)：不写账")
+            // 作废的一串结束后，下一枪正常收
+            XCTAssertEqual(gunType(m, keys(Self.beer) + [.enter], into: sell), Self.beer, "\(name)：下一枪照收")
+            XCTAssertEqual(sell.basket.lines.map(\.barcode), [Self.beer], "\(name)：下一枪进篮")
+        }
+    }
+
+    /// 作废后、回车之前，后面的字符也不拼进去（前缀唯一命中时也不自动选）
+    func testHardwareCharactersAfterIllegalOneAreNotAppended() throws {
+        let m = ManualCodeModel(db: try makeDB())
+        for k in keys("ab#") + keys("69010356") { XCTAssertNil(m.hardwareKey(k)) }
+        XCTAssertEqual(m.input, "", "整串丢掉")
+        XCTAssertTrue(m.candidates.isEmpty)
+        XCTAssertNil(m.selected)
+        XCTAssertEqual(m.codeHint, ManualCodeModel.invalidCharacterHint)
+        m.key(.digit(6))
+        XCTAssertEqual(m.input, "6", "自家键盘按一下 = 明确重填")
     }
 
     /// 扫码枪连着时（软键盘不弹）手输条码照样能用：扫码枪在手输页上扫，码进输入框；只有一个候选时回车直接交出去
@@ -255,6 +312,17 @@ final class S17Tests: XCTestCase {
         let m = ManualCodeModel(db: try makeDB())
         for c in Self.beer { XCTAssertNil(m.hardwareKey(.character(c))) }
         XCTAssertEqual(m.hardwareKey(.enter), Self.beer)
+    }
+
+    /// 扫到本机没有的码：回车后清掉输入框（下一枪不接在后面），提示「本机没有这个码」
+    func testEnterOnUnlistedCodeClearsTheField() throws {
+        let sell = SellModel(db: try makeDB())
+        let m = ManualCodeModel(db: sell.db)
+        XCTAssertNil(gunType(m, keys("6999999999994") + [.enter], into: sell))
+        XCTAssertEqual(m.input, "")
+        XCTAssertEqual(m.codeHint, "本机没有这个码")
+        XCTAssertEqual(gunType(m, keys(Self.beer) + [.enter], into: sell), Self.beer, "下一枪不接在后面")
+        XCTAssertEqual(sell.basket.lines.map(\.barcode), [Self.beer])
     }
 
     func testNameSearchHasNoStockWordsForCashier() throws {
