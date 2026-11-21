@@ -10,12 +10,11 @@
 //     商品类 op 只回滚这个 op、单个拒 invalid、不留档，不连累同批的其他 op；记账类 op（LEDGER_OPS）预检查之后仍报 22xxx
 //     说明预检查有漏洞，直接抛出、整个请求 500、同批回滚，不留半截账。两种都按 error 级别记日志（要人看）。
 //  1. 按 (store_id, id) 找留档：有 → 内容哈希相同就原样返回当初的结果（replayed: true），不同就 id_conflict（不留档、不应用）。
-//  2. 还没实现的 op 类型（盘点、补全、处理快过期，S06）→ rejected: invalid，不留档，等实现后重发能正常处理。
-//  3. 手机时钟超前 5 分钟以上 → occurred_at 改成服务器收到的时间，flags.clock_adjusted（§4.4）。
-//  4. 按 permissions.json 判权限（guard.decideOp；被踢设备按 §4.5 的列）。
-//  5. 按 ops.schema.json 校验 payload（§5.0 上限）→ 不过就 rejected: invalid。
-//  6. 被踢设备的非 quick op → held（留档，等家用手机确认，S 后续段做确认接口）。
-//  7. 应用（catalog.ts），记下结果。被拒的、暂存的都留档，重发返回同样的结果（I8）。
+//  2. 手机时钟超前 5 分钟以上 → occurred_at 改成服务器收到的时间，flags.clock_adjusted（§4.4）。
+//  3. 按 permissions.json 判权限（guard.decideOp；被踢设备按 §4.5 的列）。
+//  4. 按 ops.schema.json 校验 payload（§5.0 上限）→ 不过就 rejected: invalid。
+//  5. 被踢设备的非 quick op → held（留档，等家用手机确认，S 后续段做确认接口）。
+//  6. 应用（HANDLERS：catalog.ts、ledger/*），记下结果。被拒的、暂存的都留档，重发返回同样的结果（I8）。
 //
 // 内容哈希 = sha256(规范化 JSON {type, occurred_at（换算成 UTC 毫秒的 ISO 写法）, payload（键排序）})。
 // 不含设备：服务器恢复后重新开通的设备补交同一个 op，按原 id 幂等（§4.6）。
@@ -29,6 +28,9 @@ import type { Identity } from "../auth/permissions.ts";
 import { applyBarcodeLink, applyBarcodeUnlink, applyProductEdit, applyProductUpsert, type ApplyContext, type Outcome } from "./catalog.ts";
 import { applyOpening, applySaleBatch, applyStockIn } from "../ledger/apply.ts";
 import { applyVoid, voidTargetSale } from "../ledger/void.ts";
+import { applyCount } from "../ledger/count.ts";
+import { applyReviewComplete } from "../ledger/costfix.ts";
+import { applyExpiryDispose, applyLotSnooze } from "../ledger/lots.ts";
 import { STORE_QUEUE_LIMIT, withStoreLock, type StoreTx } from "./lock.ts";
 import { opSchemaValid, type OpType } from "./validate.ts";
 
@@ -74,8 +76,8 @@ export class EpochMismatch extends Error {
 }
 
 type Handler = (tx: StoreTx, ctx: ApplyContext & { opId: string; flags: Record<string, unknown> }, payload: never) => Promise<Outcome>;
-/** 已实现的 op 类型：S04 商品类，S05b 卖出 / 撤销 / 进货 / 期初；其余（盘点、补全、处理快过期）在 S06 加进来（§14 S04-1、S05-6 ⑩） */
-const HANDLERS: Partial<Record<OpType, Handler>> = {
+/** 每个 op 类型的处理函数。完整的 Record：ops.schema.json 加了类型而这里没接，编译不过（§14 S04-1；过渡分支已在 S06 删掉） */
+export const HANDLERS: Record<OpType, Handler> = {
   product_upsert: applyProductUpsert as Handler,
   product_edit: applyProductEdit as Handler,
   barcode_link: applyBarcodeLink as Handler,
@@ -84,6 +86,10 @@ const HANDLERS: Partial<Record<OpType, Handler>> = {
   stock_in: applyStockIn as Handler,
   opening: applyOpening as Handler,
   void: applyVoid as Handler,
+  count: applyCount as Handler,
+  product_review_complete: applyReviewComplete as Handler,
+  expiry_dispose: applyExpiryDispose as Handler,
+  lot_snooze: applyLotSnooze as Handler,
 };
 
 /** 记账类 op：预检查之后写库再出 22xxx 只能是服务器自己错了，整个请求 500，不单个拒收（§14 S04-14、S05-4 第三层） */
@@ -263,11 +269,7 @@ async function processOp(
     return { ...(prev.result as OpResult), id: op.id, replayed: true };
   }
 
-  // 2. 本段还没实现的类型
-  const handler = HANDLERS[op.type];
-  if (!handler) return { id: op.id, status: "rejected", code: "invalid" };
-
-  // 3. 手机时钟
+  // 2. 手机时钟
   const flags: Record<string, unknown> = {};
   let occurredAt = new Date(op.occurred_at);
   if (occurredAt.getTime() > now.getTime() + CLOCK_SKEW_MS) {
@@ -298,7 +300,7 @@ async function processOp(
   };
   const reject = (code: OpResultCode) => record({ id: op.id, status: "rejected", code }, code);
 
-  // 4. 权限。payload 缺了选行用的字段（product_upsert 的 quick）就是格式不对
+  // 3. 权限。payload 缺了选行用的字段（product_upsert 的 quick）就是格式不对
   if (!guard.opRule(op.type, op.payload)) return reject("invalid");
   const v = guard.decideOp(op.type, op.payload, device.identity, {
     now,
@@ -313,16 +315,16 @@ async function processOp(
   // 注销期间在 pushOps 里整批跳过，到不了这里（§14 S04-2）
   if (!v.ok) return reject("forbidden");
 
-  // 5. 格式与上限
+  // 4. 格式与上限
   if (!opSchemaValid(op)) return reject("invalid");
 
-  // 6. 被踢设备的暂存
+  // 5. 被踢设备的暂存
   if (v.held) return record({ id: op.id, status: "held" });
   if (device.identity === "revoked") flags.late_from_revoked = true;
 
-  // 7. 应用。先写 ops 这一行（entries.op_id 的外键指向它），应用完再写上结果
+  // 6. 应用。先写 ops 这一行（entries.op_id 的外键指向它），应用完再写上结果
   await record({ id: op.id, status: "applied" });
-  const out = await handler(tx, { deviceId, now, occurredAt, opId: id, flags }, op.payload as never);
+  const out = await HANDLERS[op.type](tx, { deviceId, now, occurredAt, opId: id, flags }, op.payload as never);
   const result: OpResult = { id: op.id, ...out };
   await tx.trx
     .updateTable("ops")

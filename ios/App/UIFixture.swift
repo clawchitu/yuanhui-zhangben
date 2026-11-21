@@ -17,7 +17,10 @@ import ShopCore
 ///   -uiScrollTo bottom                           首页打开后滚到底（截长页用）
 ///   -uiPriorSales N                              先记 N 笔卖出（03 顶栏「2 笔待传」）
 ///   -uiLongName                                  多登记一个名字很长、单价很高的商品（码 6900000000017）
-///   卖出页的 -uiScan / -uiPaid / -uiAutoCommit / -uiHoldDone / -uiCamera / -uiProbe 见 `SellFixture`
+///   -uiFixture scanner | scanner-login           扫码测试页（27a / 27b 的样子，S14）
+///   -uiCamera denied|authorized|notDetermined    把相机权限当成这个值（S14；卖出页同样认）
+///   -uiScan / -uiScanSource / -uiScanGap / -uiScanDelay   FakeScanner 喂码，见 `FakeScanner`（S14；卖出页同样认）
+///   卖出页的 -uiPaid / -uiAutoCommit / -uiHoldDone / -uiProbe 见 `SellFixture`
 /// Beta / Release 里这些参数一律不认：没有会话就出「还没登录」页。
 enum UIFixture {
     enum Screen: Equatable {
@@ -26,6 +29,7 @@ enum UIFixture {
         case home(unsynced: Bool)
         case onboarding
         case settings
+        case scanner(login: Bool)
         #endif
     }
 
@@ -41,6 +45,8 @@ enum UIFixture {
         case "home-unsynced": return .home(unsynced: true)
         case "onboarding": return .onboarding
         case "settings": return .settings
+        case "scanner": return .scanner(login: false)
+        case "scanner-login": return .scanner(login: true)
         default: break
         }
         #endif

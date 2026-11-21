@@ -2371,6 +2371,50 @@
      "calc": "v 将为 -9007199275135392 < −(2^53−1) → 拒 invalid，状态不变"
     }
    ]
+  },
+  {
+   "id": "cost-27",
+   "rules": [
+    "5.2-盘点-已知且正",
+    "5.2-盘点-盘盈按u"
+   ],
+   "title": "盘盈按当前单位成本 u，不是最近进价 c（u ≠ c，§14 S05-8）：库存 6、货值 24280、c = 4000，数到 8 → 盘盈 2 × 4047",
+   "initial": {
+    "q": 6,
+    "v": 24280,
+    "c": 4000,
+    "k": true,
+    "u": 4047
+   },
+   "steps": [
+    {
+     "action": {
+      "type": "count",
+      "counted_qty": 8
+     },
+     "expect": {
+      "entries": [
+       {
+        "type": "count",
+        "qty_delta": 2,
+        "amount_fen": 0,
+        "list_amount_fen": 0,
+        "cogs_fen": -8094,
+        "value_delta_fen": 8094,
+        "cost_missing": false
+       }
+      ],
+      "state": {
+       "q": 8,
+       "v": 32374,
+       "c": 4000,
+       "k": true,
+       "u": 4047
+      }
+     },
+     "calc": "u = roundDiv(24280, 6) = 4047（4046.67）；d = 8 − 6 = 2；盘盈 = d × u = 8094（写成 d × c 会得 8000）；v = 24280 + 8094 = 32374；c 不变 = 4000；新 u = roundDiv(32374, 8) = 4047（4046.75）"
+    }
+   ]
   }
  ]
 }

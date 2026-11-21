@@ -22,16 +22,36 @@ export class TestClock {
 
 export function makeApp(
   tdb: TestDb,
-  o: { clock?: TestClock; config?: Partial<Config>; rateLimits?: AppDeps["rateLimits"]; syncPageSize?: number } = {},
+  o: {
+    clock?: TestClock;
+    config?: Partial<Config>;
+    rateLimits?: AppDeps["rateLimits"];
+    syncPageSize?: number;
+    /** 换一个连接池（默认用 tdb 自己的） */
+    db?: AppDeps["db"];
+    /** 收服务端日志（见 errorLog） */
+    logStream?: AppDeps["logStream"];
+  } = {},
 ): FastifyInstance {
   return buildApp({
     config: testConfig(o.config),
-    db: tdb,
+    db: o.db ?? tdb,
     logger: false,
+    logStream: o.logStream,
     clock: o.clock?.now,
     rateLimits: o.rateLimits,
     syncPageSize: o.syncPageSize,
   });
+}
+
+/** 收服务端 error 级日志：出 500 时把错误栈带进断言信息，CI 上也能看到根因 */
+export function errorLog() {
+  const lines: string[] = [];
+  return {
+    stream: { write: (l: string) => void (JSON.parse(l).level >= 50 && lines.push(l)) },
+    lines,
+    toString: () => (lines.length ? `\n服务端错误：\n${lines.slice(0, 3).join("\n")}` : ""),
+  };
 }
 
 /** 建一个店和账号，返回用户名 */

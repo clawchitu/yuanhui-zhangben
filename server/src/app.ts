@@ -8,11 +8,16 @@ import { authRoutes } from "./routes/auth.ts";
 import { deviceRoutes } from "./routes/devices.ts";
 import { accountRoutes } from "./routes/account.ts";
 import { syncRoutes } from "./routes/sync.ts";
+import { reportRoutes } from "./routes/reports.ts";
 import { DEFAULT_PAGE_SIZE } from "./sync/pull.ts";
 import { Guard } from "./auth/guard.ts";
 import { installGuard } from "./auth/plugin.ts";
 import { DEFAULT_RATE_LIMITS, type RateLimits } from "./auth/ratelimit.ts";
 import { verifyPassword } from "./auth/password.ts";
+import { lookupRoutes } from "./routes/lookup.ts";
+import { sourceFromConfig, type BarcodeSource } from "./lookup/kuainiao.ts";
+import { objectStoreFromConfig, type ObjectStore } from "./lookup/oss.ts";
+import { CatalogService } from "./lookup/catalog.ts";
 
 /**
  * 请求体上限 1 MiB（§4.2）。最大的合法 op（200 行的卖出、每个字符串都写满、非 ASCII 全转义成 \uXXXX）约 0.75 MiB，
@@ -40,6 +45,10 @@ export interface AppDeps {
   afterDeviceLabelLock?: () => Promise<void>;
   /** 同步每条流每页多少行（§4.2 默认 500；测试里调小测分页） */
   syncPageSize?: number;
+  /** 外部条码库（默认按配置建快鸟客户端；没配 AppCode 是 null）。测试里传假实现 */
+  barcodeSource?: BarcodeSource | null;
+  /** 对象存储（默认按配置；none 是 null）。测试里传内存实现 */
+  objectStore?: ObjectStore | null;
 }
 
 export interface ResolvedDeps extends AppDeps {
@@ -48,11 +57,15 @@ export interface ResolvedDeps extends AppDeps {
   verifyPassword: typeof verifyPassword;
   afterDeviceLabelLock: () => Promise<void>;
   syncPageSize: number;
+  barcodeSource: BarcodeSource | null;
+  objectStore: ObjectStore | null;
 }
 
 declare module "fastify" {
   interface FastifyInstance {
     deps: ResolvedDeps;
+    /** 条码查询服务（测试里看额度用） */
+    catalog: CatalogService;
   }
 }
 
@@ -64,6 +77,8 @@ export function buildApp(input: AppDeps): FastifyInstance {
     verifyPassword: input.verifyPassword ?? verifyPassword,
     afterDeviceLabelLock: input.afterDeviceLabelLock ?? (async () => {}),
     syncPageSize: input.syncPageSize ?? DEFAULT_PAGE_SIZE,
+    barcodeSource: input.barcodeSource !== undefined ? input.barcodeSource : sourceFromConfig(input.config),
+    objectStore: input.objectStore !== undefined ? input.objectStore : objectStoreFromConfig(input.config),
   };
   if (!Number.isInteger(deps.syncPageSize) || deps.syncPageSize < 1) throw new Error("syncPageSize 必须是正整数");
   const app = Fastify({
@@ -84,6 +99,16 @@ export function buildApp(input: AppDeps): FastifyInstance {
     bodyLimit: BODY_LIMIT,
   });
   app.decorate("deps", deps);
+  app.decorate(
+    "catalog",
+    new CatalogService({
+      db: deps.db.kysely,
+      source: deps.barcodeSource,
+      timeoutMs: deps.config.barcodeLookupTimeoutMs,
+      dailyLimit: deps.config.barcodeDailyLimit,
+      clock: deps.clock,
+    }),
+  );
 
   // 统一错误格式：契约 components/schemas/Error，{ code, message? }
   app.setNotFoundHandler((_req, reply) => {
@@ -111,5 +136,7 @@ export function buildApp(input: AppDeps): FastifyInstance {
   app.register(deviceRoutes);
   app.register(accountRoutes);
   app.register(syncRoutes);
+  app.register(reportRoutes);
+  app.register(lookupRoutes);
   return app;
 }

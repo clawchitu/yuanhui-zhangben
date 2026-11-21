@@ -51,6 +51,8 @@ export interface RateLimits {
   demo: RateLimitRule;
   /** 改密码、申请注销时原密码输错：按账号，两个接口共用一个计数，不计入登录锁定（§14 S03-8） */
   accountPassword: RateLimitRule;
+  /** GET /v1/barcode-lookup：按设备，每分钟 20 次（§7） */
+  barcodeLookup: RateLimitRule;
 }
 
 // 店里几台手机常常共用一个出口 IP（店里的 Wi-Fi），所以按 IP 的上限不能太紧；防撞库主要靠账号锁定。
@@ -59,4 +61,5 @@ export const DEFAULT_RATE_LIMITS: RateLimits = {
   redeem: { limit: 30, windowMs: 15 * 60_000 },
   demo: { limit: 30, windowMs: 15 * 60_000 },
   accountPassword: { limit: 5, windowMs: 15 * 60_000 },
+  barcodeLookup: { limit: 20, windowMs: 60_000 },
 };

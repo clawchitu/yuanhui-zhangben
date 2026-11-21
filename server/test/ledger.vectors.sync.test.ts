@@ -16,7 +16,8 @@ import { op, sync, syncOk, upsertFull } from "./helpers/sync.ts";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 const { cases } = JSON.parse(readFileSync(resolve(CONTRACTS_DIR, "vectors", "cost.json"), "utf8")) as { cases: Any[] };
-const SYNCABLE = new Set(["stock_in", "sale", "opening", "void"]);
+// S06 起盘点（count）也经同步写库：带当前 stock_ver 做 base_ver
+const SYNCABLE = new Set(["stock_in", "sale", "opening", "void", "count"]);
 const syncable = cases.filter((c) => c.steps.every((s: Any) => SYNCABLE.has(s.action.type)));
 
 let tdb: TestDb;
@@ -43,7 +44,10 @@ const setState = (storeId: string, pid: string, s: { q: number | bigint; v: numb
     .execute();
 
 describe("cost.json 经 /v1/sync 写库（①）", () => {
-  it("只含进货 / 卖出 / 期初 / 撤销的向量不少于 15 组", () => expect(syncable.length).toBeGreaterThanOrEqual(15));
+  it("只含进货 / 卖出 / 期初 / 撤销 / 盘点的向量不少于 21 组，含 u ≠ c 的盘盈 cost-27", () => {
+    expect(syncable.length).toBeGreaterThanOrEqual(21);
+    expect(syncable.map((c) => c.id)).toContain("cost-27");
+  });
   for (const c of syncable) {
     it(`${c.id}：${c.title}`, async () => {
       const { shop, app, pid } = await shopWithProduct();
@@ -66,6 +70,9 @@ describe("cost.json 经 /v1/sync 写库（①）", () => {
         } else if (a.type === "opening") {
           const ver = Number((await product(shop.storeId, pid)).stock_ver);
           o = op("opening", { entry_id: eid, product_id: pid, counted_qty: a.counted_qty, base_ver: ver, ...(a.unit_cost_fen === null ? {} : { unit_cost_fen: a.unit_cost_fen }) }, { at: AT });
+        } else if (a.type === "count") {
+          const p = await product(shop.storeId, pid);
+          o = op("count", { entry_id: eid, product_id: pid, counted_qty: a.counted_qty, base_qty: p.stock_qty, base_ver: Number(p.stock_ver) }, { at: AT });
         } else o = op("void", { target: { entry_id: stepEntry[a.target_step]! } }, { at: AT });
         if (s.expect.error !== undefined) {
           // 被拒的一步：拒 invalid 并留档，库里不变

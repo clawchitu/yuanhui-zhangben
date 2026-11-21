@@ -57,6 +57,10 @@ struct AppRoot: View {
                 SignedOutView()
             case .failed(let message):
                 StartupErrorView(message: message)
+            #if DEBUG
+            case .scannerLab(let login):
+                ScannerLab(login: login, args: ProcessInfo.processInfo.arguments)
+            #endif
             }
         }
     }
@@ -67,6 +71,10 @@ struct AppRoot: View {
         /// 没有会话（Beta / Release）：「还没登录」占位页，S21 换成登录页
         case signedOut
         case failed(String)
+        #if DEBUG
+        /// 扫码测试页（S14，只在 Debug）
+        case scannerLab(login: Bool)
+        #endif
     }
 
     /// 本机正式库所在目录（Application Support）
@@ -78,6 +86,9 @@ struct AppRoot: View {
     @MainActor static func makeBoot(_ args: [String]) -> Boot {
         let screen = UIFixture.screen(from: args)
         if case .gallery(let page) = screen { return .gallery(page) }
+        #if DEBUG
+        if case .scanner(let login) = screen { return .scannerLab(login: login) }
+        #endif
         do {
             #if DEBUG
             if let role = UIFixture.role(from: args) {
