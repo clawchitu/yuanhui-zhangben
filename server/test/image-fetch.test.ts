@@ -377,8 +377,11 @@ describe("在途的图片任务、缓存回填撞上注销清除（PR #20 Codex 
   async function purgeNow(storeId: string, images: ObjectStore, cacheDir: string) {
     await tdb.kysely.updateTable("accounts").set({ delete_requested_at: new Date(Date.now() - 8 * 86_400_000) }).where("store_id", "=", storeId).execute();
     const r = await runAccountPurges({ db: tdb.kysely, images, archive: new MemoryObjectStore(), imageCacheDir: cacheDir, clock: () => new Date() });
-    expect([r.purged.includes(storeId), r.cleared.includes(storeId)]).toEqual([true, true]);
+    expect(r.purged.includes(storeId)).toBe(true);
   }
+  /** 清除之后隔满 1 小时的复扫（T17）：拨钟 61 分钟跑对象清理 */
+  const rescan = (images: ObjectStore, cacheDir: string) =>
+    clearPurgedObjects({ db: tdb.kysely, images, archive: new MemoryObjectStore(), imageCacheDir: cacheDir, clock: () => new Date(Date.now() + 61 * 60_000) });
   const imagesOf = (st: MemoryObjectStore, storeId: string) => [...st.objects.keys()].filter((k) => k.startsWith(`images/${storeId}/`));
 
   it("下载暂停 → 注销清除和对象清理都完成 → 下载恢复：对象存储里不留这家店的图", async () => {
@@ -401,6 +404,7 @@ describe("在途的图片任务、缓存回填撞上注销清除（PR #20 Codex 
     g.open();
     await running;
     expect(imagesOf(store, p.storeId)).toEqual([]);
+    expect(await rescan(store, cacheRoot)).toContain(p.storeId);
     const pr = await tdb.kysely.selectFrom("store_purges").selectAll().where("store_id", "=", p.storeId).executeTakeFirstOrThrow();
     expect(pr.objects_cleared_at).not.toBeNull();
     await app.close();
@@ -436,8 +440,36 @@ describe("在途的图片任务、缓存回填撞上注销清除（PR #20 Codex 
     const pr = await tdb.kysely.selectFrom("store_purges").selectAll().where("store_id", "=", p.storeId).executeTakeFirstOrThrow();
     expect(pr.objects_cleared_at).toBeNull();
     brokenDelete = false;
-    expect(await clearPurgedObjects({ db: tdb.kysely, images: store, archive: new MemoryObjectStore(), imageCacheDir: cacheRoot, clock: () => new Date() })).toContain(p.storeId);
+    expect(await rescan(store, cacheRoot)).toContain(p.storeId);
     expect(imagesOf(store, p.storeId)).toEqual([]);
+    await app.close();
+  });
+
+  it("上传暂停 → 清除完成 → 图其实写进去了但上传报错（响应丢失）：任务记失败，图不永久留下，隔满 1 小时的复扫删掉它（PR #20 Codex 2 第二轮、T17）", async () => {
+    const app = mkApp();
+    const p = await productWithImage(app);
+    const store = new MemoryObjectStore();
+    const g = gate();
+    const realPut = store.put.bind(store);
+    store.put = async (k, b, c) => {
+      g.started();
+      await g.opened;
+      await realPut(k, b, c);
+      throw Object.assign(new Error("响应超时"), { code: "ResponseTimeoutError" });
+    };
+    const d = deps({ store });
+    await enqueueImageJobs(d);
+    const running = runImageJobs(d, 1000);
+    await g.begun;
+    await purgeNow(p.storeId, store, cacheRoot);
+    await clearPurgedObjects({ db: tdb.kysely, images: store, archive: new MemoryObjectStore(), imageCacheDir: cacheRoot, clock: () => new Date() });
+    g.open();
+    const r = await running;
+    expect(r.failed + r.skipped).toBeGreaterThanOrEqual(1);
+    await rescan(store, cacheRoot);
+    expect(imagesOf(store, p.storeId)).toEqual([]);
+    const pr = await tdb.kysely.selectFrom("store_purges").selectAll().where("store_id", "=", p.storeId).executeTakeFirstOrThrow();
+    expect(pr.objects_cleared_at).not.toBeNull();
     await app.close();
   });
 

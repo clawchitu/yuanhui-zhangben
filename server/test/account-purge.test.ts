@@ -573,7 +573,8 @@ describe("满 7 天删除", () => {
 
     clock.advance(1);
     const sink = logSink();
-    expect(mine(await runAccountPurges({ ...d, log: sink.log }))).toEqual({ purged: [yh.storeId], cleared: [yh.storeId] });
+    // 第一遍清掉对象，但要等隔满 1 小时的复扫做完才记清完（T17）
+    expect(mine(await runAccountPurges({ ...d, log: sink.log }))).toEqual({ purged: [yh.storeId], cleared: [] });
     const after = await rowCounts(yh.storeId);
     expect(Object.values(after).every((n) => n === 0), JSON.stringify(after)).toBe(true);
     const rec = JSON.parse(d.archive.objects.get(deletionKey(yh.storeId))!.body.toString("utf8"));
@@ -581,8 +582,10 @@ describe("满 7 天删除", () => {
     expect(await d.images.list(storePrefix("images", yh.storeId))).toEqual([]);
     expect(await d.archive.list(storePrefix("exports", yh.storeId))).toEqual([]);
     await expect(readdir(path.join(cacheRoot, "images", yh.storeId))).rejects.toThrow(/ENOENT/);
+    clock.advance(60 * 60_000);
+    expect(mine(await runAccountPurges(d))).toEqual({ purged: [], cleared: [yh.storeId] });
     const purge = await tdb.kysely.selectFrom("store_purges").selectAll().where("store_id", "=", yh.storeId).executeTakeFirstOrThrow();
-    expect([purge.purged_at.getTime(), purge.objects_cleared_at?.getTime(), purge.last_error]).toEqual([T0 + DELETE_GRACE_MS + 1, T0 + DELETE_GRACE_MS + 1, null]);
+    expect([purge.purged_at.getTime(), purge.objects_cleared_at?.getTime(), purge.last_error]).toEqual([T0 + DELETE_GRACE_MS + 1, T0 + DELETE_GRACE_MS + 1 + 60 * 60_000, null]);
     // 别的店：库里的行、OSS 图片、本机缓存都还在；撤回的店也在
     expect(await rowCounts(keep.storeId)).toEqual(keepBefore);
     expect((await d.images.list(storePrefix("images", keep.storeId))).length).toBe(2);
@@ -737,8 +740,63 @@ describe("满 7 天删除", () => {
     expect(d.archive.objects.has(deletionKey(s.storeId))).toBe(true);
     expect((await rowCounts(s.storeId)).stores).toBe(0);
     broken = false;
+    clock.advance(60 * 60_000);
     expect(await clearPurgedObjects(d)).toContain(s.storeId);
     expect(await d.images.list(storePrefix("images", s.storeId))).toEqual([]);
+    await s.app.close();
+  });
+
+  it("清除之后才落地的图片、导出包（T17）：清除后马上做的对象清理不算清完；隔满 1 小时按前缀复扫一遍删掉才记 objects_cleared_at；复扫失败下一轮重试；两个进程同时复扫只记一次", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "迟到对象店");
+    const d = deps(clock);
+    await plantObjects(d, s.storeId, s.productIds);
+    const t = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    clock.advance(DELETE_GRACE_MS + 1);
+    const purgedAt = clock.t;
+    const r0 = await runAccountPurges(d);
+    // 第一遍照样删（已有的对象马上就没了），但还不算清完
+    expect([r0.purged.includes(s.storeId), r0.cleared.includes(s.storeId)]).toEqual([true, false]);
+    expect(await d.images.list(storePrefix("images", s.storeId))).toEqual([]);
+    const cleared = async () => (await tdb.kysely.selectFrom("store_purges").select("objects_cleared_at").where("store_id", "=", s.storeId).executeTakeFirstOrThrow()).objects_cleared_at;
+    expect(await cleared()).toBeNull();
+    // 清除之后才落地：在途的图片上传（上传报错、拿锁失败都没删成）、迟到的导出包、本机缓存回填
+    const lateImage = imageKey(s.storeId, s.productIds[0]!, 1, "cd".repeat(32));
+    const lateExport = `exports/${s.storeId}/${String(T0).padStart(13, "0")}-${"e".repeat(16)}.zip`;
+    const plantLate = async () => {
+      await d.images.put(lateImage, Buffer.from("jpg"), "image/jpeg");
+      await d.archive.put(lateExport, Buffer.from("zip"), "application/zip");
+      const f = path.join(cacheRoot, ...lateImage.split("/"));
+      await mkdir(path.dirname(f), { recursive: true });
+      await writeFile(f, "jpg");
+    };
+    await plantLate();
+    // 不到 1 小时：不复扫、不记完成
+    clock.t = purgedAt + 59 * 60_000;
+    expect((await runAccountPurges(d)).cleared).not.toContain(s.storeId);
+    expect(await cleared()).toBeNull();
+    // 满 1 小时，复扫失败：不记完成，下一轮重试
+    clock.t = purgedAt + 60 * 60_000;
+    let broken = true;
+    const del = d.archive.delete.bind(d.archive);
+    d.archive.delete = async (k) => {
+      if (broken) throw Object.assign(new Error("网络断了"), { code: "ECONNRESET" });
+      return del(k);
+    };
+    expect((await runAccountPurges(d)).cleared).not.toContain(s.storeId);
+    expect(await cleared()).toBeNull();
+    broken = false;
+    // 两个进程同时复扫：都不报错，只有一个记完成
+    const both = await Promise.all([clearPurgedObjects(d), clearPurgedObjects(d)]);
+    expect(both.flat().filter((x) => x === s.storeId)).toEqual([s.storeId]);
+    expect((await cleared())?.getTime()).toBe(purgedAt + 60 * 60_000);
+    expect(await d.images.list(storePrefix("images", s.storeId))).toEqual([]);
+    expect(await d.archive.list(storePrefix("exports", s.storeId))).toEqual([]);
+    await expect(readdir(path.join(cacheRoot, "images", s.storeId))).rejects.toThrow(/ENOENT/);
+    expect(d.archive.objects.has(deletionKey(s.storeId))).toBe(true);
+    // 记完成之后再跑：幂等，什么都不做
+    expect((await runAccountPurges(d)).cleared).not.toContain(s.storeId);
     await s.app.close();
   });
 

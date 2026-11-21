@@ -13,7 +13,8 @@
 //    删在线数据之前（锁内、确认撤回不了之后）先往存档桶写删除记录 deletions/<店>.json（不在数据库里、不随备份回滚，
 //    restore.sh 恢复后重放，S10b）；写不成（没配存档桶、写失败）就不删，告警、下一轮重来（PR #20 Codex 1）。
 // 3. 对象清理（clearPurgedObjects）：对 store_purges 里还没清理完的店，再写一遍删除记录（幂等），删商品图桶的 images/<店>/、存档桶的 exports/<店>/、
-//    本机图片缓存目录里这家店的子树（T12），都成功了才记 objects_cleared_at。每一步都可重做，失败下一轮接着来。
+//    本机图片缓存目录里这家店的子树（T12）。清除之后马上做第一遍；隔满 1 小时（RESCAN_DELAY_MS）再按前缀扫一遍，
+//    这一遍成功了才记 objects_cleared_at（T17）。每一步都可重做，失败下一轮接着来。
 // 在途的图片任务、GET /v1/images 的缓存回填可能在清理之后才把对象落地（PR #20 Codex 2）：清除删掉了这家店的 image_jobs，
 // 在途的那个传完之后在店铺锁里复查店还在不在，不在就删掉刚传的（jobs/image-fetch.ts）；缓存回填写完文件后同样复查（cacheFillGuard）。
 // 删不掉就撤回 objects_cleared_at，交给下一轮对象清理（dropLateObject）。
@@ -110,6 +111,8 @@ export async function runOneExportJob(d: AccountJobDeps): Promise<ExportOutcome 
       out.end();
       await closed;
     }
+    // 生成期间这家店被到期清除了（清除删掉了任务行）：不传。清除提交之后不再有新上传开始，迟到的只可能是已在途的（T17 复扫兜底）
+    if (await storeGone(d.db, storeId)) return { store_id: storeId, result: "superseded" };
     key = exportKey(storeId, requestedAt, randomBytes(8).toString("hex"));
     // 边读文件边传，不把整包读进内存（PR #20 Codex 5）：生成那头分页、流式压缩，传这头也有界
     await archive.putFile(key, file, "application/zip");
@@ -353,6 +356,18 @@ export function deletionRecord(storeId: string, purgedAt: Date): Buffer {
   return Buffer.from(`${JSON.stringify({ store_id: storeId, purged_at: purgedAt.toISOString() })}\n`, "utf8");
 }
 
+/**
+ * 清除之后隔多久做最后那一遍复扫（§14 T17，PR #20 Fable 第二轮裁定 ②）。清除提交之后不会再有新的上传开始
+ * （图片任务传之前复查店还在、导出任务传之前复查店还在、清除删掉了两种任务），在途的上传都有时限（OSS 请求超时 10 秒）；
+ * 隔够 1 小时再按前缀扫一遍，进程退出、上传报错（对象其实写进去了）、上传后拿锁或复查失败留下的对象都会被这一遍删掉。
+ */
+export const RESCAN_DELAY_MS = 60 * 60_000;
+
+/**
+ * 对象清理：对 store_purges 里还没清完的店，按前缀删商品图、导出包、未完成的分片上传和本机缓存。
+ * 每一遍成功记 swept_at；清除后满 RESCAN_DELAY_MS 才开始的那一遍成功了才记 objects_cleared_at（返回值里只列这些店）。
+ * 一行一个事务、FOR UPDATE SKIP LOCKED：多进程同时跑各清各的，一家店同一时刻只有一个在扫。每一步都可重做。
+ */
 export async function clearPurgedObjects(d: AccountJobDeps, limit = 20): Promise<string[]> {
   const cleared: string[] = [];
   if (!d.archive) {
@@ -365,19 +380,31 @@ export async function clearPurgedObjects(d: AccountJobDeps, limit = 20): Promise
   const tried = new Set<string>();
   for (let i = 0; i < limit; i++) {
     const r = await d.db.transaction().execute(async (trx) => {
-      let q = trx.selectFrom("store_purges").select(["store_id", "purged_at"]).where("objects_cleared_at", "is", null);
+      // 这一遍开始的时间：离清除满 RESCAN_DELAY_MS 的这一遍才算复扫（T17）。第一遍做过、还没到复扫时间的先跳过，不白扫
+      const now = d.clock();
+      const rescanBefore = new Date(now.getTime() - RESCAN_DELAY_MS);
+      let q = trx
+        .selectFrom("store_purges")
+        .select(["store_id", "purged_at"])
+        .where("objects_cleared_at", "is", null)
+        .where((eb) => eb.or([eb("swept_at", "is", null), eb("purged_at", "<=", rescanBefore)]));
       if (tried.size) q = q.where("store_id", "not in", [...tried]);
       const row = await q.orderBy("purged_at").orderBy("store_id").limit(1).forUpdate().skipLocked().executeTakeFirst();
       if (!row) return null;
       tried.add(row.store_id);
+      const final = new Date(row.purged_at).getTime() <= rescanBefore.getTime();
       try {
         // 删除记录在清除时已写过；这里再写一遍（幂等），保证对象清理完时它一定在
         await archive.put(deletionKey(row.store_id), deletionRecord(row.store_id, new Date(row.purged_at)), "application/json");
         if (images) for (const k of await images.list(storePrefix("images", row.store_id))) await images.delete(k);
         for (const k of await archive.list(storePrefix("exports", row.store_id))) await archive.delete(k);
         await removeStoreDir(d.imageCacheDir, "images", row.store_id);
-        await trx.updateTable("store_purges").set({ objects_cleared_at: d.clock(), last_error: null }).where("store_id", "=", row.store_id).execute();
-        return { id: row.store_id, ok: true };
+        await trx
+          .updateTable("store_purges")
+          .set({ swept_at: now, objects_cleared_at: final ? now : null, last_error: null })
+          .where("store_id", "=", row.store_id)
+          .execute();
+        return { id: row.store_id, ok: final };
       } catch (e) {
         await trx
           .updateTable("store_purges")

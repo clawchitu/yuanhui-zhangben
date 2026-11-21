@@ -37,7 +37,11 @@ CREATE TABLE export_jobs (
 CREATE TABLE store_purges (
   store_id           uuid PRIMARY KEY,
   purged_at          timestamptz NOT NULL,
+  -- 最近一次按前缀清理成功的时间。清除之后至少隔 1 小时（RESCAN_DELAY_MS）的那一遍做完才记 objects_cleared_at（§14 T17）：
+  -- 在途的上传（图片、导出包）可能在第一遍之后才落地
+  swept_at           timestamptz,
   objects_cleared_at timestamptz,
   attempts           integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-  last_error         text
+  last_error         text,
+  CHECK (objects_cleared_at IS NULL OR swept_at IS NOT NULL)
 );

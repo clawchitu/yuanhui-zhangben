@@ -110,6 +110,9 @@ async function processJob(d: ImageJobDeps, store: ObjectStore, job: Claimed): Pr
     await finish(d, job, null);
     return "skipped";
   }
+  // 上传开始之后出错（上传报错时对象可能其实写进去了、上传后拿锁或复查失败）：店已被清除就顺手删掉这个键；
+  // 这一步本身失败也不要紧，清除之后隔满 1 小时的复扫会按前缀删掉它（T17，PR #20 Codex 2 第二轮）
+  let uploading: string | null = null;
   try {
     const raw = await (d.fetchImage ?? defaultFetch)(job.source_url);
     const thumb = await makeThumbnail(raw);
@@ -121,6 +124,7 @@ async function processJob(d: ImageJobDeps, store: ObjectStore, job: Claimed): Pr
       return "skipped";
     }
     // 上传在锁外做（不拿着店铺锁等网络）；写回时在锁里再确认一次商品还没图、店还在
+    uploading = key;
     await store.put(key, thumb, "image/jpeg");
     const wrote = await withStoreLock(d.db, job.store_id, async (tx) => {
       // 清除在店铺锁里删店：这里看到店没了，清除已提交，它的对象清理可能已经做完 → 刚传的图得自己删（删不掉交给下一轮清理）
@@ -150,6 +154,14 @@ async function processJob(d: ImageJobDeps, store: ObjectStore, job: Claimed): Pr
   } catch (e) {
     const reason = e instanceof ImageRejected ? e.reason : "error";
     const permanent = PERMANENT.has(reason);
+    const key = uploading;
+    if (key) {
+      try {
+        if (await storeGone(d.db, job.store_id)) await dropLateObject(d.db, job.store_id, () => store.delete(key), d.log);
+      } catch {
+        // 复查都做不了（数据库断了）：交给复扫
+      }
+    }
     // last_error 只记原因代码，不记地址和响应内容
     await d.db
       .updateTable("image_jobs")

@@ -263,6 +263,7 @@ export interface ExportJobsTable {
 export interface StorePurgesTable {
   store_id: string;
   purged_at: Ts;
+  swept_at: Ts | null;
   objects_cleared_at: Ts | null;
   attempts: Generated<number>;
   last_error: string | null;

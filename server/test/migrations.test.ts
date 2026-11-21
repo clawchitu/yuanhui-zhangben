@@ -22,7 +22,7 @@ const SPEC = specFromPlan();
 const S09_TABLES: Record<string, string[]> = {
   demo_stores: ["store_id", "review_password_hash", "seeded_at", "next_reset_at"],
   export_jobs: ["store_id", "requested_at", "object_key", "done_at", "attempts", "next_try_at", "last_error", "cancelled_at", "stale_cleared_at"],
-  store_purges: ["store_id", "purged_at", "objects_cleared_at", "attempts", "last_error"],
+  store_purges: ["store_id", "purged_at", "swept_at", "objects_cleared_at", "attempts", "last_error"],
 };
 
 // 索引：名字 → 定义里必须出现的片段（结构回归保护，Codex 审核意见）
