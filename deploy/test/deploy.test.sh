@@ -6,7 +6,13 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 DEPLOY="${DEPLOY_SH:-$HERE/../deploy.sh}"
 REG=registry-vpc.cn-shanghai.aliyuncs.com/yuanhui
-OLD=1111111; NEW=2222222; BAD=3333333
+# 标签要是本机仓库里真有的提交（发布成功后打 release-<前 12 位> 标签、推到 origin，PR #27 Codex）：沙盒仓库里建三个空提交
+G=$(mktemp -d)
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
+git -C "$G" init -q && for n in 1 2 3; do git -C "$G" commit -q --allow-empty -m "c$n"; done
+OLD=$(git -C "$G" rev-parse HEAD~2); NEW=$(git -C "$G" rev-parse HEAD~1); BAD=$(git -C "$G" rev-parse HEAD)
+export RELEASE_GIT_DIR=$G
+trap 'rm -rf "$G"' EXIT
 pass=0; fail=0; T=""
 # 用 UTF-8 区域跑（Mac 的 /bin/bash 3.2 在 UTF-8 下把「$why，」里紧跟的中文字节算进变量名，报 unbound variable；
 # LC_ALL=C 时测不出来，PR #23 Codex 5、Fable 必须改 3）。Mac 上 C.UTF-8 测不出来，先挑 en_US.UTF-8；CI 的 Ubuntu 只有 C.UTF-8
@@ -22,7 +28,11 @@ setup() {
   # 默认有一份刚成功的备份（迁移前门禁放行，S10b、T20）；定时器装进沙盒目录
   mkdir -p "$T/remote/backup" "$T/units"; date +%s > "$T/remote/backup/last-success"
   export SYSTEMD_DIR="$T/units"
+  # 每个用例一个新的空 origin，沙盒仓库里的发布标签清掉
+  git init -q --bare "$T/origin.git"; git -C "$G" remote remove origin 2>/dev/null; git -C "$G" remote add origin "$T/origin.git"
+  for x in $(git -C "$G" tag -l 'release-*'); do git -C "$G" tag -d "$x" > /dev/null; done
 }
+rtags() { git -C "$T/origin.git" for-each-ref --format='%(refname:short) %(objecttype) %(*objectname)' 'refs/tags/release-*'; }
 # 已经成功发布过 ${OLD}：current-tag、.env、正在跑的容器、上一份 compose.yml / Caddyfile 都是它
 with_prev() {
   echo "$OLD" > "$T/remote/current-tag"
@@ -215,6 +225,37 @@ setup; with_prev; IMAGES_TAR="$T/nope.tar.gz" deploy "$NEW" --execute
 check "tar 不存在：退出码 2、没有 ssh（实际 $(rc)）" [ "$(rc)" = 2 ] && [ ! -s "$FAKE_LOG" ]
 setup; with_prev; printf x > "$T/a;b.tar"; IMAGES_TAR="$T/a;b.tar" deploy "$NEW" --execute
 check "tar 文件名带分号：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ] && [ ! -s "$FAKE_LOG" ]
+
+t "发布标签（PR #27 Codex）：成功后打附注标签 release-<前 12 位> 并推到 origin；失败、门禁拒绝、dry-run 不打；重复发布幂等；推不上退出码 6"
+setup; with_prev; deploy "$NEW" --execute
+check "退出码 0（实际 $(rc)）" [ "$(rc)" = 0 ]
+check "origin 上有附注标签 release-${NEW:0:12}，指向这次的提交（实际：$(rtags)）" [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ]
+check "输出里写了标签和按标签重打的命令" grep -q "gh workflow run image.yml --ref release-${NEW:0:12}" "$T/out"
+deploy "$NEW" --execute
+ok() { [ "$(rc)" = 0 ] && [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ]; }; check "同一个提交再发布一次：退出码 0、标签不变（实际 $(rc)）" ok
+deploy "${NEW:0:7}" --execute
+ok() { [ "$(rc)" = 0 ] && [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ]; }; check "用 7 位短提交号发布：同一个标签（实际 $(rc)：$(rtags)）" ok
+setup; with_prev; export FAKE_BAD_IMAGE=":$BAD"; deploy "$BAD" --execute; unset FAKE_BAD_IMAGE
+ok() { [ "$(rc)" = 1 ] && [ -z "$(rtags)" ] && [ -z "$(git -C "$G" tag -l 'release-*')" ]; }; check "发布失败已回滚：退出码 1、不打标签（实际 $(rc)：$(rtags)）" ok
+setup; with_prev; rm "$T/remote/backup/last-success"; deploy "$NEW" --execute
+ok() { [ "$(rc)" = 5 ] && [ -z "$(rtags)" ]; }; check "门禁拒绝：退出码 5、不打标签" ok
+setup; with_prev; deploy "$NEW"
+ok() { [ "$(rc)" = 0 ] && [ -z "$(rtags)" ] && grep -q "^\[dry-run\] 发布成功后：git tag -a release-" "$T/out"; }; check "dry-run：不打标签，只打印" ok
+setup; with_prev; export FAKE_SYSTEMCTL_FAIL=1; deploy "$NEW" --execute; unset FAKE_SYSTEMCTL_FAIL
+ok() { [ "$(rc)" = 4 ] && [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ]; }; check "定时器没装上（退出码 4，发布成功）：照样打标签，退出码仍是 4" ok
+setup; with_prev; git -C "$G" remote set-url origin "$T/no-such-remote.git"; deploy "$NEW" --execute
+ok() { [ "$(rc)" = 6 ] && [ "$(tag)" = "$NEW" ]; }; check "推不上 origin：退出码 6（实际 $(rc)），发布本身成功（current-tag 是新的）" ok
+check "提示发布已成功、标签要补" grep -q "发布本身已成功，但发布标签没打上" "$T/out"
+setup; with_prev; deploy 4444444 --execute
+ok() { [ "$(rc)" = 6 ] && grep -q "先 git fetch" "$T/out"; }; check "本机仓库里没有这个提交：退出码 6（实际 $(rc)）、提示先 git fetch" ok
+setup; with_prev; git -C "$G" tag -a "release-${NEW:0:12}" -m x "$OLD"; deploy "$NEW" --execute
+ok() { [ "$(rc)" = 6 ] && [ "$(git -C "$G" rev-parse "release-${NEW:0:12}^{commit}")" = "$OLD" ]; }; check "同名标签已指向别的提交：不动它，退出码 6（实际 $(rc)）" ok
+
+t "image.yml 能按发布标签重打（PR #27 Codex）：workflow_dispatch 触发、tar 那一步不限于 PR、标签 = 检出的提交号"
+Y="$HERE/../../.github/workflows/image.yml"
+check "有 workflow_dispatch" grep -q "^  workflow_dispatch:" "$Y"
+check "打 tar 的条件：不是 PR 就打" grep -q "if: github.event_name != 'pull_request' ||" "$Y"
+check "非 PR 时标签是 github.sha（按标签触发时就是标签指向的提交）" grep -q "TAG: \${{ github.event.pull_request.head.sha || github.sha }}" "$Y"
 
 t "部署脚本里没有紧贴非 ASCII 字符的 \$变量（Bash 3.2 + UTF-8 下会被读成另一个变量名；一律写成 \${变量}）"
 # shellcheck disable=SC2016

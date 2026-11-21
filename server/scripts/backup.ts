@@ -3,7 +3,7 @@
 //       开快照、算清单写 <dir>/manifest.json，快照 id 写 <dir>/snapshot，然后等 <dir>/dump.done（或 dump.failed）出现再结束事务
 //   node scripts/backup.ts upload --dir <工作目录>
 //       加密 <dir>/db.dump、上传 dump、清单、心跳；打印一行 JSON（event=backup_uploaded）
-//   node scripts/backup.ts status        备份桶状态（份数、最旧、心跳；lifecycle_stale = 生命周期没生效）
+//   node scripts/backup.ts status        备份桶状态（实际用的两个桶 source、份数、最旧、心跳；lifecycle_stale = 生命周期没生效）
 // 环境变量：DATABASE_URL（snapshot）、BACKUP_PASSPHRASE（upload）、备份存储见 src/backup/store.ts
 // 日志一律一行 JSON；退出码 0 成功，1 失败，2 参数不对
 import { access, rename, writeFile, readFile } from "node:fs/promises";
@@ -11,7 +11,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createDb } from "../src/db.ts";
 import { backupStatus, uploadBackup, withBackupSnapshot } from "../src/backup/backup.ts";
-import { backupStoreFromEnv } from "../src/backup/store.ts";
+import { backupStoreFromEnv, backupStoreSource } from "../src/backup/store.ts";
 import type { Manifest } from "../src/backup/manifest.ts";
 
 const log = (o: object) => console.log(JSON.stringify({ at: new Date().toISOString(), ...o }));
@@ -56,7 +56,7 @@ async function upload(dir: string) {
   const r = await uploadBackup(store, { dumpFile: path.join(dir, "db.dump"), manifest, passphrase, now: new Date(), workDir: dir });
   log({ event: "backup_uploaded", backup_id: r.id, dump_bytes: r.dumpBytes, encrypted_bytes: r.encryptedBytes, upload_ms: Date.now() - t0, stores: Object.keys(manifest.stores).length });
   const st = await backupStatus(store, new Date());
-  log({ event: "backup_status", count: st.count, oldest: st.oldest, oldest_age_days: st.oldest_age_days, ...(st.lifecycle_stale ? { alert: "backup_lifecycle_stale" } : {}) });
+  log({ event: "backup_status", source: backupStoreSource(), count: st.count, oldest: st.oldest, oldest_age_days: st.oldest_age_days, ...(st.lifecycle_stale ? { alert: "backup_lifecycle_stale" } : {}) });
 }
 
 try {
@@ -65,7 +65,7 @@ try {
     await (cmd === "snapshot" ? snapshot(dir) : upload(dir));
   } else if (cmd === "status") {
     const st = await backupStatus(backupStoreFromEnv(), new Date());
-    log({ event: "backup_status", ...st, ...(st.lifecycle_stale ? { alert: "backup_lifecycle_stale" } : {}) });
+    log({ event: "backup_status", source: backupStoreSource(), ...st, ...(st.lifecycle_stale ? { alert: "backup_lifecycle_stale" } : {}) });
   } else {
     fail({ event: "backup_usage", code: "usage", usage: "snapshot --dir D | upload --dir D | status" }, 2);
   }

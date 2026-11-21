@@ -232,7 +232,7 @@ export class ServerMonitor {
     });
     await a.condition(m.yuanhui_backup_lifecycle_stale === 1, {
       key: "backup_lifecycle_stale",
-      title: "最旧的备份超过 36 天：OSS 生命周期规则没生效，「35 天内彻底清除」不成立",
+      title: "最旧的备份超过 38 天：OSS 生命周期规则没生效，「35 天内彻底清除」不成立",
       severity: "critical",
     });
 

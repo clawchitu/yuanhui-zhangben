@@ -1,6 +1,6 @@
 // 从 api 自己的 pino 日志里取告警（S10c）。app.ts 把每一行日志在写到 stdout 的同时交给 LogTap.line()：
 //   - 带 alert 字段的行（§14 T16：account_delete_export、account_delete_export_failed、export_no_archive、purge_no_archive、
-//     object_discard_failed、export_discard_lost；本段新加 login_locked、account_delete_request、kuainiao_quota）→ 事件类告警；
+//     object_discard_failed、export_discard_lost、purge_objects_failed；本段新加 login_locked、account_delete_request、kuainiao_quota）→ 事件类告警；
 //   - Fastify 的「request completed」行里 res.statusCode ≥ 500 → 记一笔，检查任务按一小时窗口数（§9.5：每小时超过 20 次告警）。
 // 这里只解析、攒着，不发；检查任务每轮 drain() 后交给 Alerter（日志回调是同步的，不在里面等网络）。
 // 转进告警的只有白名单字段（alert.ts 的 DETAIL_KEYS），日志行里别的东西（请求头、错误栈）不会带出去。
@@ -14,6 +14,7 @@ export const LOG_ALERTS: Record<string, { title: string; severity: Severity }> =
   export_no_archive: { title: "有注销导出包要生成，但没配存档桶", severity: "critical" },
   purge_no_archive: { title: "有注销到期的店，但删除记录写不了（没配存档桶 / 对象存储），暂不清除", severity: "critical" },
   object_discard_failed: { title: "待删对象多次重试仍删不掉", severity: "warning" },
+  purge_objects_failed: { title: "已清除店的对象清理连续失败（商品图桶不存在 / 配错？），导出包和图片可能还在", severity: "critical" },
   export_discard_lost: { title: "不该留的导出包没删掉，待删标记也没记上", severity: "critical" },
   login_locked: { title: "账号密码输错太多次，已锁定", severity: "warning" },
   kuainiao_quota: { title: "快鸟接口报额度用完 / 被限流", severity: "critical" },

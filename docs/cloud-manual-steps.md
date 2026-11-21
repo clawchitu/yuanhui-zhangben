@@ -16,7 +16,7 @@
   - 22/tcp：来源只填家里当前的出口 IP（`curl -s https://ifconfig.me` 查，写成 `x.x.x.x/32`）；
   - 80/tcp、443/tcp：`0.0.0.0/0`（80 给 ACME 校验和跳转）。
   - **不放 3000、5432，不放 443/udp**（不开 HTTP/3，§14 S10a-5）。
-- [ ] 家里出口 IP 变了、SSH 连不上时：控制台 → 安全组 → 改 22 那条的来源为新 IP（不要临时改成 `0.0.0.0/0`）；改不了时用控制台的 VNC 远程连接。
+- [ ] 家里出口 IP 变了、SSH 连不上时：照 `runbook.md`「SSH 连不上」用 aliyun CLI 先加新 `/32`、再删旧的（不要临时改成 `0.0.0.0/0`）；部署机不可用时 Haoqiang 用主账号登控制台改，再不行用 VNC 远程连接。
 - [ ] 出方向默认放行（要连 Let's Encrypt、OSS 内网）。
 
 ## 2. SSH 只许密钥（§9.1）
@@ -31,7 +31,7 @@
   - 因为对象覆盖不了，要覆盖的心跳 `heartbeat/backup.json` 不放这里，放存档桶（`server/src/backup/store.ts` 的 `BACKUP_OSS_ARCHIVE_BUCKET`）。
 - [x] `yuanhui-archive`（存档桶，api 的 `OSS_ARCHIVE_BUCKET`）：`exports/`、`deletions/`、`heartbeat/`。不开合规保留（导出包到期和撤回时代码要删）。
   - 生命周期只按前缀：`exports/` **30 天**后删除（兜底）、碎片 7 天；`deletions/` **不配，永久保留**（必须活得比任何含这家店的备份都久）；`heartbeat/` 不配（一个对象，每次覆盖）。
-- [ ] `yuanhui-img`（商品图，api 的 `OSS_BUCKET`）：T9 做完、开商品图之前**不建**（负责人只批了上面两个桶）。`.env` 里先填这个名字占位（`loadConfig` 要求和存档桶不同）。注意：注销清除会按前缀扫 `images/<店>/`，桶不存在时这一步会报错，正式开放注销前要建好（见 runbook「部署实测进度」）。
+- [ ] `yuanhui-img`（商品图，api 的 `OSS_BUCKET`）：**现在就建空桶**（PR #27 Fable S10r-7：私有、不开版本控制、不配合规保留、不配生命周期；空桶不计费），**待负责人同意**（当初只批了上面两个桶）。没有这个桶时注销清除扫 `images/<店>/` 一直失败、对象清理记不成清完（`exports/` 照样删，第 3 次起告警 `purge_objects_failed`）；代码不跳过不存在的桶。`.env` 里填这个名字（`loadConfig` 要求和存档桶不同）。TestFlight 前、M10 之前建好。
 - [x] 两个桶都**私有**、**都不开版本控制**（开了「删除」只是加删除标记，注销后彻底清除不成立，§14 T21）。
 - [x] 导出配置贴进部署实测 PR：`aliyun oss lifecycle --method get oss://<桶>`、`aliyun oss worm get oss://yuanhui-backup`、`aliyun oss bucket-versioning --method get oss://<桶>`。
 - [x] ECS 走内网 endpoint，`.env` 里写完整地址、带 `https://`：`OSS_ENDPOINT=https://oss-cn-shanghai-internal.aliyuncs.com`（裸域名启动时会被拒绝）。

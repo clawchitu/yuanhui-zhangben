@@ -7,7 +7,11 @@
 #     tar 传到 ECS 的 incoming/，remote-deploy.sh 先 docker load、不再 docker pull；ACR 不填时镜像名前缀是 local/yuanhui
 #   默认 dry-run，只打印。--skip-backup-gate：跳过迁移前备份门禁（§14 T20），ECS 上记进 backup/gate-skips.log
 # 退出码：0 成功；1 发布失败（已回滚或无可回滚）；2 参数不对（还没连服务器）；3 回滚也失败，需人工处理；
-#   4 发布成功但备份定时器没装上；5 备份门禁拒绝（没动任何东西）。
+#   4 发布成功但备份定时器没装上；5 备份门禁拒绝（没动任何东西）；6 发布成功但发布标签没打上 / 没推上去（见下）。
+# 发布标签（PR #27 Codex）：发布成功（退出码 0 或 4）后，在本机仓库给这次的提交打附注标签 release-<提交号前 12 位> 并推到 origin。
+#   镜像 tar 的 artifact 只留 3 天，ECS 整机丢了以后靠这个标签重打同一个提交的镜像：gh workflow run image.yml --ref release-…
+#   （workflow_dispatch 的 ref 只收分支或标签，不收提交号）。同一个提交重复发布、回滚到旧提交时标签已在，只再推一次（幂等）。
+#   RELEASE_GIT_DIR（默认本仓库）、RELEASE_REMOTE（默认 origin）只给测试换成沙盒仓库。
 # 幂等：同一个标签重复发布只会重建有变化的容器；迁移本身幂等（「没有新的迁移」）。
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -36,4 +40,30 @@ if [ -n "$IMAGES_TAR" ]; then
   run scp -q "$IMAGES_TAR" "${ECS_HOST:-<ECS_HOST>}:$D/incoming/"
   GATE+=(--load-images "$D/incoming/$(basename "$IMAGES_TAR")")
 fi
-remote bash "$D/incoming/remote-deploy.sh" "$TAG" "$REG" ${GATE[@]+"${GATE[@]}"}
+rc=0
+remote bash "$D/incoming/remote-deploy.sh" "$TAG" "$REG" ${GATE[@]+"${GATE[@]}"} || rc=$?
+[ "$rc" = 0 ] || [ "$rc" = 4 ] || exit "$rc"
+
+REPO="${RELEASE_GIT_DIR:-$HERE/..}"
+ORIGIN="${RELEASE_REMOTE:-origin}"
+release_tag() {
+  local sha name have
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '[dry-run] 发布成功后：git tag -a release-<%s 的前 12 位> 并 git push %s 这个标签\n' "$TAG" "$ORIGIN"
+    return 0
+  fi
+  sha=$(git -C "$REPO" rev-parse --verify --quiet "${TAG}^{commit}") || { echo "本机仓库里找不到提交 ${TAG}（先 git fetch origin）" >&2; return 1; }
+  name="release-${sha:0:12}"
+  if have=$(git -C "$REPO" rev-parse --verify --quiet "refs/tags/${name}^{commit}"); then
+    [ "$have" = "$sha" ] || { echo "标签 $name 已存在、指向别的提交 ${have}，没动它" >&2; return 1; }
+  else
+    git -C "$REPO" tag -a "$name" -m "发布 $sha → ${ECS_HOST}，$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$sha" || return 1
+  fi
+  git -C "$REPO" push -q "$ORIGIN" "refs/tags/${name}" || { echo "发布标签 $name 推不上 ${ORIGIN}" >&2; return 1; }
+  echo "发布标签：$name → ${sha}（整机恢复按它重打镜像：gh workflow run image.yml --ref ${name}，见 runbook「整机重建」）"
+}
+if ! release_tag; then
+  echo "发布本身已成功，但发布标签没打上 / 没推上去：修好后手工补（runbook「发布 / 回滚」），否则 3 天后 artifact 过期就没法按标签重打这次的镜像" >&2
+  [ "$rc" = 0 ] && rc=6
+fi
+exit "$rc"

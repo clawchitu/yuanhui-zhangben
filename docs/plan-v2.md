@@ -214,7 +214,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 |---|---|---|
 | `demo_stores` | `store_id, review_password_hash, seeded_at, next_reset_at` | 演示店的重置状态（§8 S09）。`review_password_hash` 是审核号的原始密码哈希，每日重置恢复成它；`seeded_at` 是上一次重置的时间（种子里的「今天」）；`next_reset_at` 是下一次该重置的时间，定时任务在锁内重查它，同一个周期只重置一次 |
 | `export_jobs` | `store_id, requested_at, object_key null, done_at null, attempts, next_try_at, last_error null, cancelled_at null, stale_cleared_at null` | 非演示店申请注销时同一事务插一行。`requested_at` 是这一次申请（撤回后又申请是新的一次，同一行重置）；`next_try_at` 兼作租约；`done_at` / `object_key` 同有同无，是这一版的包生成好了；`stale_cleared_at` 是比这一版更早的旧包删完了（生成和清理分开记，清理失败单独重试）；`last_error` 只记原因代码；`cancelled_at` 是撤回，定时任务删掉包再删行 |
-| `store_purges` | `store_id, purged_at, swept_at null, objects_cleared_at null, attempts, last_error null` | 已清除的店，只有店 id 和时间。在线数据删掉之后继续重试对象清理（商品图、导出包、未完成的分片上传、本机图片缓存）；`swept_at` 是最近一次按前缀清理成功，清除之后满 1 小时的那一遍复扫成功了才记 `objects_cleared_at`（T17）；迟到落地的对象删不掉时 `objects_cleared_at` 被撤回成空，下一轮再清。删除记录的正本在 OSS `deletions/`（§9.4） |
+| `store_purges` | `store_id, purged_at, swept_at null, objects_cleared_at null, attempts, last_error null, next_try_at null`（0003，失败退避，PR #27 S10r-11） | 已清除的店，只有店 id 和时间。在线数据删掉之后继续重试对象清理（商品图、导出包、未完成的分片上传、本机图片缓存）；`swept_at` 是最近一次按前缀清理成功，清除之后满 1 小时的那一遍复扫成功了才记 `objects_cleared_at`（T17）；迟到落地的对象删不掉时 `objects_cleared_at` 被撤回成空，下一轮再清。删除记录的正本在 OSS `deletions/`（§9.4） |
 | `object_discards` | `object_key, upload_id, store_id, created_at, attempts, next_try_at, last_error null` | 存档桶里该删却没删掉的对象（作废的导出包、生成失败时已经写进去的包），以及分片上传失败、中止也失败留下的残片（`upload_id` 非空，重试时中止它）；没有任务行再指向它们，所以持久化一条待删标记。导出任务每轮按退避重试，删掉才删这一行；删之前确认没有已完成的导出任务指向这个键 |
 
 ---
@@ -1449,3 +1449,20 @@ S16 的 PR（#21）Fable 审核的裁定如下（按评论原文）：
 | S16-8 | `Route.scanner` 出真页面 | 同意 `ScannerStatusView`（连接状态加一句设置说明），不补设计稿。更细的设置步骤随 S29 的店里设置说明写；「接了别的蓝牙键盘也显示已连上」按 S14-4 接受 | S16、S29 |
 | S16-9 | 「记好了」黑卡的位置（审核新增） | 黑卡不参与布局，在购物篮区居中，显示期间空篮只留虚线框；任何字号下不得把标题栏或记账按钮挤出屏幕 | S16 |
 | S16-10 | 03 标准状态要看得全（审核新增） | iPhone 13、大字模式下，03 的三样商品三行完整可见；小号步进器的 56pt 点按区不撑高行；总价放不下时先降到 48pt，再不行才上下排 | S16 |
+
+S10 部署实测的 PR（#27）Fable 审核的裁定如下（按评论原文；合并不等于 S10a / S10b / S10c 通过）：
+
+| # | 疑问 | 裁定 | 改在哪里 |
+|---|---|---|---|
+| S10r-1 | PR #27 合并算不算 S10a / S10b / S10c 完成 | 不算。只算「首次部署完成」。下面 S10r-2 至 S10r-12 做完、数字写回 runbook、经审核后才算过；后续每补一批开一个只改 runbook 的小 PR | runbook |
+| S10r-2 | S10a 还差什么 | 第 2 项家外 `nmap`、第 3 项蜂窝出口登录、第 5 项一次自动续期 + 境内一次 `curl` + 14 天观察、第 9 项压测、第 10 项加 3 个并发登录、第 12 项 T9。第 7 项按负责人决定记「不适用」，以 B3 的 `409 FileImmutable` 代替 | runbook「部署时验证」 |
+| S10r-3 | S10b 还差什么 | B1 跑满一个营业日 15 次；B5 三份口令和主账号二次验证由 Haoqiang 确认、`~/Downloads` 的明文口令文件删掉；B6 有数据后重做（含一家已清除的店、本机 api 新 epoch 同步）；B10 随压测。B11 按负责人决定记「不开」 | runbook「S10b 部署时验证」 |
+| S10r-4 | S10c 还差什么 | 通道配好、本机探测装好后 M1、M2、M4、M12；M5、M6、M8 经通道重发并记「已恢复」；M3 云监控；M7、M10、M11 要测试店和真手机；M9 随 T9 | runbook「S10c 部署时验证」 |
+| S10r-5 | 「只到 outbox」算不算通过 | 不算，标「部分」。S10c 的口径是 Chitu 收到并有截图 | runbook |
+| S10r-6 | TestFlight 发给黄总家之前的门槛 | S10r-3 的 B1、B5、B6；S10r-4 的 M1、M2、M4 和 M5 / M6 / M8 重发；看到一次证书自动续期；S10r-7、S10r-8、S10r-9；第 2、3 项补测；S10r-10 查清 | §8 S11b / TestFlight 前检查 |
+| S10r-7 | 商品图桶 `yuanhui-img` 建不建 | 现在建空桶（私有、无版本控制、无合规保留、无生命周期），需负责人同意第三个桶。不改代码跳过不存在的桶 | `cloud-manual-steps.md` 第 3 步 |
+| S10r-8 | 恢复时忘设存档桶，删除记录读成空、已注销的店复活 | `restore.sh` 头部说明补 `BACKUP_OSS_ARCHIVE_BUCKET`；OSS 模式下没设就拒绝；dry-run 打印 `deletions/` 来自哪个桶；`backup.ts status` 打印两个桶名 | `deploy/restore.sh`、`server/src/backup/` |
+| S10r-9 | 出口 IP 变了 SSH 连不上 | runbook 加「SSH 连不上」一节：怎么认、CLI 先加后删的两条命令、连带影响、主账号控制台和 VNC 兜底；真做一次演练 | runbook、`cloud-manual-steps.md` 第 1 步 |
+| S10r-10 | `ledger.late`、`ledger.lots` 两条测试本机挂、CI 过 | 另开一项查清是测试还是代码和日期 / 时区有关；查清前不发 TestFlight | 新 PR |
+| S10r-11 | 对象清理失败不告警；图片桶失败挡住 `exports/` 删除 | `store_purges.attempts` ≥ 3 打 `alert`；各桶分开处理 | `server/src/jobs/account-purge.ts`（T 项，S32 前） |
+| S10r-12 | 其余小项 | 手工回滚那句改对；ECS 旧镜像清理说明；`image.yml` 基础镜像按 digest 固定；runbook 时间统一时区；T24 那天看 `backup_lifecycle_stale` 是否误报，误报则阈值改 37 天 | runbook、`image.yml`（S32 前） |

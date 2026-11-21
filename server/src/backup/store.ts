@@ -7,6 +7,8 @@
 //   桶里的对象保留期内删不掉也覆盖不了，所以备份桶只放 backups/（键各不相同，只写不改）；
 //   要覆盖的心跳 heartbeat/backup.json 和恢复要读的 deletions/ 走这个存档桶（就是 api 的 OSS_ARCHIVE_BUCKET）。
 //   不配时和以前一样，全部键在 BACKUP_OSS_BUCKET。
+//   恢复（restoreStoreFromEnv）不许不配：没配存档桶时 deletions/ 去备份桶里列，列出来是空的、不报错，已注销的店会被恢复回来
+//   （PR #27 Fable S10r-8）。真是单桶老布局就显式写成和 BACKUP_OSS_BUCKET 同名。
 import {
   AliOssObjectStore,
   BACKUPS_PREFIX,
@@ -51,6 +53,29 @@ export function backupStoreFromEnv(env: Env = process.env): ObjectStore {
   return archive && archive !== env.BACKUP_OSS_BUCKET
     ? new SplitBackupStore(main, make(archive))
     : main;
+}
+
+/** 恢复的配置不对（没配存档桶）：scripts/restore.ts 按参数错误退出码 2 */
+export class RestoreConfigError extends Error {}
+
+/**
+ * 恢复用的对象存储：和 backupStoreFromEnv 一样，但 OSS 跑法必须显式给 BACKUP_OSS_ARCHIVE_BUCKET（deletions/ 在那个桶）。
+ * 本机目录跑法（BACKUP_STORE_DIR）不受影响：backups/、deletions/ 在同一个目录。
+ */
+export function restoreStoreFromEnv(env: Env = process.env): ObjectStore {
+  if (!env.BACKUP_STORE_DIR && !env.BACKUP_OSS_ARCHIVE_BUCKET)
+    throw new RestoreConfigError(
+      "恢复要设 BACKUP_OSS_ARCHIVE_BUCKET（删除记录 deletions/ 在存档桶 yuanhui-archive）：不设就去备份桶里找删除记录，找到的是空的，已注销的店会被恢复回来。" +
+        "单桶老布局请显式写成和 BACKUP_OSS_BUCKET 同名",
+    );
+  return backupStoreFromEnv(env);
+}
+
+/** backups/ 和 deletions/、心跳各从哪里读写（日志、dry-run 打印用；只有桶名或目录，不含凭据） */
+export function backupStoreSource(env: Env = process.env): { backups: string; deletions: string } {
+  if (env.BACKUP_STORE_DIR) return { backups: `dir:${env.BACKUP_STORE_DIR}`, deletions: `dir:${env.BACKUP_STORE_DIR}` };
+  const main = env.BACKUP_OSS_BUCKET ?? "";
+  return { backups: `oss://${main}`, deletions: `oss://${env.BACKUP_OSS_ARCHIVE_BUCKET || main}` };
 }
 
 /** backups/ 开头的键走备份桶（合规保留），其余（心跳、deletions/）走存档桶 */

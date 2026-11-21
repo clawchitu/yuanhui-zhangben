@@ -12,8 +12,13 @@
 # 环境变量（本机跑法）：
 #   DATABASE_URL         目标库（新建的空库；脚本拒绝非空且不是「恢复中」的库）。口令不进 pg_restore 的命令行，经 PGPASSWORD 传
 #   BACKUP_PASSPHRASE    加密口令（钥匙串：security find-generic-password -s yuanhui-backup-passphrase -w）
-#   BACKUP_OSS_REGION / BACKUP_OSS_BUCKET / BACKUP_OSS_ACCESS_KEY_ID / BACKUP_OSS_ACCESS_KEY_SECRET [/ BACKUP_OSS_ENDPOINT]
-#                        或 BACKUP_STORE_DIR（对象已下载到本机目录）
+#   BACKUP_OSS_REGION / BACKUP_OSS_BUCKET（yuanhui-backup）/ BACKUP_OSS_ARCHIVE_BUCKET（yuanhui-archive）/
+#   BACKUP_OSS_ACCESS_KEY_ID / BACKUP_OSS_ACCESS_KEY_SECRET [/ BACKUP_OSS_ENDPOINT]
+#                        或 BACKUP_STORE_DIR（对象已下载到本机目录，backups/ 和 deletions/ 在同一个目录）
+#   BACKUP_OSS_ARCHIVE_BUCKET 必填（PR #27 Fable S10r-8）：删除记录 deletions/ 在存档桶。不设的话会去备份桶里找，找到的是空的、
+#                        不报错，已注销的店会被恢复回来。所以 OSS 跑法没设就拒绝（退出码 2）；单桶老布局显式写成和 BACKUP_OSS_BUCKET 同名。
+#                        整机重建跑法由 compose 从 .env 的 OSS_ARCHIVE_BUCKET 带进 backup 容器，没填同样由 scripts/restore.ts 拒绝。
+#                        dry-run 第一行 restore_source 打印 backups/ 和 deletions/ 各从哪个桶读，核对一眼。
 #   PG_BIN               可选，pg_restore 所在目录
 # 退出码：0 成功（含「已恢复完成」）；1 失败（比对不一致、解密失败、目标库不对等）；2 参数不对
 set -euo pipefail
@@ -30,6 +35,11 @@ if [ -n "$CD" ]; then
 else
   [ -n "${DATABASE_URL:-}" ] || { echo "缺 DATABASE_URL（目标新库）" >&2; exit 2; }
   [ -n "${BACKUP_PASSPHRASE:-}" ] || { echo "缺 BACKUP_PASSPHRASE" >&2; exit 2; }
+  if [ -z "${BACKUP_STORE_DIR:-}" ] && [ -z "${BACKUP_OSS_ARCHIVE_BUCKET:-}" ]; then
+    echo "缺 BACKUP_OSS_ARCHIVE_BUCKET（存档桶 yuanhui-archive，删除记录 deletions/ 在那里）：不设就读不到删除记录，已注销的店会被恢复回来。" >&2
+    echo "单桶老布局请显式写成和 BACKUP_OSS_BUCKET 同名。见 docs/runbook.md「恢复」第 2 步" >&2
+    exit 2
+  fi
 fi
 t0=$(date +%s)
 W=$(mktemp -d "${TMPDIR:-/tmp}/yh-restore.XXXXXX")

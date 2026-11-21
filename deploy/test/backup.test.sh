@@ -110,7 +110,7 @@ backup
 ok() { [ "$(rc)" = 0 ] && [ "$(nbackups)" = 4 ]; }; check "锁超过 16 分钟算残留：退出码 0（实际 $(rc)）" ok
 FIRST=$(find "$STORE/backups" -name '*.dump.enc' | sort | head -1 | sed 's#.*/##; s#\.dump\.enc$##')
 
-t "S10c：桶里最旧的一份超过 36 天（生命周期没生效）→ 指标 lifecycle_stale=1；失败的那次沿用；删掉后回 0"
+t "S10c：桶里最旧的一份超过 38 天（生命周期没生效）→ 指标 lifecycle_stale=1；失败的那次沿用；删掉后回 0"
 OLD=20000101T000000Z-0123456789abcdef
 d=$(dirname "$(find "$STORE/backups" -name '*.dump.enc' | head -1)")
 cp "$(find "$STORE/backups" -name '*.dump.enc' | head -1)" "$d/$OLD.dump.enc"; cp "$(find "$STORE/backups" -name '*.manifest.enc' | head -1)" "$d/$OLD.manifest.enc"
@@ -184,6 +184,27 @@ crestore latest --execute
 ok() { [ "$(rc)" = 1 ] && grep -q "拒绝覆盖" "$T/out"; }; check "清过标记的库再恢复：拒绝覆盖" ok
 ok() { grep -q '"event":"restore_failed","alert":"restore_failed","stage":"prepare"' "$R/backup/restore-events.log"; }; check "整机重建跑法失败写进 restore-events.log（stage=prepare）" ok
 psql -q "$DATABASE_URL" -c "DROP DATABASE IF EXISTS $TARGET2 WITH (FORCE)"
+
+t "OSS 跑法没设 BACKUP_OSS_ARCHIVE_BUCKET：拒绝（deletions/ 在存档桶，读成空的话已注销的店会复活），退出码 2，不连 OSS（PR #27 Fable S10r-8）"
+# 端点指向本机一个不监听的端口：脚本真去连 OSS 的话会是「连不上」退出码 1，而不是配置检查的退出码 2
+ossrestore() {
+  env -u BACKUP_STORE_DIR BACKUP_OSS_REGION=oss-cn-shanghai BACKUP_OSS_BUCKET=yuanhui-backup BACKUP_OSS_ACCESS_KEY_ID=test-id \
+    BACKUP_OSS_ACCESS_KEY_SECRET=test-secret BACKUP_OSS_ENDPOINT=https://127.0.0.1:9 BACKUP_PASSPHRASE="$PASS" DATABASE_URL="$TGT" \
+    "$@" bash "$HERE/../restore.sh" latest > "$T/out" 2>&1; echo $? > "$T/rc"
+}
+ossrestore
+check "退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ]
+check "提示里点名 BACKUP_OSS_ARCHIVE_BUCKET 和后果" grep -q "BACKUP_OSS_ARCHIVE_BUCKET.*已注销的店" "$T/out"
+check "没有走到下载那一步" no grep -q "── 1." "$T/out"
+ossrestore BACKUP_OSS_ARCHIVE_BUCKET=
+check "设成空串也拒绝：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ]
+ossrestore BACKUP_OSS_ARCHIVE_BUCKET=yuanhui-backup
+check "显式写成和 BACKUP_OSS_BUCKET 同名（单桶老布局）：放过配置检查，之后连不上假端点，退出码 1（实际 $(rc)）" [ "$(rc)" = 1 ]
+ossrestore BACKUP_OSS_ARCHIVE_BUCKET=yuanhui-archive
+check "设了存档桶：放过配置检查，退出码 1（实际 $(rc)）" [ "$(rc)" = 1 ]
+check "dry-run 前先打印 backups/ 和 deletions/ 各从哪个桶读" grep -q '"event":"restore_source","backups":"oss://yuanhui-backup","deletions":"oss://yuanhui-archive"' "$T/out"
+restore latest
+check "本机目录跑法：打印同一个目录" grep -q "\"event\":\"restore_source\",\"backups\":\"dir:$STORE\",\"deletions\":\"dir:$STORE\"" "$T/out"
 
 t "改坏的情形都失败"
 rm -f "$R/backup/restore-events.log"
