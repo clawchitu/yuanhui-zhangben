@@ -47,14 +47,27 @@ jobs:
       - name: 镜像冒烟：镜像里真缩一张图（sharp / libvips 编解码器，S08 要求 5）
         working-directory: .
         run: docker run --rm yuanhui-api:ci node scripts/smoke-image.ts
-      - name: 部署脚本语法检查（bash -n、shellcheck）、Caddyfile 校验、compose 配置解析
+      - name: 部署脚本语法检查（bash -n、shellcheck）、单元测试（模拟 ssh / docker）、Caddyfile 校验、compose 配置解析
         working-directory: .
         run: |
-          for f in deploy/*.sh; do bash -n "$f"; done
-          shellcheck -S warning deploy/*.sh
+          for f in deploy/*.sh deploy/test/*.sh deploy/test/fakes/*; do bash -n "$f"; done
+          shellcheck -S warning deploy/*.sh deploy/test/*.sh deploy/test/fakes/*
+          bash deploy/test/deploy.test.sh
+          bash deploy/test/bootstrap.test.sh
           cp deploy/.env.example /tmp/ci.env
-          sed -i 's/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=ci-only/; s/^ACME_EMAIL=$/ACME_EMAIL=ci@example.invalid/; s/^API_IMAGE=$/API_IMAGE=yuanhui-api:ci/' /tmp/ci.env
+          sed -i 's/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=0123456789abcdef0123/; s/^ACME_EMAIL=$/ACME_EMAIL=ci@example.invalid/; s/^API_IMAGE=$/API_IMAGE=yuanhui-api:ci/; s#^CADDY_IMAGE=$#CADDY_IMAGE=registry.invalid/yuanhui/caddy:2.10.2#; s#^POSTGRES_IMAGE=$#POSTGRES_IMAGE=registry.invalid/yuanhui/postgres:16#' /tmp/ci.env
           docker compose -f deploy/compose.yml --env-file /tmp/ci.env config -q
+          # 三个镜像变量不填必须报错（不许回落到 Docker Hub）
+          for v in CADDY_IMAGE POSTGRES_IMAGE; do
+            grep -v "^$v=" /tmp/ci.env > /tmp/ci-missing.env
+            if docker compose -f deploy/compose.yml --env-file /tmp/ci-missing.env config -q 2>/dev/null; then echo "$v 没填也能过" >&2; exit 1; fi
+          done
+          # api 内存上限不许靠 swap 顶（S10a-7）；不开 443/udp（S10a-5）；三个服务都有日志轮转
+          docker compose -f deploy/compose.yml --env-file /tmp/ci.env config --format json > /tmp/compose.json
+          jq -e '.services.api.mem_limit == "536870912" and .services.api.memswap_limit == "536870912"' /tmp/compose.json
+          jq -e '[.services.caddy.ports[] | select(.protocol == "udp")] | length == 0' /tmp/compose.json
+          jq -e '[.services[] | .logging.options["max-size"]] | all' /tmp/compose.json
+          jq -e '.networks.db.internal == true' /tmp/compose.json
           docker run --rm -v "$PWD/deploy:/etc/caddy:ro" -e ACME_EMAIL=ci@example.invalid -e PUBLIC_IP=47.117.184.253 caddy:2.10.2 caddy validate --config /etc/caddy/Caddyfile.ip --adapter caddyfile
       - name: 镜像冒烟：迁移 → 启动 → /healthz 200 → 停库后 503
         working-directory: .

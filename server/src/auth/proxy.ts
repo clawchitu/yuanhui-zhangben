@@ -15,6 +15,8 @@ export function parseProxyList(raw: string): string[] {
     const fam = isIP(addr ?? "");
     if (!fam || rest.length) throw new ProxyListError(`不是合法的 IP / CIDR：${it}`);
     if (bits !== undefined && (!/^\d+$/.test(bits) || Number(bits) > (fam === 4 ? 32 : 128))) throw new ProxyListError(`前缀长度不对：${it}`);
+    // 前缀长度 0（0.0.0.0/0、::/0）等于信所有对端，伪造的头又能换额度了（PR #22 Fable，§14 S03-6 补）
+    if (bits !== undefined && Number(bits) === 0) throw new ProxyListError(`前缀长度不许是 0（等于信所有对端）：${it}`);
   }
   return items;
 }

@@ -24,6 +24,10 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ DATABASE_URL: "x", TRUST_PROXY: "1" })).toThrow(/TRUSTED_PROXY/);
     expect(() => loadConfig({ DATABASE_URL: "x", TRUST_PROXY: "1", TRUSTED_PROXY: "caddy" })).toThrow(ConfigError);
     expect(() => loadConfig({ DATABASE_URL: "x", TRUST_PROXY: "1", TRUSTED_PROXY: "10.0.0.0/33" })).toThrow(ConfigError);
+    // 前缀长度 0 等于信所有对端（PR #22 Fable，§14 S03-6 补）
+    for (const all of ["0.0.0.0/0", "::/0", "172.30.0.2, 0.0.0.0/0", "10.0.0.0/00"]) {
+      expect(() => loadConfig({ DATABASE_URL: "x", TRUST_PROXY: "1", TRUSTED_PROXY: all })).toThrow(/前缀长度/);
+    }
     expect(loadConfig({ DATABASE_URL: "x", TRUST_PROXY: "1", TRUSTED_PROXY: "172.30.0.2, 172.30.0.0/29" })).toMatchObject({
       trustProxy: true,
       trustedProxies: ["172.30.0.2", "172.30.0.0/29"],
