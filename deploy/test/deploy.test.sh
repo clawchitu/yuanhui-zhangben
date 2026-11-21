@@ -32,7 +32,9 @@ setup() {
   git init -q --bare "$T/origin.git"; git -C "$G" remote remove origin 2>/dev/null; git -C "$G" remote add origin "$T/origin.git"
   for x in $(git -C "$G" tag -l 'release-*'); do git -C "$G" tag -d "$x" > /dev/null; done
 }
-rtags() { git -C "$T/origin.git" for-each-ref --format='%(refname:short) %(objecttype) %(*objectname)' 'refs/tags/release-*'; }
+rtags() { git -C "$T/origin.git" for-each-ref --format='%(refname:short) %(objecttype) %(*objectname)' 'refs/tags/release-*' | grep -v '^release-current ' || true; }
+# origin 上 release-current 指向的提交（没有就空）
+rcur() { git -C "$T/origin.git" rev-parse --verify --quiet 'refs/tags/release-current^{commit}' || true; }
 # 已经成功发布过 ${OLD}：current-tag、.env、正在跑的容器、上一份 compose.yml / Caddyfile 都是它
 with_prev() {
   echo "$OLD" > "$T/remote/current-tag"
@@ -240,7 +242,7 @@ ok() { [ "$(rc)" = 1 ] && [ -z "$(rtags)" ] && [ -z "$(git -C "$G" tag -l 'relea
 setup; with_prev; rm "$T/remote/backup/last-success"; deploy "$NEW" --execute
 ok() { [ "$(rc)" = 5 ] && [ -z "$(rtags)" ]; }; check "门禁拒绝：退出码 5、不打标签" ok
 setup; with_prev; deploy "$NEW"
-ok() { [ "$(rc)" = 0 ] && [ -z "$(rtags)" ] && grep -q "^\[dry-run\] 发布成功后：git tag -a release-" "$T/out"; }; check "dry-run：不打标签，只打印" ok
+ok() { [ "$(rc)" = 0 ] && [ -z "$(rtags)" ] && [ -z "$(rcur)" ] && grep -q "^\[dry-run\] 发布成功后：deploy/release-tag.sh $NEW" "$T/out"; }; check "dry-run：不打标签、不动 release-current，只打印" ok
 setup; with_prev; export FAKE_SYSTEMCTL_FAIL=1; deploy "$NEW" --execute; unset FAKE_SYSTEMCTL_FAIL
 ok() { [ "$(rc)" = 4 ] && [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ]; }; check "定时器没装上（退出码 4，发布成功）：照样打标签，退出码仍是 4" ok
 setup; with_prev; git -C "$G" remote set-url origin "$T/no-such-remote.git"; deploy "$NEW" --execute
@@ -250,6 +252,58 @@ setup; with_prev; deploy 4444444 --execute
 ok() { [ "$(rc)" = 6 ] && grep -q "先 git fetch" "$T/out"; }; check "本机仓库里没有这个提交：退出码 6（实际 $(rc)）、提示先 git fetch" ok
 setup; with_prev; git -C "$G" tag -a "release-${NEW:0:12}" -m x "$OLD"; deploy "$NEW" --execute
 ok() { [ "$(rc)" = 6 ] && [ "$(git -C "$G" rev-parse "release-${NEW:0:12}^{commit}")" = "$OLD" ]; }; check "同名标签已指向别的提交：不动它，退出码 6（实际 $(rc)）" ok
+
+t "release-current（PR #27 Codex 第二轮 2）：每次发布成功都移到这次的提交，和 ECS 的 current-tag 一致；失败自动回滚不动它"
+setup; with_prev; deploy "$NEW" --execute
+check "发布成功：release-current = 这次的提交（实际 $(rcur)）" [ "$(rcur)" = "$NEW" ]
+check "origin 上 release-current 是附注标签" [ "$(git -C "$T/origin.git" cat-file -t refs/tags/release-current)" = tag ]
+export FAKE_BAD_IMAGE=":$BAD"; deploy "$BAD" --execute; unset FAKE_BAD_IMAGE
+ok() { [ "$(rc)" = 1 ] && [ "$(tag)" = "$NEW" ] && [ "$(rcur)" = "$NEW" ]; }; check "发布坏镜像、自动回滚：退出码 1，current-tag 和 release-current 都还是上一个（实际 $(rc)、$(tag)、$(rcur)）" ok
+# Codex 第二轮 1 的情形：origin 连得上但拒收推送（本机标签已打上），之后照 runbook 补救
+setup; with_prev; printf '#!/bin/sh\nexit 1\n' > "$T/origin.git/hooks/pre-receive"; chmod +x "$T/origin.git/hooks/pre-receive"; deploy "$NEW" --execute
+rm "$T/origin.git/hooks/pre-receive"
+check "origin 拒收：退出码 6（实际 $(rc)）" [ "$(rc)" = 6 ]
+check "推不上之后：本机已有发布标签（实际 $(git -C "$G" tag -l 'release-*' | tr '\n' ' ')）" [ -n "$(git -C "$G" tag -l "release-${NEW:0:12}")" ]
+ok() { RELEASE_GIT_DIR=$G bash "$HERE/../release-tag.sh" "$(cat "$T/remote/current-tag")" > "$T/out" 2>&1; }
+check "按 runbook 补救：用 ECS 的 current-tag 重跑 release-tag.sh，退出码 0" ok
+ok() { [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ] && [ "$(rcur)" = "$NEW" ]; }; check "补救后 origin 上有发布标签，release-current 是这次的（实际 $(rtags)、$(rcur)）" ok
+
+t "release-tag.sh 单独跑（runbook 的补救命令，PR #27 Codex 第二轮 1）：三种情况幂等或报错退出"
+rt() { RELEASE_GIT_DIR=$G bash "$HERE/../release-tag.sh" "$@" > "$T/out" 2>&1; echo $? > "$T/rc"; }
+setup; rt "$NEW"
+ok() { [ "$(rc)" = 0 ] && [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ] && [ "$(rcur)" = "$NEW" ]; }; check "都没有：打上并推送，release-current 指向它（实际 $(rc)）" ok
+before=$(git -C "$T/origin.git" rev-parse refs/tags/release-current); rt "$NEW"
+ok() { [ "$(rc)" = 0 ] && [ "$(git -C "$T/origin.git" rev-parse refs/tags/release-current)" = "$before" ]; }; check "原样再跑一次：退出码 0，release-current 不重打（实际 $(rc)）" ok
+setup; git -C "$G" tag -a "release-${NEW:0:12}" -m "旧脚本打的" "$NEW"; rt "$NEW"
+ok() { [ "$(rc)" = 0 ] && [ "$(rtags)" = "release-${NEW:0:12} tag $NEW" ] && [ "$(git -C "$T/origin.git" cat-file tag "release-${NEW:0:12}" | tail -1)" = "旧脚本打的" ]; }
+check "本机已有、指向同一提交：只推送，用的是本机那个标签（实际 $(rc)）" ok
+setup; git -C "$G" tag -a "release-${NEW:0:12}" -m x "$OLD"; rt "$NEW"
+ok() { [ "$(rc)" = 3 ] && [ -z "$(rtags)" ] && [ -z "$(rcur)" ] && grep -q "指向别的提交" "$T/out"; }; check "本机同名标签指向别的提交：退出码 3，什么都不推（实际 $(rc)）" ok
+setup; git -C "$G" tag -a "release-${NEW:0:12}" -m x "$OLD"; git -C "$G" push -q origin "refs/tags/release-${NEW:0:12}"; git -C "$G" tag -d "release-${NEW:0:12}" > /dev/null; rt "$NEW"
+ok() { [ "$(rc)" = 3 ] && [ -z "$(rcur)" ] && [ -z "$(git -C "$G" tag -l "release-${NEW:0:12}")" ]; }; check "origin 上同名标签指向别的提交：退出码 3，本机不打、不动 release-current（实际 $(rc)）" ok
+setup; git -C "$G" tag -a "release-${NEW:0:12}" -m "别的机器打的" "$NEW"; git -C "$G" push -q origin "refs/tags/release-${NEW:0:12}"; git -C "$G" tag -d "release-${NEW:0:12}" > /dev/null; rt "$NEW"
+ok() { [ "$(rc)" = 0 ] && [ "$(git -C "$G" rev-parse "release-${NEW:0:12}^{commit}")" = "$NEW" ] && [ "$(rcur)" = "$NEW" ]; }; check "origin 已有、本机没有：取下来，退出码 0（实际 $(rc)）" ok
+setup; rt 4444444; check "找不到提交：退出码 1（实际 $(rc)）" [ "$(rc)" = 1 ]
+rt "abc;x"; check "提交号格式不对：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ]
+rt --current; check "origin 上还没有 release-current：--current 退出码 1（实际 $(rc)）" [ "$(rc)" = 1 ]
+
+t "发布 A → 发布 B → 手工回滚到 A（用 A 再发布一次）→ 整机恢复按 release-current 取到 A（PR #27 Codex 第二轮 2）"
+setup; deploy "$OLD" --execute; a1=$(rc); sleep 1; deploy "$NEW" --execute; a2=$(rc); sleep 1; deploy "$OLD" --execute
+check "三次发布都成功（实际 $a1 $a2 $(rc)）" [ "$a1$a2$(rc)" = 000 ]
+check "ECS 的 current-tag 是 A" [ "$(tag)" = "$OLD" ]
+check "origin 上两个发布标签都在" [ "$(rtags | wc -l | tr -d ' ')" = 2 ]
+check "release-current 是 A（实际 $(rcur)）" [ "$(rcur)" = "$OLD" ]
+newest=$(git -C "$T/origin.git" for-each-ref --sort=-creatordate --format='%(refname:short) %(*objectname)' 'refs/tags/release-*' | grep -v '^release-current ' | head -1 | cut -d' ' -f2)
+check "（旧做法按创建时间取最新的会取到被回滚掉的 B）" [ "$newest" = "$NEW" ]
+# 恢复在另一台机器上做：新克隆 origin，再在旧仓库（本机标签是旧的 release-current）各取一次
+git clone -q "$T/origin.git" "$T/fresh"
+ok() { [ "$(RELEASE_GIT_DIR=$T/fresh bash "$HERE/../release-tag.sh" --current 2> "$T/out")" = "$OLD release-${OLD:0:12}" ]; }
+check "新克隆上 release-tag.sh --current 取到 A" ok
+git -C "$G" tag -f -a release-current -m stale "$NEW" > /dev/null
+ok() { [ "$(RELEASE_GIT_DIR=$G bash "$HERE/../release-tag.sh" --current 2> "$T/out")" = "$OLD release-${OLD:0:12}" ]; }
+check "本机 release-current 是旧的（指向 B）：--current 强制取 origin 的，仍取到 A" ok
+case "$(tag)" in "${OLD:0:${#OLD}}"*) okc=1;; *) okc=0;; esac
+check "取到的提交和 ECS current-tag 一致" [ "$okc" = 1 ]
 
 t "image.yml 能按发布标签重打（PR #27 Codex）：workflow_dispatch 触发、tar 那一步不限于 PR、标签 = 检出的提交号"
 Y="$HERE/../../.github/workflows/image.yml"

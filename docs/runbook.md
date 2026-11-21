@@ -24,10 +24,12 @@ Compose（`deploy/compose.yml`）：
 
 ## 发布 / 回滚
 - 发布：同上第 6 步（40 位完整提交号）。`deploy.sh` 在第一条 ssh 之前校验 `IMAGES_TAR`（文件存在、文件名）或 `ACR`、`ECS_HOST`、标签（7–40 位小写十六进制），不对退出码 2。
-- **发布标签**（PR #27 Codex）：发布成功（退出码 0 或 4）后，`deploy.sh` 在本机仓库给这次的提交打附注标签 `release-<提交号前 12 位>`（说明里有发布时间和 ECS）并 `git push origin` 这个标签；输出最后一行「发布标签：…」。镜像 artifact 只留 3 天，ECS 丢了以后靠这个标签重打同一个提交的镜像（`workflow_dispatch` 的 `--ref` 只收分支或标签，不收提交号）。所以发布前本机仓库要有这个提交（`git fetch origin`）。同一个提交重复发布、回滚到旧提交时标签已在，只再推一次。标签打不上或推不上：发布本身不回滚，退出码 6；修好后手工补：`git tag -a release-<前 12 位> -m "发布 <40 位>" <40 位> && git push origin refs/tags/release-<前 12 位>`。看发布历史：`git fetch --tags origin && git for-each-ref --sort=-creatordate --format='%(creatordate:iso) %(refname:short) %(*objectname) %(contents:subject)' 'refs/tags/release-*'`。
+- **发布标签**（PR #27 Codex）：发布成功（退出码 0 或 4）后，`deploy.sh` 调 `deploy/release-tag.sh <提交号>`：给这次的提交打附注标签 `release-<提交号前 12 位>`（说明里有发布时间和 ECS，永不移动），再把**移动标签 `release-current`** 强制移到这次的提交，都推到 origin；输出最后一行「发布标签：…」。`release-current` 每次发布成功都跟着走（手工回滚也是一次发布，见下），所以它和 ECS 上的 `current-tag` 一致；发布失败自动回滚时两者都不变。镜像 artifact 只留 3 天，ECS 丢了以后按 `release-current` 取版本、按 `release-<前 12 位>` 重打同一个提交的镜像（`workflow_dispatch` 的 `--ref` 只收分支或标签，不收提交号）。所以发布前本机仓库要有这个提交（`git fetch origin`）。
+  - 标签打不上或推不上：发布本身不回滚，退出码 6。修好（网络、权限）后**用 ECS 上的 `current-tag` 重跑**：`deploy/release-tag.sh "$(ssh root@47.117.184.253 cat /opt/yuanhui/current-tag)"`。脚本幂等：本机、origin 都没有就打上并推；本机已有且指向同一提交（上次推送失败留下的）就只推；origin 有、本机没有就取下来；同名标签在本机或 origin 指向别的提交就什么都不动、退出码 3（需人工看）。退出码 1 是找不到提交或连不上 origin，可重跑。用 ECS 的 `current-tag` 而不是自己记的提交号，是为了下一次发布之后再补也不会把 `release-current` 拨回旧版本。
+  - 看发布历史：`git fetch --force --tags origin && git for-each-ref --sort=-creatordate --format='%(creatordate:iso) %(refname:short) %(*objectname) %(contents:subject)' 'refs/tags/release-*'`。**这是标签第一次打的时间，不是线上版本**：回滚到旧提交不新打标签，最新一行可能是被回滚掉的版本。当前线上版本只看 `deploy/release-tag.sh --current`（或 ECS 上的 `current-tag`）。
 - ECS 上 `remote-deploy.sh` 的顺序：（`--load-images` 时先 `docker load`、删掉 tar、确认 tar 里有 `api:<标签>`）→ 校验新 compose 和新 Caddyfile → 拉镜像（tar 时不拉）→ 备份当前配置到 `prev/` → 起 Postgres 等健康 → `migrate` → 换 `API_IMAGE` → `up -d` → 探 `/healthz` → 镜像内缩图冒烟 → `caddy reload`。**从起 Postgres 到重载 Caddy 任何一步失败**，自动换回 `prev/` 里的配置和上一个镜像，再探一次健康、重载一次 Caddy；回滚这几步也失败则退出码 3。
 - `current-tag` 只在整套成功后写；失败时它保持上一个成功的标签。退出码：0 成功；1 失败已回滚（或首次发布没有可回的）；2 参数 / `.env` 不对，什么都没动；3 回滚也失败，需人工；4 发布成功但备份定时器没装上；5 备份门禁拒绝，什么都没动；6 发布成功但发布标签没打上 / 没推上（见上）。
-- 手工回滚 = 用上一个标签再跑一次 `deploy.sh`：上一个镜像还在 ECS 上时，不带 `IMAGES_TAR`、带 `ACR=local/yuanhui` 即可（`remote-deploy.sh` 本机已有镜像就不 `docker pull`，`4d18f4e`）；镜像已被清掉时带上那次的 tar（过期了按发布标签重打）。
+- 手工回滚 = 用上一个标签再跑一次 `deploy.sh`（成功后 `current-tag` 和 `release-current` 都回到这个提交）：上一个镜像还在 ECS 上时，不带 `IMAGES_TAR`、带 `ACR=local/yuanhui` 即可（`remote-deploy.sh` 本机已有镜像就不 `docker pull`，`4d18f4e`）；镜像已被清掉时带上那次的 tar（过期了按发布标签重打）。
 - 旧镜像：tar 路径下 ECS 上的旧 api 镜像不会自动清，每次发布多约 300 MB。每月看一次 `docker images local/yuanhui/api`，留 `current-tag` 和最近 3 个，其余 `docker rmi local/yuanhui/api:<提交号>`（不要 `docker image prune -a`，会连回滚要用的一起删）。
 - **迁移前备份门禁**（S10b，§14 T20）：`remote-deploy.sh` 动任何东西之前看 `/opt/yuanhui/backup/last-success`，营业时间（上海 8:00–22:59）超过 2 小时、其余时间超过 6 小时没有成功备份 → 退出码 5、什么都不动。先在 ECS 上 `bash /opt/yuanhui/backup.sh`，成功再发布。确需跳过（首次发布、备份本身坏了要发修复）加 `--skip-backup-gate`，每次跳过记进 `/opt/yuanhui/backup/gate-skips.log`（时间、标签、原因）。
 - 发布避开整点和 02:30 之后的两三分钟：迁移的 DDL 会排在正在跑的 `pg_dump` 后面，排队期间那张表的读写都要等。
@@ -63,19 +65,19 @@ Compose（`deploy/compose.yml`）：
 
 ### 整机重建（新 ECS）
 数据库容器不映射端口，所有库操作都在容器里做（`restore.sh` 的 `RESTORE_COMPOSE_DIR` 跑法：node 步骤 `docker compose run backup`，`pg_restore` 用 `docker compose exec postgres`）。**先恢复、后发布**：先发布会跑迁移建出表，恢复会被拒绝。下面 `C` = `docker compose -f /opt/yuanhui/compose.yml --project-directory /opt/yuanhui --env-file /opt/yuanhui/.env`。
-1. 新 ECS 按 `cloud-manual-steps.md` 第 1、2、6 步准备好；填 `/opt/yuanhui/.env`，其中密钥和口令从钥匙串取，`API_IMAGE=local/yuanhui/api:<最后一次成功发布的 40 位提交号>`，`RECOVERY_MODE=0`；那个提交的镜像 tar 按下面「取镜像」拿到、传上去 `docker load -i`。
+1. 新 ECS 按 `cloud-manual-steps.md` 第 1、2、6 步准备好；填 `/opt/yuanhui/.env`，其中密钥和口令从钥匙串取，`API_IMAGE=local/yuanhui/api:<$SHA，即 release-current 指向的 40 位提交号，见下面「取镜像」第 1 步>`，`RECOVERY_MODE=0`；那个提交的镜像 tar 按下面「取镜像」拿到、传上去 `docker load -i`。
    **取镜像**（artifact 只留 3 天，ECS 丢了时多半已过期；PR #27 Codex）：
-   1. 找最后一次成功发布：`git fetch --tags origin && git for-each-ref --sort=-creatordate --count=3 --format='%(creatordate:iso) %(refname:short) %(*objectname)' 'refs/tags/release-*'`，第一行就是；`R=release-<前 12 位>`，`SHA=<那一行的 40 位>`。
+   1. 取线上版本：`read SHA R < <(deploy/release-tag.sh --current)`（从 origin 强制取 `release-current`，输出「<40 位提交号> release-<前 12 位>」；退出码 3 表示 `release-current` 和发布标签对不上，停下人工看）。**不要按标签创建时间取最新的**：回滚过的话那是被回滚掉的版本。旧 ECS 还能登上时，再和它的 `/opt/yuanhui/current-tag` 对一下，应是 `$SHA`（或它的前缀）。
    2. artifact 还在就直接下：`gh run list --workflow image.yml --limit 30 --json databaseId,headSha,conclusion | jq -r --arg s "$SHA" '.[] | select(.headSha == $s and .conclusion == "success") | .databaseId' | head -1` 得到 run id，`gh run download <run id> -n yuanhui-images-$SHA -D /tmp/yh-img`。下载失败（过期）走第 3 步。
-   3. 按标签重打：`gh workflow run image.yml --ref "$R"`（`workflow_dispatch` 检出标签指向的提交，`github.sha` 就是 `$SHA`，产出 `yuanhui-images-$SHA`）；`gh run list --workflow image.yml --event workflow_dispatch --limit 1` 拿 run id，`gh run watch <run id>`，成功后同第 2 步下载。约 5 分钟。
+   3. 按标签重打：`gh workflow run image.yml --ref "$R"`（`workflow_dispatch` 检出标签指向的提交，`github.sha` 就是 `$SHA`，产出 `yuanhui-images-$SHA`）；等几秒，`gh run list --workflow image.yml --event workflow_dispatch --limit 3 --json databaseId,headSha,createdAt` 里挑 `headSha` 是 `$SHA`、刚创建的那一次拿 run id（刚触发时可能还列不到，列不到再等几秒），`gh run watch <run id>`，成功后同第 2 步下载。约 5 分钟。
    4. `cd /tmp/yh-img && shasum -a 256 -c yuanhui-images-$SHA.tar.gz.sha256`。重打的 tar 里 api 镜像是同一个提交构建的；`caddy:2.10.2`、`postgres:16` 是重打当天的同标签镜像（`postgres:16` 小版本可能更新，数据目录兼容；按 digest 固定见 §14 S10r-12）。
    5. `scp /tmp/yh-img/yuanhui-images-$SHA.tar.gz root@<新 IP>:/opt/yuanhui/incoming/`，ECS 上 `docker load -i /opt/yuanhui/incoming/yuanhui-images-$SHA.tar.gz`。
-   注：按标签触发要求 `image.yml` 在默认分支上带 `workflow_dispatch`，本 PR 合并后才成立；本 PR 合并前的发布（首次发布 `efd4e05`）没有标签，合并后第一次发布起才有。
+   注：按标签触发要求 `image.yml` 在默认分支上带 `workflow_dispatch`，本 PR 合并后才成立；本 PR 合并前的发布（首次发布 `efd4e05`）没有标签，`release-current` 也没有，合并后第一次发布起才有；在那之前整机恢复按 ECS 的 `current-tag`（ECS 也丢了就是 `efd4e05`）。
 2. 本机：`scp deploy/compose.yml deploy/restore.sh root@<新 IP>:/opt/yuanhui/`
 3. ECS 上只起 Postgres：`C up -d --wait postgres`
 4. 恢复：`RESTORE_COMPOSE_DIR=/opt/yuanhui bash /opt/yuanhui/restore.sh latest`（dry-run，看 `restore_will_delete`）→ 加 `--execute`，最后一行 `restore_ok`。
 5. 清掉恢复标记：`C run --rm -T backup node scripts/restore.ts clear-marker`（输出 `"state":"foreign"`，之后任何恢复都拒绝这个库）。
-6. 本机发布同一个提交：`IMAGES_TAR=/tmp/yh-img/yuanhui-images-$SHA.tar.gz ECS_HOST=root@<新 IP> deploy/deploy.sh $SHA --execute --skip-backup-gate`（迁移是空操作；备份定时器随之装上；发布标签已在，只再推一次）。
+6. 本机发布同一个提交：`IMAGES_TAR=/tmp/yh-img/yuanhui-images-$SHA.tar.gz ECS_HOST=root@<新 IP> deploy/deploy.sh $SHA --execute --skip-backup-gate`（迁移是空操作；备份定时器随之装上；发布标签和 `release-current` 已在且指向它，不重打）。
 7. 冒烟：`deploy/smoke.sh`，再 `bash /opt/yuanhui/backup.sh` 出 `backup_ok`。RTO 1 小时指第 1 步到这里。
 8. 手机下一次同步拿到 `epoch_mismatch` → 全量拉取 → 重传保留的 op（§4.6）。备份之后才开通的设备重新开通，再开「恢复模式」补交。
 

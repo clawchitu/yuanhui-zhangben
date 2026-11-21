@@ -214,7 +214,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 |---|---|---|
 | `demo_stores` | `store_id, review_password_hash, seeded_at, next_reset_at` | 演示店的重置状态（§8 S09）。`review_password_hash` 是审核号的原始密码哈希，每日重置恢复成它；`seeded_at` 是上一次重置的时间（种子里的「今天」）；`next_reset_at` 是下一次该重置的时间，定时任务在锁内重查它，同一个周期只重置一次 |
 | `export_jobs` | `store_id, requested_at, object_key null, done_at null, attempts, next_try_at, last_error null, cancelled_at null, stale_cleared_at null` | 非演示店申请注销时同一事务插一行。`requested_at` 是这一次申请（撤回后又申请是新的一次，同一行重置）；`next_try_at` 兼作租约；`done_at` / `object_key` 同有同无，是这一版的包生成好了；`stale_cleared_at` 是比这一版更早的旧包删完了（生成和清理分开记，清理失败单独重试）；`last_error` 只记原因代码；`cancelled_at` 是撤回，定时任务删掉包再删行 |
-| `store_purges` | `store_id, purged_at, swept_at null, objects_cleared_at null, attempts, last_error null, next_try_at null`（0003，失败退避，PR #27 S10r-11） | 已清除的店，只有店 id 和时间。在线数据删掉之后继续重试对象清理（商品图、导出包、未完成的分片上传、本机图片缓存）；`swept_at` 是最近一次按前缀清理成功，清除之后满 1 小时的那一遍复扫成功了才记 `objects_cleared_at`（T17）；迟到落地的对象删不掉时 `objects_cleared_at` 被撤回成空，下一轮再清。删除记录的正本在 OSS `deletions/`（§9.4） |
+| `store_purges` | `store_id, purged_at, swept_at null, objects_cleared_at null, attempts, last_error null, next_try_at null`（0003，失败退避，PR #27 S10r-11） | 已清除的店，只有店 id 和时间。在线数据删掉之后继续重试对象清理（商品图、导出包、未完成的分片上传、本机图片缓存）；`swept_at` 是最近一次按前缀清理成功，清除之后满 1 小时的那一遍复扫成功了才记 `objects_cleared_at`（T17）；迟到落地的对象删不掉时 `objects_cleared_at` 被撤回成空，下一轮再清。`attempts` 是连续失败次数，第 3 次起告警、按 `next_try_at` 退避，每一遍扫成功清零。删除记录的正本在 OSS `deletions/`（§9.4） |
 | `object_discards` | `object_key, upload_id, store_id, created_at, attempts, next_try_at, last_error null` | 存档桶里该删却没删掉的对象（作废的导出包、生成失败时已经写进去的包），以及分片上传失败、中止也失败留下的残片（`upload_id` 非空，重试时中止它）；没有任务行再指向它们，所以持久化一条待删标记。导出任务每轮按退避重试，删掉才删这一行；删之前确认没有已完成的导出任务指向这个键 |
 
 ---
@@ -1465,4 +1465,4 @@ S10 部署实测的 PR（#27）Fable 审核的裁定如下（按评论原文；�
 | S10r-9 | 出口 IP 变了 SSH 连不上 | runbook 加「SSH 连不上」一节：怎么认、CLI 先加后删的两条命令、连带影响、主账号控制台和 VNC 兜底；真做一次演练 | runbook、`cloud-manual-steps.md` 第 1 步 |
 | S10r-10 | `ledger.late`、`ledger.lots` 两条测试本机挂、CI 过 | 另开一项查清是测试还是代码和日期 / 时区有关；查清前不发 TestFlight | 新 PR |
 | S10r-11 | 对象清理失败不告警；图片桶失败挡住 `exports/` 删除 | `store_purges.attempts` ≥ 3 打 `alert`；各桶分开处理 | `server/src/jobs/account-purge.ts`（T 项，S32 前） |
-| S10r-12 | 其余小项 | 手工回滚那句改对；ECS 旧镜像清理说明；`image.yml` 基础镜像按 digest 固定；runbook 时间统一时区；T24 那天看 `backup_lifecycle_stale` 是否误报，误报则阈值改 37 天 | runbook、`image.yml`（S32 前） |
+| S10r-12 | 其余小项 | 手工回滚那句改对；ECS 旧镜像清理说明；`image.yml` 基础镜像按 digest 固定；runbook 时间统一时区；T24 那天看 `backup_lifecycle_stale` 是否误报，误报则阈值改 37 天（注：已在 PR #27 定为 38 天，`LIFECYCLE_GRACE_DAYS`，不要改回 37） | runbook、`image.yml`（S32 前） |

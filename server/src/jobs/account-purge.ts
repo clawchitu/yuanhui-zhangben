@@ -548,7 +548,7 @@ async function sweepStorePrefixes(storeId: string, archive: ObjectStore, images:
 
 /** 对象清理连续失败从第几次起告警、退避 */
 export const PURGE_ALERT_ATTEMPTS = 3;
-/** 第 1、2 次失败下一轮照常重试（偶发网络错）；第 3 次起 1 小时、2 小时、4 小时……最长 24 小时 */
+/** 第 1、2 次失败下一轮照常重试（偶发网络错）；第 3 次起 1 小时、2 小时、4 小时……最长 24 小时。每一遍扫成功都把 attempts 清零、next_try_at 清空 */
 export function purgeBackoffMs(attempts: number): number {
   if (attempts < PURGE_ALERT_ATTEMPTS) return 0;
   return Math.min(3_600_000 * 2 ** (attempts - PURGE_ALERT_ATTEMPTS), 24 * 3_600_000);
@@ -593,7 +593,7 @@ export async function clearPurgedObjects(d: AccountJobDeps, limit = 20): Promise
         if (swept) throw swept;
         await trx
           .updateTable("store_purges")
-          .set({ swept_at: now, objects_cleared_at: final ? now : null, last_error: null, next_try_at: null })
+          .set({ swept_at: now, objects_cleared_at: final ? now : null, attempts: 0, last_error: null, next_try_at: null })
           .where("store_id", "=", row.store_id)
           .execute();
         return { id: row.store_id, ok: final };

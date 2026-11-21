@@ -1063,7 +1063,7 @@ describe("满 7 天删除", () => {
     await s.app.close();
   });
 
-  it("商品图桶不存在（NoSuchBucket）：不挡这家店 exports/ 和本机缓存的删除；照样不记清完（不跳过）；连续失败第 3 次起打 alert=purge_objects_failed 并退避，不每轮重试（PR #27 Fable S10r-7、S10r-11）", async () => {
+  it("商品图桶不存在（NoSuchBucket）：不挡这家店 exports/ 和本机缓存的删除；照样不记清完（不跳过）；连续失败第 3 次起打 alert=purge_objects_failed 并退避，不每轮重试；清完后次数清零（PR #27 Fable S10r-7、S10r-11）", async () => {
     const clock = new TestClock(T0);
     const s = await shopWithBooks(clock, "没有图片桶店");
     const sink = logSink();
@@ -1110,7 +1110,13 @@ describe("满 7 天删除", () => {
     clock.t = (await row()).next_try_at!.getTime();
     expect(await clearPurgedObjects({ ...d, images: fresh })).toContain(s.storeId);
     const done = await row();
-    expect([done.objects_cleared_at?.getTime(), done.last_error, done.next_try_at]).toEqual([clock.t, null, null]);
+    expect([done.objects_cleared_at?.getTime(), done.last_error, done.next_try_at, done.attempts]).toEqual([clock.t, null, null, 0]);
+    // 成功后次数清零（PR #27 Fable 第二轮建议 2）：之后迟到对象撤回 objects_cleared_at、再失败一次，算第 1 次，不告警、不退避
+    await tdb.kysely.updateTable("store_purges").set({ objects_cleared_at: null }).where("store_id", "=", s.storeId).execute();
+    clock.advance(60_000);
+    expect(await clearPurgedObjects(d)).not.toContain(s.storeId);
+    expect([(await row()).attempts, (await row()).next_try_at]).toEqual([1, null]);
+    expect(alerts()).toHaveLength(2);
     await s.app.close();
   });
 
