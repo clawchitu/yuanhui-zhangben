@@ -513,7 +513,7 @@ describe("满 7 天删除", () => {
     const relog = await login(s.app, s.username);
     const auth = (await authenticate(tdb.kysely, relog.token, clock.now()))!;
     clock.advance(DELETE_GRACE_MS + 1);
-    expect(await purgeStore(tdb.kysely, s.storeId, clock.now())).toBe("purged");
+    expect(await purgeStore(tdb.kysely, s.storeId, clock.now(), new MemoryObjectStore())).toBe("purged");
     await expect(pullChanges(tdb.kysely, { storeId: s.storeId, deviceId: relog.deviceId, scope: "full_store", cursors: { catalog: 0, ledger: 0 }, pageSize: 10, now: clock.now() })).rejects.toThrow(StoreGone);
     await expect(
       pushOps(tdb.kysely, new Guard(), { auth, ops: [op("product_edit", { product_id: s.productIds[0], price_fen: 1 }) as never], now: clock.now(), epoch: s.epoch, config: { demoLoginEnabled: false, recoveryMode: false } }),
@@ -543,7 +543,7 @@ describe("满 7 天删除", () => {
           const ok = await real(hash, pw);
           if (first) {
             first = false;
-            expect(await purgeStore(tdb.kysely, s.storeId, clock.now())).toBe("purged");
+            expect(await purgeStore(tdb.kysely, s.storeId, clock.now(), new MemoryObjectStore())).toBe("purged");
           }
           return ok;
         },
@@ -557,6 +557,46 @@ describe("满 7 天删除", () => {
       await s.app.close();
       await app.close();
     }
+  });
+
+  it("删除记录先于在线数据删除写好：没配存档桶、写删除记录失败 → 在线数据不删、告警，下一轮写成了才删（PR #20 Codex 1）", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "先写记录店");
+    const t = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    clock.advance(DELETE_GRACE_MS + 1);
+    const before = await rowCounts(s.storeId);
+
+    // 没配存档桶：删除记录写不了 → 不删，error 级告警
+    const sink = logSink();
+    const r0 = await runAccountPurges(deps(clock, { archive: null, log: sink.log }));
+    expect(r0.purged).not.toContain(s.storeId);
+    expect(await rowCounts(s.storeId)).toEqual(before);
+    expect(sink.lines.some((l) => l.level === "error" && l.obj.alert === "purge_no_archive")).toBe(true);
+    expect(await tdb.kysely.selectFrom("store_purges").select("store_id").where("store_id", "=", s.storeId).execute()).toEqual([]);
+
+    // 写删除记录失败：同样不删
+    const d = deps(clock);
+    const put = d.archive.put.bind(d.archive);
+    let fail = true;
+    d.archive.put = async (k, b, c) => {
+      if (fail && k === deletionKey(s.storeId)) throw Object.assign(new Error("写不进去"), { code: "RequestTimeout" });
+      return put(k, b, c);
+    };
+    const err = logSink();
+    const r1 = await runAccountPurges({ ...d, log: err.log });
+    expect(r1.purged).not.toContain(s.storeId);
+    expect(await rowCounts(s.storeId)).toEqual(before);
+    expect(d.archive.objects.has(deletionKey(s.storeId))).toBe(false);
+    expect(err.lines.some((l) => l.level === "error" && l.obj.store_id === s.storeId && l.obj.code === "RequestTimeout")).toBe(true);
+
+    // 写得进去了：先有删除记录，再删在线数据
+    fail = false;
+    const r2 = await runAccountPurges(d);
+    expect(r2.purged).toContain(s.storeId);
+    expect(JSON.parse(d.archive.objects.get(deletionKey(s.storeId))!.body.toString("utf8"))).toEqual({ store_id: s.storeId, purged_at: clock.now().toISOString() });
+    expect(Object.values(await rowCounts(s.storeId)).every((n) => n === 0)).toBe(true);
+    await s.app.close();
   });
 
   it("对象清理失败：在线数据照样删了，store_purges 记原因代码；删除记录已写；下一轮接着清完", async () => {

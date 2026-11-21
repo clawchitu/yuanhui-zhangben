@@ -8,8 +8,9 @@
 // 2. 到期清除（runAccountPurges）：delete_requested_at 已过 7 天（恰好 7 天整仍可撤回，所以是严格大于）的非演示店。
 //    每家店一个事务、拿店铺锁（withStoreLock）和账号行锁（FOR UPDATE，和登录、兑码、申请注销的 FOR NO KEY UPDATE 冲突）后锁内重查，
 //    删光这家店的全部在线数据（业务表 → 设备 → 导出任务 → 账号 → 店），同一事务里记一行 store_purges。重复跑、并发跑都只删一次。
-// 3. 对象清理（clearPurgedObjects）：对 store_purges 里还没清理完的店，先往存档桶写删除记录 deletions/<店>.json
-//    （不在数据库里、不随备份回滚，restore.sh 恢复后重放，S10b），再删商品图桶的 images/<店>/、存档桶的 exports/<店>/、
+//    删在线数据之前（锁内、确认撤回不了之后）先往存档桶写删除记录 deletions/<店>.json（不在数据库里、不随备份回滚，
+//    restore.sh 恢复后重放，S10b）；写不成（没配存档桶、写失败）就不删，告警、下一轮重来（PR #20 Codex 1）。
+// 3. 对象清理（clearPurgedObjects）：对 store_purges 里还没清理完的店，再写一遍删除记录（幂等），删商品图桶的 images/<店>/、存档桶的 exports/<店>/、
 //    本机图片缓存目录里这家店的子树（T12），都成功了才记 objects_cleared_at。每一步都可重做，失败下一轮接着来。
 // 演示店不走这里：审核号的注销申请由每日重置撤回（demo/reset.ts）。
 import { randomBytes } from "node:crypto";
@@ -183,8 +184,13 @@ export async function runExportJobs(d: AccountJobDeps, limit = 10): Promise<Expo
 
 export type PurgeOutcome = "purged" | "skipped";
 
-/** 清除一家店（锁内重查：不在注销中、没满 7 天、是演示店、已经删过 → skipped） */
-export async function purgeStore(db: Kysely<Database>, storeId: string, now: Date): Promise<PurgeOutcome> {
+/**
+ * 清除一家店（锁内重查：不在注销中、没满 7 天、是演示店、已经删过 → skipped）。
+ * 锁内确认已经撤回不了（满 7 天、撤回要改的账号行被这里锁着）之后，先把删除记录 deletions/<店>.json 写进存档桶，写成了才删在线数据
+ * （PR #20 Codex 1）：否则提交之后、写删除记录之前进程退出或写失败，从备份恢复就会让这家店复活。写删除记录失败 → 抛错、整个事务回滚，下一轮重来。
+ * 记录先写、事务后来回滚了也无妨：这家店已满 7 天、撤回不了，下一轮照样会删，重放记录删它是对的。
+ */
+export async function purgeStore(db: Kysely<Database>, storeId: string, now: Date, archive: ObjectStore): Promise<PurgeOutcome> {
   return withStoreLock(db, storeId, async (tx) => {
     const acct = await tx.trx
       .selectFrom("accounts as a")
@@ -195,6 +201,7 @@ export async function purgeStore(db: Kysely<Database>, storeId: string, now: Dat
       .executeTakeFirst();
     if (!acct || acct.is_demo || !acct.delete_requested_at) return "skipped";
     if (now.getTime() - new Date(acct.delete_requested_at).getTime() <= DELETE_GRACE_MS) return "skipped";
+    await archive.put(deletionKey(storeId), deletionRecord(storeId, now), "application/json");
     await wipeStoreData(tx);
     await tx.trx.deleteFrom("devices").where("store_id", "=", storeId).execute();
     await tx.trx.deleteFrom("export_jobs").where("store_id", "=", storeId).execute();
@@ -218,9 +225,13 @@ export async function runAccountPurges(d: AccountJobDeps): Promise<{ purged: str
     .orderBy("a.store_id")
     .execute();
   const purged: string[] = [];
-  for (const { store_id } of due) {
+  if (!d.archive) {
+    // 删除记录写不了就不删在线数据（Codex 1）。到期了却删不了，每轮 error 级告警
+    if (due.length) d.log?.error({ alert: "purge_no_archive", due: due.length }, "有注销到期的店，但没配存档桶，删除记录写不了，暂不清除");
+  }
+  for (const { store_id } of d.archive ? due : []) {
     try {
-      if ((await purgeStore(d.db, store_id, now)) === "purged") {
+      if ((await purgeStore(d.db, store_id, now, d.archive!)) === "purged") {
         purged.push(store_id);
         d.log?.info({ store_id }, "注销到期：在线数据已清除");
       }
@@ -257,7 +268,7 @@ export async function clearPurgedObjects(d: AccountJobDeps, limit = 20): Promise
       if (!row) return null;
       tried.add(row.store_id);
       try {
-        // 删除记录最先写：之后哪一步失败、甚至这台机器从备份恢复，都还能按它把这家店再删一遍
+        // 删除记录在清除时已写过；这里再写一遍（幂等），保证对象清理完时它一定在
         await archive.put(deletionKey(row.store_id), deletionRecord(row.store_id, new Date(row.purged_at)), "application/json");
         if (images) for (const k of await images.list(storePrefix("images", row.store_id))) await images.delete(k);
         for (const k of await archive.list(storePrefix("exports", row.store_id))) await archive.delete(k);
