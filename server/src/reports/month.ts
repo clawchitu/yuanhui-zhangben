@@ -54,10 +54,13 @@ export async function reportMonth(db: Kysely<Database>, storeId: string, month: 
     const end = start + rows.reduce((s, r) => s + r.amount_fen, 0);
     if (!Number.isSafeInteger(end)) throw new Error("月末货值超出安全整数范围");
 
-    // 柱状图：本月 1 号到今天（过去的月份到月末），没有流水的日子补 0
+    // 柱状图：本月 1 号到今天（过去的月份到月末），没有流水的日子补 0。
+    // 与月合计用同一个归日口径（同一条 SQL、同一个时间段）：时钟超前 5 分钟以内又跨零点的流水落在「明天」，
+    // 柱状图就画到那一天，每日之和恒等于月合计（Codex 第一轮 2，§14 S07-5）。
     const todayStr = today(now);
     const lastDay = addDay(nextFirst, -1);
-    const until = todayStr < lastDay ? todayStr : lastDay;
+    let until = todayStr < lastDay ? todayStr : lastDay;
+    for (const d of byDay.keys()) if (d > until) until = d;
     const daily: ReportMonth["daily"] = [];
     for (let d = firstDay; d <= until; d = addDay(d, 1)) {
       const x = byDay.get(d);

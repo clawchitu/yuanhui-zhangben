@@ -438,6 +438,31 @@ describe("返修（PR #18 Codex / Fable 第一轮）", () => {
     expect((await s.get("/v1/entries/days?before=0001-01-01")).days).toEqual([]);
     await s.app.close();
   });
+
+  it("午夜附近（Codex 2）：服务器 23:59 收到次日 00:01 的卖出（5 分钟时钟偏差以内）→ 柱状图画到那一天，每日之和 = 月合计", async () => {
+    const s = await setup(Date.parse(SH("2026-11-20T23:59:00")));
+    const a = await s.product({ price: 300, name: "a" });
+    await s.send(stockInOp(a, 9, 100, SH("2026-11-01T08:00:00")));
+    await s.send(saleOp([{ pid: a, n: 1, price: 300 }], SH("2026-11-21T00:01:00")).op);
+    const m = await s.get("/v1/reports/month?month=2026-11", "ReportMonth");
+    expect([m.sold_fen, m.profit_fen]).toEqual([300, 200]);
+    expect(m.daily.map((d: any) => d.date).at(-1)).toBe("2026-11-21");
+    expect(m.daily).toHaveLength(21);
+    expect(m.daily.at(-1)).toEqual({ date: "2026-11-21", sold_fen: 300, profit_fen: 200 });
+    expect([m.daily.reduce((x: number, d: any) => x + d.sold_fen, 0), m.daily.reduce((x: number, d: any) => x + d.profit_fen, 0)]).toEqual([300, 200]);
+    // 那一天的日报、07c 同样按 occurred_at 归到 21 日
+    expect((await s.get("/v1/reports/today?date=2026-11-21")).sold_fen).toBe(300);
+    expect((await s.get("/v1/entries/days?before=2026-11-22&limit=1")).days).toEqual([{ date: "2026-11-21", count: 1, amount_fen: 300 }]);
+    // 月末那一刻同理：跨进下个月的那笔不进本月，也不让本月柱状图多画
+    const s2 = await setup(Date.parse(SH("2026-11-30T23:59:00")));
+    const b = await s2.product({ price: 300, name: "b" });
+    await s2.send(stockInOp(b, 9, 100, SH("2026-11-01T08:00:00")), saleOp([{ pid: b, n: 1, price: 300 }], SH("2026-12-01T00:01:00")).op);
+    const nov = await s2.get("/v1/reports/month?month=2026-11", "ReportMonth");
+    const dec = await s2.get("/v1/reports/month?month=2026-12", "ReportMonth");
+    expect([nov.sold_fen, nov.daily.length, dec.sold_fen, dec.daily]).toEqual([0, 30, 300, [{ date: "2026-12-01", sold_fen: 300, profit_fen: 200 }]]);
+    await s.app.close();
+    await s2.app.close();
+  });
 });
 
 describe("性能", () => {
