@@ -668,6 +668,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
   - ~~`server-ci` 并发登录测试偶发 500 的排查（§14 跨段待办 T2）~~：已由 PR #15 完成，本段不用再做。本段新增的验密码路径照 T2-1 走 `src/auth/password.ts`。
 - 返修（Codex、Fable 第一轮，§14 S09-1 至 S09-16）：删除记录 `deletions/<店>.json` 在锁内确认撤回不了之后、删在线数据之前写好，没配存档桶或写失败就不删、告警 `purge_no_archive`（Codex 1）；在途的图片任务上传前复查店还在、传完在店铺锁里再查，店没了就删掉刚传的图，GET /v1/images 回填本机缓存后同样复查，删不掉把 `store_purges.objects_cleared_at` 撤回成空、下一轮再清（Codex 2）；旧导出包清理在任务行锁里复查申请版本、只删键里申请时间更早的包，生成和清理分开记（`export_jobs.stale_cleared_at`），清理失败不碰已完成的新包、下一轮单独重试，完成告警不等清理（Codex 3、4）；导出包从文件流式上传（`ObjectStore.putFile`，阿里云分片上传）（Codex 5）；每日重置在锁内重查 `next_reset_at`，多进程同一周期只重置一次（Codex 6）；导出流水时间由 Postgres 按 `Asia/Shanghai` 换算，和月报归月一致（Codex 7）；派生流水 id 撞上已有流水 → `rejected invalid`（Fable 1，S09-2）；没配存档桶时有未完成的导出任务每轮 error 级告警 `export_no_archive`，阿里云的存档桶在 S10a 配第二个桶之前按没配处理（Fable 2，S09-6、S09-11）；密码登录、改密码、申请注销撞上到期清除回 401（Fable 3，S09-10）。跨段待办加 T13 至 T16。
 - 返修（Codex、Fable 第二轮）：T17 在本段实现：对象清理在清除后满 1 小时按前缀复扫一遍（含本机缓存、未完成的分片上传）才记完成，盖住图片上传报错、上传后拿锁失败、进程退出留下的迟到对象（Codex 1、Fable 裁定 ②）；作废、失败的导出包删不掉记 `object_discards` 待删标记，每轮按退避重试（Codex 2）；阿里云分片上传失败时中止那次上传，中止失败记下 uploadId 重试，复扫按前缀中止残片（Codex 3）。
+- 返修（Codex、Fable 第三轮）：`store_purges.purged_at` 改取在线数据删完、提交前那一刻的钟，不再用整轮开始的时间，复扫的「满 1 小时」从实际清除完成起算（Codex 1）；复扫每一遍先中止未完成的分片上传、再列举删除对象，来回到某一次两边都空才算扫干净，最多 3 次，还不干净记 `sweep_not_quiet` 下一轮重来（Codex 2）；`image-fetch` 撤回清完标记那条路补回测试（Fable）。跨段待办加 T18。
 
 **S10a 部署：ECS、镜像链路、Compose、TLS**
 - 要读：§9.1、§9.2。
@@ -695,6 +696,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 - 存档桶分开（§14 S09-11、T13）：加第二个桶的配置，`server.ts` 的 `archive` 接 `yuanhui-backup`（现在 `archiveStoreFromConfig` 对阿里云一律返回空，导出和清除按没配存档桶告警、不执行）；RAM 子账号对商品图桶只有 `images/`，对备份桶只有 `exports/`、`deletions/` 和备份前缀；配了商品图桶没配存档桶时不许把导出包写进商品图桶。真实 OSS 上把列举、删除、分片上传（`putFile`）各实测一次。
 - 存档桶必须同时配好（PR #20 Fable 第二轮裁定 ①）：配了阿里云商品图桶就必须同时配好存档桶，部署后日志里没有 `export_no_archive`、`purge_no_archive`，否则 S10a 不算过。
 - 孤儿对象（§14 T17，已在 S09 实现）：真实 OSS 上把分片上传失败后的中止、按前缀列举未完成的分片上传（`listUploads`、`abortUpload`）各实测一次。
+- 导出任务失败分支删包前复查（§14 T18，PR #20 Fable 第三轮）：当场删包之前先确认没有已完成的任务指向这个键，和 `retryObjectDiscards` 一样，补一个测试（写回已提交、应答前连接断开）。
 
 **S10b 备份与恢复**
 - 要读：§9.4。
@@ -1349,7 +1351,8 @@ S09 的 PR（#20）提了 16 条，Fable 审核裁定如下（按评论原文；
 | T14 | `restore.sh` 重放删除记录要列举 `deletions/`，现在 `ObjectStore.list` 只认 `images/<店>/`、`exports/<店>/` 两种前缀，要加；重放后这些店的旧令牌和重传按 401 处理 | PR #20 Fable | S10b |
 | T15 | 演示店 16:00 重置后，过北京时间 0 点「今天」页没有卖出。上架演练时在美国西岸白天的时段看一遍，决定要不要改重置时间或种子的日期 | PR #20 Fable | S30 |
 | T16 | 导出和清除的告警现在只是带 `alert` 字段的日志（`account_delete_export`、`account_delete_export_failed`、`purge_no_archive` 和必须改 2 新加的那条），接到通知渠道 | PR #20 描述第 6 条 | S10c |
-| T17 | ~~孤儿对象清扫。① `store_purges` 的对象清理改成：清除之后至少隔 1 小时再按前缀扫一遍 `images/<店>/`、`exports/<店>/` 和本机缓存，这一遍做完才记 `objects_cleared_at`（盖住图片上传后进程退出、上传后拿店铺锁失败）。② `exports/<店>/` 下没有对应 `export_jobs` 行的包定期删掉（生成期间撤回、包迟到落地又没删成）。两条各加一个测试~~ **已在 S09 实现（PR #20 第二轮返修）**：① `clearPurgedObjects` 每遍记 `store_purges.swept_at`，清除后满 1 小时（`RESCAN_DELAY_MS`）开始的那一遍成功了才记 `objects_cleared_at`，这一遍同时中止前缀下未完成的分片上传；② 作废的、生成失败时已写进去的导出包删不掉就记 `object_discards` 待删标记，导出任务每轮按退避重试直到删掉（分片上传中止失败同样记下 uploadId 重试）。测试见 `test/account-purge.test.ts`、`test/image-fetch.test.ts`、`test/oss.multipart.test.ts` | PR #20 Fable 第二轮、修改说明「Codex 2 已知的边界」 | S10a → 已在 S09 实现 |
+| T17 | ~~孤儿对象清扫。① `store_purges` 的对象清理改成：清除之后至少隔 1 小时再按前缀扫一遍 `images/<店>/`、`exports/<店>/` 和本机缓存，这一遍做完才记 `objects_cleared_at`（盖住图片上传后进程退出、上传后拿店铺锁失败）。② `exports/<店>/` 下没有对应 `export_jobs` 行的包定期删掉（生成期间撤回、包迟到落地又没删成）。两条各加一个测试~~ **已在 S09 实现（PR #20 第二轮返修）**：① `clearPurgedObjects` 每遍记 `store_purges.swept_at`，清除后满 1 小时（`RESCAN_DELAY_MS`，从这家店在线数据实际删完、提交前那一刻的 `purged_at` 起算）开始的那一遍成功了才记 `objects_cleared_at`；每一遍先中止前缀下未完成的分片上传、再列举删除对象，来回到某一次两边都空才算扫干净（第三轮返修，Codex 第三轮 1、2）；② 作废的、生成失败时已写进去的导出包删不掉就记 `object_discards` 待删标记，导出任务每轮按退避重试直到删掉（分片上传中止失败同样记下 uploadId 重试）。测试见 `test/account-purge.test.ts`、`test/image-fetch.test.ts`、`test/oss.multipart.test.ts` | PR #20 Fable 第二轮、修改说明「Codex 2 已知的边界」 | S10a → 已在 S09 实现 |
+| T18 | 导出任务失败分支当场删包之前，先确认没有已完成的任务指向这个键（`retryObjectDiscards` 已经这样查，当场删的那一次没查）。场景：写回其实提交了，但数据库连接在应答前断开，失败分支把刚完成的包删掉，任务却记着已完成。读代码得出，没有复现 | PR #20 Fable 第三轮 | S10a |
 
 T2 的 PR（#15）定了 4 条，Fable 审核裁定如下：
 
