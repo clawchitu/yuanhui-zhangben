@@ -179,6 +179,8 @@ describe("图片任务", () => {
         throw new Error("oss down");
       },
       get: async () => null,
+      list: async () => [],
+      delete: async () => {},
     };
     await runFor(deps({ store: broken }));
     const j = await job(p.storeId, p.productId);

@@ -1,0 +1,33 @@
+-- 0002：演示小店每日重置、账号注销的导出包与删除（S09，docs/plan-v2.md §8 S09、§9.4）。
+
+-- 演示店的重置状态。审核号的原始密码哈希存在这里：每日重置把审核号密码恢复成它（审核员在 Review Notes 里拿到的那个）。
+CREATE TABLE demo_stores (
+  store_id             uuid PRIMARY KEY REFERENCES stores (id),
+  review_password_hash text NOT NULL,
+  -- 上一次重置（或建店种数据）的时间；种子里的「今天」就是它
+  seeded_at            timestamptz NOT NULL,
+  -- 下一次该重置的时间：北京时间 16:00；最近 60 分钟有人在用就顺延 1 小时
+  next_reset_at        timestamptz NOT NULL
+);
+
+-- 注销申请生成的导出包（非演示店）。申请时插入一行，由定时任务生成、上传 OSS exports/、告警通知运维。
+-- 撤回注销 → 删掉这一行和已生成的导出包；到期清除 → 和店铺一起删。
+CREATE TABLE export_jobs (
+  store_id      uuid PRIMARY KEY REFERENCES stores (id),
+  -- 对应的注销申请时间（撤回后再申请是新的一次，键里带它）
+  requested_at  timestamptz NOT NULL,
+  object_key    text,
+  done_at       timestamptz,
+  attempts      integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  last_error    text,
+  CHECK ((done_at IS NULL) = (object_key IS NULL))
+);
+
+-- 已清除的店：只记店 id 和时间（不含任何业务数据），用来在库里的行删掉之后继续重试 OSS 和本机缓存的清理。
+-- 删除记录的正本在 OSS deletions/（不随备份回滚，§9.4）；这张表只是清理进度。
+CREATE TABLE store_purges (
+  store_id           uuid PRIMARY KEY,
+  purged_at          timestamptz NOT NULL,
+  objects_cleared_at timestamptz,
+  last_error         text
+);

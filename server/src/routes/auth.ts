@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { sql } from "kysely";
 import { authOf } from "../auth/plugin.ts";
 import { SlidingWindowLimiter } from "../auth/ratelimit.ts";
-import { createDevice, deletePendingUntil, DeviceIdTaken } from "../auth/session.ts";
+import { createDevice, deletePendingUntil, DeviceIdTaken, lockAccount } from "../auth/session.ts";
 import { sha256Hex } from "../auth/tokens.ts";
 import { sendError } from "./errors.ts";
 
@@ -109,12 +109,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       let out: Out;
       try {
         out = await db.transaction().execute(async (trx): Promise<Out> => {
-          const row = await trx
-            .selectFrom("accounts")
-            .select(["failed_logins", "locked_until", "delete_requested_at"])
-            .where("id", "=", acct.id)
-            .forNoKeyUpdate()
-            .executeTakeFirstOrThrow();
+          const lock = await lockAccount(trx, acct.id);
+          if (!lock) throw new Error("账号在验密码期间消失了");
+          const row = { locked_until: lock.lockedUntil, failed_logins: lock.failedLogins, delete_requested_at: lock.deleteRequestedAt };
           // 锁定期内再输错不计数、不延长；正确密码也拒、不清锁
           if (row.locked_until && row.locked_until > now) return { locked: row.locked_until };
           if (!passwordOk) {
@@ -130,6 +127,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           }
           await trx.updateTable("accounts").set({ failed_logins: 0, locked_until: null }).where("id", "=", acct.id).execute();
           const d = await createDevice(trx, {
+            accountLock: lock,
             storeId: acct.store_id,
             accountId: acct.id,
             deviceId: device_id,
@@ -185,7 +183,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
             .where("token_hash", "=", codeHash)
             .executeTakeFirst();
           if (!owner) return { err: [404, "not_found", "这个码不认识"] };
-          await trx.selectFrom("accounts").select("id").where("id", "=", owner.account_id).forNoKeyUpdate().execute();
+          const accountLock = await lockAccount(trx, owner.account_id);
           // 锁住这张码：两台手机同时扫同一张码，只有一台成功
           const pt = await trx
             .selectFrom("pairing_tokens as p")
@@ -215,6 +213,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           if (pt.expires_at <= now || pt.creator_revoked_at) return { err: [410, "pairing_expired", "这个码过期了"] };
           if (pt.delete_requested_at) return { err: [403, "delete_pending", "账号正在注销，不能开通新手机"] };
           const d = await createDevice(trx, {
+            accountLock,
             storeId: pt.store_id,
             accountId: pt.account_id,
             deviceId: req.body.device_id,
@@ -272,9 +271,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       try {
         // 发的是演示店的家用设备令牌（§7）；账号是审核号，所以身份是 review
         const d = await db.transaction().execute(async (trx) => {
-          // 和密码登录、兑码同一加锁顺序：先锁审核号的账号行，再在 createDevice 里拿称呼锁
-          await trx.selectFrom("accounts").select("id").where("id", "=", acct.id).forNoKeyUpdate().execute();
-          return createDevice(trx, {
+          // 和密码登录、兑码同一加锁顺序：先锁审核号的账号行（每日重置也要这把锁，见 demo/reset.ts），再在 createDevice 里拿称呼锁
+          const accountLock = await lockAccount(trx, acct.id);
+          if (!accountLock) throw new Error("审核号不见了");
+          const dev = await createDevice(trx, {
+            accountLock,
             storeId: acct.store_id,
             accountId: acct.id,
             deviceId: req.body.device_id,
@@ -283,14 +284,17 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
             now: req.receivedAt,
             afterLabelLock: app.deps.afterDeviceLabelLock,
           });
+          return { ...dev, deleteRequestedAt: accountLock.deleteRequestedAt };
         });
+        // 审核号在注销申请中（审核员演示过注销）：照样建设备，响应和密码登录一样带 delete_pending_until，
+        // 手机显示「注销中」、可以撤回；写账照 §14 S04-2 整批不应用。每日重置会撤回这次申请（S09 裁定，§14 S03-9）
         return sessionBody({
           token: d.token,
           role: "family",
           store: { name: acct.store_name, is_demo: true },
           label: d.label,
           epoch: acct.epoch,
-          deleteRequestedAt: null,
+          deleteRequestedAt: d.deleteRequestedAt,
         });
       } catch (e) {
         if (e instanceof DeviceIdTaken) return sendError(reply, 400, "invalid", { message: "device_id 已经用过，请重新生成" });

@@ -1,4 +1,4 @@
-// Kysely 的表类型，和 migrations/0001_init.sql 一一对应（test/schema.test.ts 会核对列名）。
+// Kysely 的表类型，和 migrations/*.sql 一一对应（test/schema.test.ts 会核对列名）。
 // bigint 列由 pg 以字符串读出（避免丢精度），写入时可传 number / bigint / string。
 import type { ColumnType, Generated } from "kysely";
 
@@ -241,6 +241,29 @@ export interface RemovedTable {
   row_id: string;
 }
 
+export interface DemoStoresTable {
+  store_id: string;
+  review_password_hash: string;
+  seeded_at: Ts;
+  next_reset_at: Ts;
+}
+
+export interface ExportJobsTable {
+  store_id: string;
+  requested_at: Ts;
+  object_key: string | null;
+  done_at: Ts | null;
+  attempts: Generated<number>;
+  last_error: string | null;
+}
+
+export interface StorePurgesTable {
+  store_id: string;
+  purged_at: Ts;
+  objects_cleared_at: Ts | null;
+  last_error: string | null;
+}
+
 export interface SchemaMigrationsTable {
   name: string;
   checksum: string;
@@ -263,5 +286,8 @@ export interface Database {
   lot_moves: LotMovesTable;
   image_jobs: ImageJobsTable;
   removed: RemovedTable;
+  demo_stores: DemoStoresTable;
+  export_jobs: ExportJobsTable;
+  store_purges: StorePurgesTable;
   schema_migrations: SchemaMigrationsTable;
 }
