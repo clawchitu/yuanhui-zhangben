@@ -8,6 +8,9 @@ DEPLOY="${DEPLOY_SH:-$HERE/../deploy.sh}"
 REG=registry-vpc.cn-shanghai.aliyuncs.com/yuanhui
 OLD=1111111; NEW=2222222; BAD=3333333
 pass=0; fail=0; T=""
+# 用 UTF-8 区域跑（Mac 的 /bin/bash 3.2 在 UTF-8 下把「$why，」里紧跟的中文字节算进变量名，报 unbound variable；
+# LC_ALL=C 时测不出来，PR #23 Codex 5、Fable 必须改 3）。Mac 上 C.UTF-8 测不出来，先挑 en_US.UTF-8；CI 的 Ubuntu 只有 C.UTF-8
+for _l in en_US.UTF-8 C.UTF-8; do if locale -a 2>/dev/null | grep -ix "$_l" > /dev/null; then export LC_ALL=$_l; break; fi; done
 
 setup() {
   T=$(mktemp -d)
@@ -189,6 +192,11 @@ check "启用了定时器" grep -q "systemctl enable --now yuanhui-backup.timer"
 setup; with_prev; export FAKE_SYSTEMCTL_FAIL=1; deploy "$NEW" --execute
 check "退出码 4（实际 $(rc)）" [ "$(rc)" = 4 ]
 check "current-tag 已是新标签（发布成功）" [ "$(tag)" = "$NEW" ]
+
+t "部署脚本里没有紧贴非 ASCII 字符的 \$变量（Bash 3.2 + UTF-8 下会被读成另一个变量名；一律写成 \${变量}）"
+# shellcheck disable=SC2016
+LC_ALL=C grep -nE '^[^#]*\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' "$HERE"/../*.sh > "$T/out" 2>&1
+check "没有这种写法（见上面的行）" [ ! -s "$T/out" ]
 
 echo "通过 ${pass}，失败 $fail"
 [ "$fail" = 0 ]

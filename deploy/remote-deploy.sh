@@ -40,10 +40,10 @@ backup_gate() {
   if [ "$SKIP_GATE" = 1 ]; then
     mkdir -p "$D/backup"
     printf '%s tag=%s 跳过备份门禁：%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TAG" "$why" >> "$D/backup/gate-skips.log"
-    echo "警告：--skip-backup-gate，跳过备份门禁（$why），已记入 backup/gate-skips.log" >&2
+    echo "警告：--skip-backup-gate，跳过备份门禁（${why}），已记入 backup/gate-skips.log" >&2
     return 0
   fi
-  echo "备份门禁：$why，拒绝在迁移前发布。先在 ECS 上跑 bash $D/backup.sh，成功后再发布；确需跳过加 --skip-backup-gate" >&2
+  echo "备份门禁：${why}，拒绝在迁移前发布。先在 ECS 上跑 bash $D/backup.sh，成功后再发布；确需跳过加 --skip-backup-gate" >&2
   exit 5
 }
 backup_gate
