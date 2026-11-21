@@ -27,7 +27,9 @@ struct SellView: View {
         self.fixture = fixture
     }
 
-    /// 推到手输条码 / 抹零页（S17 换成面板后同样算「盖住」）：相机停、扫码枪不接、扫到的码不收
+    /// 推到手输条码页、抹零面板盖着时：相机停、扫码枪不接、扫到的码不收。
+    /// 面板 / 手输页一关，`covered` 变回假：`HIDKeyCaptureView.isActive` 变真时当场 `reclaim()` 抢回第一响应者
+    /// （不只靠键盘收起的通知），关掉后不点屏幕直接扣扳机照样进（§14 S14-4）
     private var covered: Bool { showManual || showDiscount }
 
     var body: some View {
@@ -47,8 +49,18 @@ struct SellView: View {
         .refreshesCameraPermission(permission)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(Route.sell.pageId)
-        .navigationDestination(isPresented: $showManual) { RouteView(route: .manualCode) }
-        .navigationDestination(isPresented: $showDiscount) { RouteView(route: .discount) }
+        .navigationDestination(isPresented: $showManual) {
+            ManualCodeView(db: model.db, mode: .sell, pendingCount: model.pendingCount, fixture: fixture.manual) { code in
+                pickManual(code)
+            }
+        }
+        .sheet(isPresented: $showDiscount) {
+            DiscountPanel(basket: model.basket, mode: .sell, fixtureKeys: fixture.discountKeys,
+                          fixtureSubmit: fixture.discountSubmit) { outcome in
+                if let outcome { model.applyDiscount(outcome) }
+                showDiscount = false
+            }
+        }
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             let appModel = app
@@ -65,6 +77,22 @@ struct SellView: View {
         .task { await feedFixture() }
         .task(id: model.done?.id) { await autoDismissDone() }
         .task(id: model.noticeSeq) { await autoDismissNotice() }
+        .onChange(of: model.noticeSeq) { _, _ in
+            // 抹的零作废：除了黄条，再补一下警告触感、读屏念出来（扫码那一声「嘀」是成功音，光听声音会以为没事，Fable #21）
+            guard model.notice == .paidCleared else { return }
+            UIAccessibility.post(notification: .announcement, argument: SellModel.Notice.paidCleared.text)
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            }
+        }
+    }
+
+    /// 手输页选中一个：先关页面、恢复收码，再把码交给扫码层（和相机、扫码枪同一条路：同一字符规则、出声）
+    private func pickManual(_ code: String) {
+        showManual = false
+        model.accepting = true
+        hub.receive(code, from: .manual)
     }
 
     // MARK: 购物篮
@@ -97,9 +125,16 @@ struct SellView: View {
         }
     }
 
+    /// 黄条。「抹的零取消了」比别的黄条更醒目：墨色粗边框、换成撤回图标、停得更久（§14 S16-1，Fable #21）
     private func noticeBanner(_ n: SellModel.Notice) -> some View {
         Button { model.dismissNotice() } label: {
-            Banner(kind: .alert, text: n.text, systemImage: "exclamationmark.circle.fill")
+            if n == .paidCleared {
+                Banner(kind: .alert, text: n.text, systemImage: "arrow.uturn.backward.circle.fill")
+                    .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.banner).strokeBorder(Tokens.Palette.ink, lineWidth: 3))
+                    .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
+            } else {
+                Banner(kind: .alert, text: n.text, systemImage: "exclamationmark.circle.fill")
+            }
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 20)
@@ -125,7 +160,7 @@ struct SellView: View {
     private func autoDismissNotice() async {
         guard model.notice != nil else { return }
         let seq = model.noticeSeq
-        try? await Task.sleep(for: .seconds(4))
+        try? await Task.sleep(for: .seconds(model.notice?.seconds ?? 4))
         if !Task.isCancelled { model.dismissNotice(seq: seq) }
     }
 
@@ -142,6 +177,8 @@ struct SellView: View {
             if let scanner = fixture.scanner { await scanner.run(into: hub) }
             #endif
             if let paid = fixture.paidFen { try? model.setPaid(paid) }
+            if fixture.openDiscount { showDiscount = true }
+            if fixture.openManual { showManual = true }
             if fixture.autoCommit {
                 try? await Task.sleep(for: .milliseconds(200))
                 model.commit()

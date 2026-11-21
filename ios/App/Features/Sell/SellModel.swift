@@ -37,6 +37,9 @@ final class SellModel {
             case .paidCleared: "东西变了，刚才抹的零取消了，要抹请再抹一次"
             }
         }
+
+        /// 停几秒：「抹的零取消了」要让人看见，停 8 秒；其余 4 秒
+        var seconds: Double { self == .paidCleared ? 8 : 4 }
     }
 
     let db: LocalDB
@@ -188,6 +191,16 @@ final class SellModel {
     /// 抹零 / 改总价的结果（面板本身在 S17 做；这里只接住结果，03b 的显示和记账要用）
     func setPaid(_ fen: Int64?) throws {
         try basket.setPaid(fen.map(Fen.init))
+    }
+
+    /// 抹零面板（18 / 28）关掉时的结果：定了实收，或「不抹了」恢复原价。面板里已经按 §5.0 上限和七折规则把过关，
+    /// 这里再交给 ShopCore 校验一次（校验不过就不改，按原价收）
+    func applyDiscount(_ outcome: DiscountModel.Outcome) {
+        notice = nil
+        switch outcome {
+        case .paid(let p): try? basket.setPaid(Fen(p))
+        case .restore: try? basket.setPaid(nil)
+        }
     }
 
     /// 「收好钱了，记账」。返回这一笔有没有记上。

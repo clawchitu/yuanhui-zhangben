@@ -74,7 +74,6 @@ enum Route: String, Hashable, CaseIterable, Sendable {
     /// 还没做的页面在哪一段做（占位页上显示）
     var plannedIn: String? {
         switch self {
-        case .manualCode, .discount: "S17"
         case .stockIn: "S19"
         case .reports: "S24"
         case .products: "S25"
@@ -85,7 +84,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .account: "S23b"
         case .privacy: "S21"
         case .logout: "S22b"
-        case .sell, .settings, .deviceName, .scanner: nil
+        case .sell, .manualCode, .discount, .settings, .deviceName, .scanner: nil
         }
     }
 
@@ -106,13 +105,15 @@ struct RouteView: View {
 
     /// 这条路由在这些能力下出哪种页面（纯函数，单元测试逐个路由 × 身份测）
     enum Content: Equatable {
-        case denied, sell, settings, deviceName, scanner, placeholder
+        case denied, sell, manualCode, discountEntry, settings, deviceName, scanner, placeholder
     }
 
     static func content(for route: Route, capabilities: Capabilities) -> Content {
         guard route.isAllowed(capabilities) else { return .denied }
         switch route {
         case .sell: return .sell
+        case .manualCode: return .manualCode
+        case .discount: return .discountEntry
         case .settings: return .settings
         case .deviceName: return .deviceName
         case .scanner: return .scanner
@@ -125,6 +126,10 @@ struct RouteView: View {
             switch Self.content(for: route, capabilities: model.capabilities) {
             case .denied: DeniedPage()
             case .sell: SellView(db: model.db, fixture: model.sellFixture)
+            // 直接塞进来的手输页（不是从卖出页推的）：能查能选，选了只是关页面，没有购物篮可加
+            case .manualCode: ManualCodeView(db: model.db) { _ in }
+            // 抹零面板要对着一个购物篮，只能从卖出页的「抹零 / 改总价」弹出；直接塞路由只出一句说明
+            case .discountEntry: PlaceholderPage(route: route, layout: model.layout, message: "从卖出页的「抹零 / 改总价」进")
             case .settings: SettingsView()
             case .deviceName: DeviceNameView()
             case .scanner: ScannerStatusView()
@@ -141,6 +146,7 @@ struct PlaceholderPage: View {
     @Environment(AppModel.self) private var model
     let route: Route
     let layout: ShellLayout
+    var message = "这一页还在做"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -151,7 +157,7 @@ struct PlaceholderPage: View {
                         .font(.system(size: 44, weight: .semibold))
                         .foregroundStyle(Tokens.Palette.mute)
                         .accessibilityHidden(true)
-                    Text("这一页还在做")
+                    Text(message)
                         .font(TypeScale.title)
                         .foregroundStyle(Tokens.Palette.ink)
                     if let s = route.plannedIn {
