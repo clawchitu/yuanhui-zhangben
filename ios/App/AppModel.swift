@@ -138,20 +138,46 @@ final class AppModel {
         Task { await reportPendingLabel() }
     }
 
-    /// 把没报上的手机名报给服务器；成功后清掉。失败（断网、服务器拒）留着，下次回前台再试
+    /// 正在报的那一趟（在途保护，PR #35 评审修 5）：同一时间只有一个 `PATCH /v1/devices/me` 在路上
+    private var labelReport: Task<Void, Never>?
+    /// 实际发出去的补报次数（测试看）
+    private(set) var labelReportsSent = 0
+
+    /// 把没报上的手机名报给服务器；成功后清掉。失败（断网、服务器拒）留着，下次回前台再试。
+    ///
+    /// 回前台、登录后、改名几处可能同时触发：已经有一趟在路上时不再另发，等那一趟结束（PR #35 评审修 5）。
+    /// 那一趟回来时如果名字又改了（`pendingDeviceLabel` 不是发出去的那个），旧响应不写回本机，接着报新名字（Codex 可选 1）。
     func reportPendingLabel() async {
-        guard let services, let pending = services.pendingDeviceLabel, capabilities.has(.renameDevice),
-              let label = LoginModel.validLabel(pending),
-              let token = try? services.tokens.token(ref: session.tokenRef) else { return }  // 读不出来也留着，下次再报
-        do {
-            let final = try await services.api.renameDevice(label, token: token)
-            if services.pendingDeviceLabel == pending { services.pendingDeviceLabel = nil }
-            if final != session.deviceLabel {
-                try db.renameCurrentDevice(final)
-                if let s = try db.currentSession() { session = s }
+        if let running = labelReport { return await running.value }
+        let t = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.drainPendingLabel()
+            // 和 drain 的最后一次检查在同一段主线程执行里，中间没有挂起点：之后来的调用一定会另起一趟
+            self.labelReport = nil
+        }
+        labelReport = t
+        await t.value
+    }
+
+    private func drainPendingLabel() async {
+        while let services, let pending = services.pendingDeviceLabel, capabilities.has(.renameDevice) {
+            guard let label = LoginModel.validLabel(pending),
+                  let token = try? services.tokens.token(ref: session.tokenRef) else { return }  // 读不出来也留着，下次再报
+            labelReportsSent += 1
+            let final: String
+            do {
+                final = try await services.api.renameDevice(label, token: token)
+            } catch {
+                return  // 留在 pendingDeviceLabel，回前台再报
             }
-        } catch {
-            // 留在 pendingDeviceLabel，回前台再报
+            // 在路上时又改了名：这次的响应是旧名字，不写回，接着报新的
+            guard services.pendingDeviceLabel == pending else { continue }
+            services.pendingDeviceLabel = nil
+            if final != session.deviceLabel {
+                try? db.renameCurrentDevice(final)
+                if let s = try? db.currentSession() { session = s }
+            }
+            return
         }
     }
 }
