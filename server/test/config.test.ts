@@ -34,6 +34,47 @@ describe("loadConfig", () => {
     });
   });
 
+  it("API_BASE（S21 服务器地址下发）：没配就是 undefined；两个白名单地址照原样采用", () => {
+    expect(loadConfig({ DATABASE_URL: "x" }).apiBase).toBeUndefined();
+    expect(loadConfig({ DATABASE_URL: "x", API_BASE: "" }).apiBase).toBeUndefined();
+    for (const ok of ["https://47.117.184.253", "https://api.yuanhuishop.cn", "https://api.yuanhuishop.cn/", "https://api.yuanhuishop.cn:443"]) {
+      expect(loadConfig({ DATABASE_URL: "x", API_BASE: ok }).apiBase, ok).toBe(ok);
+    }
+  });
+
+  it("API_BASE 不在白名单（https、主机整串相等、无用户信息、端口空或 443、路径空或 /）就拒绝启动，报错只提 API_BASE、不带值", () => {
+    const bad = [
+      "https://evil.example",
+      "https://api.yuanhuishop.cn.evil.example",
+      "https://evil.api.yuanhuishop.cn",
+      "https://api.yuanhuishop.cn@evil.example",
+      "https://evil.example@api.yuanhuishop.cn",
+      "https://user:pw@api.yuanhuishop.cn",
+      "http://47.117.184.253",
+      "http://api.yuanhuishop.cn",
+      "https://api.yuanhuishop.cn:8443",
+      "https://47.117.184.253:8443",
+      "https://api.yuanhuishop.cn/x",
+      "https://api.yuanhuishop.cn?x=1",
+      "https://api.yuanhuishop.cn#x",
+      "https://API.yuanhuishop.cn",
+      "https://47.117.184.253.",
+      "api.yuanhuishop.cn",
+      "not a url",
+    ];
+    for (const b of bad) {
+      let err: unknown;
+      try {
+        loadConfig({ DATABASE_URL: "postgres://u:secretpw@h/db", API_BASE: b });
+      } catch (e) {
+        err = e;
+      }
+      expect(err, b).toBeInstanceOf(ConfigError);
+      expect((err as Error).message, b).toMatch(/API_BASE/);
+      expect((err as Error).message, b).not.toContain("secretpw");
+    }
+  });
+
   it("环境变量覆盖", () => {
     const c = loadConfig({ DATABASE_URL: "x", MIN_BUILD: "42", DEMO_LOGIN_ENABLED: "1", RECOVERY_MODE: "true" });
     expect(c).toMatchObject({ minBuild: 42, demoLoginEnabled: true, recoveryMode: true });
@@ -60,6 +101,35 @@ describe("GET /v1/config", () => {
     });
     const v = validatorFor((await loadOpenApi()).components.schemas.Config);
     expect(v(res.json()), JSON.stringify(v.errors)).toBe(true);
+  });
+
+  it("没配 API_BASE 就不返回 api_base 字段（S21）", async () => {
+    const app = buildApp({ config: testConfig(), db: t, logger: false });
+    const res = await app.inject({ method: "GET", url: "/v1/config" });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(Object.keys(res.json())).not.toContain("api_base");
+  });
+
+  it("配了 API_BASE 就原样返回 api_base（两个白名单地址），符合契约 Config", async () => {
+    const v = validatorFor((await loadOpenApi()).components.schemas.Config);
+    for (const apiBase of ["https://47.117.184.253", "https://api.yuanhuishop.cn"]) {
+      const config = testConfig({ apiBase: loadConfig({ DATABASE_URL: "x", API_BASE: apiBase }).apiBase });
+      const app = buildApp({ config, db: t, logger: false });
+      const res = await app.inject({ method: "GET", url: "/v1/config" });
+      await app.close();
+      expect(res.json().api_base).toBe(apiBase);
+      expect(v(res.json()), JSON.stringify(v.errors)).toBe(true);
+    }
+  });
+
+  it("契约 Config.api_base 可选、只接受 https URI", async () => {
+    const v = validatorFor((await loadOpenApi()).components.schemas.Config);
+    const base = { min_build: 0, demo_login_enabled: false, privacy_url: "https://yuanhuishop.cn/privacy", support_url: "https://yuanhuishop.cn/support" };
+    expect(v(base)).toBe(true);
+    expect(v({ ...base, api_base: "https://api.yuanhuishop.cn" })).toBe(true);
+    expect(v({ ...base, api_base: "http://47.117.184.253" })).toBe(false);
+    expect(v({ ...base, api_base: "" })).toBe(false);
   });
 
   it("默认 demo_login_enabled=false", async () => {

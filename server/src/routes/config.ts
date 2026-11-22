@@ -9,6 +9,8 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
       demo_login_enabled: c.demoLoginEnabled,
       privacy_url: c.privacyUrl,
       support_url: c.supportUrl,
+      // S21：只在配了 API_BASE 时返回（loadConfig 已按白名单校验过）
+      ...(c.apiBase ? { api_base: c.apiBase } : {}),
     };
   });
 }

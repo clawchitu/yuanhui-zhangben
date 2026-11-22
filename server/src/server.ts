@@ -2,7 +2,7 @@
 // 迁移不在启动时自动跑：发布时 deploy.sh 先单独跑 `node scripts/migrate.ts`（§9.1），失败就不换镜像。
 // 本机开发想省一步可以设 MIGRATE_ON_START=1。
 import { buildApp } from "./app.ts";
-import { loadConfig } from "./config.ts";
+import { ConfigError, loadConfig, type Config } from "./config.ts";
 import { createDb, migrate } from "./db.ts";
 import { defaultTasks, Scheduler } from "./jobs/scheduler.ts";
 import { archiveStoreFromConfig } from "./lookup/oss.ts";
@@ -10,7 +10,15 @@ import type { AlerterLog } from "./monitor/alerter.ts";
 import { monitorFromConfig } from "./monitor/setup.ts";
 import { ServerMonitor } from "./monitor/server-monitor.ts";
 
-const config = loadConfig();
+// 配置不对就拒绝启动：写一行 JSON 日志说清是哪一项，退出码 1。只写报错文字，不打印环境变量的值（S21 API_BASE 白名单等）
+let config: Config;
+try {
+  config = loadConfig();
+} catch (e) {
+  if (!(e instanceof ConfigError)) throw e;
+  process.stderr.write(JSON.stringify({ level: 60, time: Date.now(), msg: `配置错误，拒绝启动：${e.message}` }) + "\n");
+  process.exit(1);
+}
 const db = createDb({ connectionString: config.databaseUrl });
 const startedAt = new Date();
 // 监控（S10c）：日志先交给 LogTap，Alerter 等 app 建好后拿 app.log 记自己的发送失败。
