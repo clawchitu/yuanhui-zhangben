@@ -26,7 +26,7 @@ struct StockInView: View {
         self.fixture = fixture
     }
 
-    private var covered: Bool { showManual || model.registerCode != nil || model.confirmZeroCost }
+    private var covered: Bool { showManual || model.registerCode != nil || model.confirmZeroCost || model.confirmDate }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -68,6 +68,12 @@ struct StockInView: View {
             Button("再改改", role: .cancel) { model.cancelZeroCost() }
         } message: {
             Text("这批货按 0 元进价记账")
+        }
+        .alert("日子对吗？", isPresented: Binding(get: { model.confirmDate }, set: { if !$0 { model.cancelDate() } })) {
+            Button("没错，就这样记") { model.commit(confirmedZero: true, confirmedDate: true) }
+            Button("再改改", role: .cancel) { model.cancelDate() }
+        } message: {
+            Text(model.dateWarning ?? "")
         }
         .onAppear {
             let appModel = app

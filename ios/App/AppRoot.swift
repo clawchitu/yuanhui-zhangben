@@ -132,6 +132,7 @@ struct AppRoot: View {
     @MainActor private static func liveModel(db: LocalDB, session: LocalSession) throws -> AppModel {
         var figures = HomeFigures()
         figures.pendingCount = try db.pendingOps().count
+        figures.lastRecord = try db.lastRecord().map(HomeFigures.LastRecord.init)
         return AppModel(db: db, session: session, figures: figures)
     }
 
@@ -161,8 +162,16 @@ struct AppRoot: View {
         }
         try UIFixture.installSellExtras(into: db, args: args)
         if args.contains("-uiPriorSales") { figures.pendingCount = try db.pendingOps().count }
+        // S20：-uiRecords 装上稿子 07a / 07b / 07c 的账，首页「刚记的」和待传笔数都从库里取
+        let liveRecent = try UIFixture.installRecords(into: db, session: session, args: args)
+        if liveRecent {
+            figures.lastRecord = try db.lastRecord().map(HomeFigures.LastRecord.init)
+            figures.pendingCount = try db.pendingOps().count
+        }
         let model = AppModel(db: db, session: session, figures: figures, today: UIFixture.designNow, defaults: defaults,
-                             scrollToBottom: UIFixture.value(for: "-uiScrollTo", in: args) == "bottom")
+                             scrollToBottom: UIFixture.value(for: "-uiScrollTo", in: args) == "bottom",
+                             fixedNow: UIFixture.designNow)
+        model.liveRecent = liveRecent
         model.sellFixture = SellFixture.from(args)
         return model
     }

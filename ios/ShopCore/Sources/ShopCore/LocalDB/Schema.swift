@@ -169,11 +169,20 @@ enum LocalSchema {
                     """)
             }
         }
+        // S20：流水的 flags（迟到补偿行 `late_before_count` 不单独成卡，§14 S07-1）；别的手机的名字（07a 卡片上显示手机名）
+        m.registerMigration("v2-records") { db in
+            try db.execute(sql: """
+                ALTER TABLE entry ADD COLUMN flags TEXT;
+                CREATE INDEX entry_reverses ON entry(reverses_entry_id);
+                CREATE INDEX entry_op ON entry(op_id);
+                CREATE TABLE device_label (device_id TEXT PRIMARY KEY, label TEXT NOT NULL);
+                """)
+        }
         return m
     }
 
     /// 投影表（清空顺序照外键）
-    static let projectionTables = ["entry", "sale_batch", "lot", "barcode", "product_private", "product"]
+    static let projectionTables = ["device_label", "entry", "sale_batch", "lot", "barcode", "product_private", "product"]
     /// meta 里属于投影的键
     static let projectionMetaKeys = [MetaKey.catalogCursor, .ledgerCursor, .serverEpoch]
 }
