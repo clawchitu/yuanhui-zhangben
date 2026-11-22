@@ -99,7 +99,7 @@ final class S18UITests: XCTestCase {
         XCTAssertEqual(el(app, "linkPack.productName").label, "可口可乐 330ml", "默认是价签里那一样")
         XCTAssertFalse(app.buttons["linkPack.save"].isEnabled)
         keys(app, "24")
-        XCTAssertEqual(el(app, "linkPack.hint").label, "以后扫这个码，进货卖出都按 24 罐 算")
+        XCTAssertEqual(el(app, "linkPack.hint").label, "以后扫这个码，进货卖出都按 24 罐 可口可乐 330ml 算")
         XCTAssertEqual(el(app, "linkPack.derived").label, "不填整箱价，就按 24 × ¥3.00 = ¥72.00 卖")
         app.buttons["linkPack.save"].tap()
         XCTAssertTrue(el(app, "page.sell").waitForExistence(timeout: 5))

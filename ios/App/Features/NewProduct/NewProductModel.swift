@@ -107,12 +107,18 @@ final class NewProductModel {
     var step: Step = .basic
     private(set) var lookup: LookupState = .loading
     /// 名称框里的字；查到的名称只在还没手动改过时填进去
-    var name = "" { didSet { if name != autoName { nameEdited = true } } }
+    var name = "" {
+        didSet {
+            if name != autoName { nameEdited = true }
+            // 名称一改，「像条码」的提示就作废（PR #31 Fable 建议 4）
+            if name != oldValue { nameScanNotice = nil; suspectedCode = nil }
+        }
+    }
     private var autoName: String?
     private var nameEdited = false
     /// 基本单位：查到的规格里有就用，否则「个」（`product_edit` 以后能改）
     private(set) var baseUnit = "个"
-    var price = YuanInput() { didSet { error = nil } }
+    var price = YuanInput() { didSet { error = nil; confirmZeroPrice = false } }
 
     // 04b
     var cost = YuanInput() { didSet { error = nil } }
@@ -127,6 +133,13 @@ final class NewProductModel {
 
     /// 存不进去时的一句话
     private(set) var error: String?
+    /// 卖价填 0 时等人确认（「卖价是 0 元，确定吗」）：打一个「0」就按 ¥0.00 卖出去太容易误存（PR #30 Fable 建议 2）
+    private(set) var confirmZeroPrice = false
+    /// 写名称时扣了扫码枪：名称末尾像是打进了一串条码（PR #30 Fable 建议 3）
+    private(set) var nameScanNotice: String?
+    /// 名称末尾像条码的那串数字：只提示，人点了「是条码，去掉这串数字」才去（PR #31 Codex 必须改 1：不自动删名称）
+    private(set) var suspectedCode: String?
+    var canStripCode: Bool { suspectedCode != nil }
 
     init(db: LocalDB, barcode: String, mode: ShopMode, quick: Bool, canLinkPack: Bool) {
         self.db = db; self.barcode = barcode; self.mode = mode; self.quick = quick; self.canLinkPack = canLinkPack && !quick
@@ -205,14 +218,14 @@ final class NewProductModel {
     }
 
     /// 04a / 04c「存好，接着卖」：不带第二步。返回登记好的码（调用方放进购物篮）
-    func saveBasic() -> PackConversion? {
-        guard canSaveBasic, let p = priceFen else { return nil }
+    func saveBasic(confirmedZero: Bool = false) -> PackConversion? {
+        guard canSaveBasic, let p = priceFen, zeroPriceConfirmed(p, confirmedZero) else { return nil }
         return save { try NewProduct(barcode: barcode, name: name, priceFen: Fen(p), baseUnit: baseUnit) }
     }
 
     /// 04b「存好」：带期初（货架数量、进价、到期日）和保质期设置
-    func saveMore() -> PackConversion? {
-        guard canSaveBasic, let p = priceFen, !quick else { return nil }
+    func saveMore(confirmedZero: Bool = false) -> PackConversion? {
+        guard canSaveBasic, let p = priceFen, !quick, zeroPriceConfirmed(p, confirmedZero) else { return nil }
         if cost.overLimit { error = "进价最多 ¥\(Money.yuanString(Int(Limits.maxFen)))"; return nil }
         var expiryDate: CalendarDate?
         if trackExpiry, !expiryUnknown, !(year.isEmpty && month.isEmpty && day.isEmpty) {
@@ -229,6 +242,33 @@ final class NewProductModel {
             return try NewProduct(barcode: barcode, name: name, priceFen: Fen(p), baseUnit: baseUnit, expiry: expiry,
                                   opening: opening)
         }
+    }
+
+    /// 卖价是 0：第一次只请人确认（返回假），确认过才往下存
+    private func zeroPriceConfirmed(_ p: Int64, _ confirmed: Bool) -> Bool {
+        guard p == 0, !confirmed else { confirmZeroPrice = false; return true }
+        confirmZeroPrice = true
+        return false
+    }
+
+    func cancelZeroPrice() { confirmZeroPrice = false }
+
+    /// 名称框按了回车（扫码枪的后缀是回车，§14 S14-4）：名称末尾是一串 8 位以上的数字，像扫码枪打进来的条码，
+    /// 在名称框下面提示一句。名称一个字不动——「配件 12345678」「20261121」这样的名称照原样存（PR #31 Codex 必须改 1）；
+    /// 人点了「是条码，去掉这串数字」才去（`stripScannedCode`）。返回像条码的那串（没有是 nil）
+    @discardableResult
+    func submitName() -> String? {
+        let tail = String(name.reversed().prefix { $0.isASCII && $0.isNumber }.reversed())
+        guard tail.count >= 8 else { nameScanNotice = nil; suspectedCode = nil; return nil }
+        suspectedCode = tail
+        nameScanNotice = "名称末尾的一串数字（\(tail)）像扫码枪打进来的条码；是名称的一部分就不用管"
+        return tail
+    }
+
+    /// 「是条码，去掉这串数字」：人确认过才把末尾那串去掉
+    func stripScannedCode() {
+        guard let tail = suspectedCode, name.hasSuffix(tail) else { return }
+        name = String(name.dropLast(tail.count)).trimmingCharacters(in: .whitespaces)
     }
 
     private func save(_ make: () throws -> NewProduct) -> PackConversion? {
@@ -286,10 +326,11 @@ final class LinkPackModel {
         if let conv { product = conv.product }
     }
 
-    /// 「以后扫这个码，进货卖出都按 24 罐 算」
+    /// 「以后扫这个码，进货卖出都按 24 罐 可口可乐 330ml 算」：带上商品名，钉在底部的这句在最大字号下也能看到挂的是哪一样
+    /// （§14 S18-3：整件码挂错了不能挪）
     var conversionHint: String? {
         guard let p = product, let q = packQty, q >= 2 else { return nil }
-        return "以后扫这个码，进货卖出都按 \(q) \(p.baseUnit) 算"
+        return "以后扫这个码，进货卖出都按 \(q) \(p.baseUnit) \(p.name) 算"
     }
 
     /// 整箱价没填时按「单价 × 换算」卖：写给人看（和 ShopCore 同一个算法）

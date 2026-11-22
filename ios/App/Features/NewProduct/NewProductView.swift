@@ -60,6 +60,14 @@ struct NewProductView: View {
                 onDone(.linked(conv))
             }
         }
+        // 卖价是 0：再问一句（PR #30 Fable 建议 2）
+        .alert("卖价是 0 元，确定吗？", isPresented: Binding(get: { model.confirmZeroPrice },
+                                                       set: { if !$0 { model.cancelZeroPrice() } })) {
+            Button("确定，就卖 0 元") { model.step == .basic ? saveBasic(confirmedZero: true) : saveMore(confirmedZero: true) }
+            Button("再改改", role: .cancel) { model.cancelZeroPrice() }
+        } message: {
+            Text("顾客扫到这一样会按 ¥0.00 收钱")
+        }
         .task {
             model.applyLookup(await lookup.lookup(model.barcode))
             applyFixture()
@@ -94,12 +102,26 @@ struct NewProductView: View {
                             .tint(model.mode.color)
                             .focused($nameFocused)
                             .submitLabel(.done)
+                            .onSubmit { model.submitName() }
                             .autocorrectionDisabled()
                             .padding(.horizontal, 16)
                             .frame(minHeight: 64)
                             .background(Tokens.Palette.card, in: RoundedRectangle(cornerRadius: Tokens.Radius.card))
                             .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(Tokens.Palette.line, lineWidth: 2))
                             .accessibilityIdentifier("newProduct.name")
+                    }
+                    // 名称末尾像条码：提示单独在名称框下面，名称一改就清；人点了才去掉（PR #31 Codex 1、Fable 建议 4）
+                    if let n = model.nameScanNotice {
+                        Text(n).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.sell)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("newProduct.nameNotice")
+                        if model.canStripCode {
+                            Button { model.stripScannedCode() } label: {
+                                Text("是条码，去掉这串数字").font(TypeScale.body.weight(.semibold)).underline()
+                                    .foregroundStyle(Tokens.Palette.ink).frame(minHeight: Tokens.Size.minHitTarget)
+                            }
+                            .accessibilityIdentifier("newProduct.stripCode")
+                        }
                     }
                 }
                 .padding(.horizontal, 20)
@@ -222,8 +244,13 @@ struct NewProductView: View {
         .background(Tokens.Palette.paper)
     }
 
-    private func saveBasic() {
-        if let conv = model.saveBasic() { onDone(.registered(conv, quick: model.quick)) }
+    private func saveBasic(confirmedZero: Bool = false) {
+        if let conv = model.saveBasic(confirmedZero: confirmedZero) { onDone(.registered(conv, quick: model.quick)) }
+    }
+
+    private func saveMore(confirmedZero: Bool = false) {
+        moreFocus = nil
+        if let conv = model.saveMore(confirmedZero: confirmedZero) { onDone(.registered(conv, quick: false)) }
     }
 
     // MARK: 04b
@@ -266,10 +293,7 @@ struct NewProductView: View {
                         .accessibilityIdentifier("newProduct.keyboardDone")
                 }
             }
-            PrimaryButton("存好", systemImage: "checkmark", mode: model.mode) {
-                moreFocus = nil
-                if let conv = model.saveMore() { onDone(.registered(conv, quick: false)) }
-            }
+            PrimaryButton("存好", systemImage: "checkmark", mode: model.mode) { saveMore() }
             .disabled(!model.canSaveBasic)
             .accessibilityIdentifier("newProduct.saveMore")
             .padding(.horizontal, 20)

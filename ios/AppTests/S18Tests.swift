@@ -213,7 +213,7 @@ final class S18Tests: XCTestCase {
         XCTAssertEqual(m.problem, "整箱至少是 2 个")
         XCTAssertFalse(m.canSave)
         m.key(.delete); m.key(.digit(2)); m.key(.digit(4))
-        XCTAssertEqual(m.conversionHint, "以后扫这个码，进货卖出都按 24 罐 算")
+        XCTAssertEqual(m.conversionHint, "以后扫这个码，进货卖出都按 24 罐 可口可乐 330ml 算")
         XCTAssertEqual(m.derivedPriceHint, "不填整箱价，就按 24 × ¥3.00 = ¥72.00 卖")
         m.active = .price
         m.key(.digit(6)); m.key(.digit(0))
