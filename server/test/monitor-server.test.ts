@@ -175,6 +175,42 @@ describe("服务器监控", () => {
     expect(r.alerter.firing(key)).toBe(false);
     expect(r.sink.kinds()).toContain(`resolved:${key}`);
   });
+  it("营业时间无同步：api 重启后没真的同步过，不发「已恢复」；重启后 3 小时仍没同步照常提醒，同步一次才恢复（S10 部署实测）", async () => {
+    const shop = await makeLoginShop(tdb, { name: "无同步重启测试店" });
+    const clock = new TestClock(sh("2026-11-20T08:00:00"));
+    const app = buildApp({ config: testConfig(), db: tdb, logger: false, clock: clock.now });
+    await login(app, shop.username);
+    await app.close();
+    const key = `no_sync:${shop.storeId}`;
+    const statePath = join(mkdtempSync(join(tmpdir(), "yh-nosync-")), "state.json");
+    const sink = new FakeSink();
+    const boot = () => {
+      const alerter = new Alerter({ sink, clock: clock.now, statePath });
+      const syncSeen = new SyncSeen();
+      const mon = new ServerMonitor({ db: tdb.kysely, alerter, tap: new LogTap(clock.now), syncSeen, quotaUsage: () => [], startedAt: clock.now(), backupDir: "", diskPath: "" });
+      return { alerter, syncSeen, run: () => mon.run(clock.now()) };
+    };
+    let r = boot();
+    clock.advance(3 * H + 60_000);
+    await r.run();
+    expect(r.alerter.firing(key)).toBe(true);
+    clock.advance(30 * 60_000);
+    r = boot(); // 重启：新的 startedAt、内存里的同步记录清空，状态从文件读回
+    await r.run();
+    clock.advance(60 * 60_000);
+    await r.run();
+    expect(r.alerter.firing(key)).toBe(true);
+    expect(sink.kinds()).not.toContain(`resolved:${key}`);
+    clock.t = sh("2026-11-20T17:05:00"); // 距首次告警超过 6 小时、距重启超过 3 小时：照常提醒
+    await r.run();
+    expect(sink.kinds().filter((k) => k.endsWith(key))).toEqual([`fire:${key}`, `repeat:${key}`]);
+    r.syncSeen.ok(shop.storeId, clock.now());
+    clock.advance(60_000);
+    await r.run();
+    expect(r.alerter.firing(key)).toBe(false);
+    expect(sink.kinds().filter((k) => k.endsWith(key))).toEqual([`fire:${key}`, `repeat:${key}`, `resolved:${key}`]);
+  });
+
   it("被退出手机暂存的账超过 24 小时没处理告警，处理后恢复", async () => {
     const shop = await makeLoginShop(tdb);
     const app = buildApp({ config: testConfig(), db: tdb, logger: false });

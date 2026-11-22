@@ -169,11 +169,37 @@ function loadState(path: string, log?: AlerterLog): AlerterState {
   } catch {
     return emptyState();
   }
+  let s: unknown;
   try {
-    const s = JSON.parse(raw) as Partial<AlerterState>;
-    return { ...emptyState(), ...s };
+    s = JSON.parse(raw);
   } catch {
+    s = undefined;
+  }
+  // 合法 JSON 但结构不对（null、数组、字段类型不对）同样按损坏处理：带着坏结构跑，下一轮 condition / flush 会抛错，
+  // 每一轮都报 monitor_check_error，告警全停（S10 部署实测顺手修）
+  if (!validState(s)) {
     log?.warn({ path }, "监控状态文件坏了，从空状态开始");
     return emptyState();
   }
+  return { ...emptyState(), ...s };
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const isTime = (v: unknown): boolean => typeof v === "string" && !Number.isNaN(Date.parse(v));
+const isAlert = (v: unknown): boolean => isObj(v) && typeof v.key === "string" && typeof v.title === "string" && typeof v.severity === "string";
+
+function validState(s: unknown): s is Partial<AlerterState> {
+  if (!isObj(s)) return false;
+  if (s.conditions !== undefined) {
+    if (!isObj(s.conditions)) return false;
+    for (const c of Object.values(s.conditions)) if (!isObj(c) || !isTime(c.since) || !isTime(c.lastSent) || !isAlert(c.alert)) return false;
+  }
+  if (s.events !== undefined) {
+    if (!isObj(s.events)) return false;
+    for (const e of Object.values(s.events)) if (!isObj(e) || !isTime(e.lastSent) || typeof e.suppressed !== "number") return false;
+  }
+  if (s.pending !== undefined && !(Array.isArray(s.pending) && s.pending.every((m) => isObj(m) && typeof m.id === "string" && typeof m.key === "string"))) return false;
+  if (s.dropped !== undefined && !(typeof s.dropped === "number" && Number.isFinite(s.dropped) && s.dropped >= 0)) return false;
+  if (s.cursors !== undefined && !isObj(s.cursors)) return false;
+  return true;
 }

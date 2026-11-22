@@ -171,7 +171,7 @@ describe("备份 → 删库 → 恢复 → 重放删除记录", () => {
     // 上传的是密文：明文 dump 的文件头不出现
     expect(bucket.objects.get(up.dumpKey)!.body.subarray(0, 5).toString()).toBe("YHBK\u0001");
     expect((await listBackups(bucket)).map((b) => b.id)).toEqual([up.id]);
-    expect(await backupStatus(bucket, new Date(NOW + 37 * 86_400_000))).toMatchObject({ count: 1, lifecycle_stale: true });
+    expect(await backupStatus(bucket, new Date(NOW + 39 * 86_400_000))).toMatchObject({ count: 1, lifecycle_stale: true });
     expect(await backupStatus(bucket, clock.now())).toMatchObject({ count: 1, lifecycle_stale: false });
     // 不是 pg_dump 的文件不上传
     await writeFile(path.join(dir, "junk"), "pg_dump: error: connection failed");

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildMessage, sanitizeDetails, scrub } from "../src/monitor/alert.ts";
-import { Alerter } from "../src/monitor/alerter.ts";
+import { Alerter, emptyState } from "../src/monitor/alerter.ts";
 import { LogTap } from "../src/monitor/logtap.ts";
 import { certVerdict, heartbeatVerdict, noSyncVerdict, parseMetrics, readNewLines, recordOpsSample, renewalOverdue, shanghaiAt, THRESHOLDS } from "../src/monitor/checks.ts";
 import { CommandSink, MultiSink, OutboxSink, WebhookSink } from "../src/monitor/sinks.ts";
@@ -141,6 +141,44 @@ describe("Alerter：去重、静默期、恢复通知", () => {
     expect(sink.kinds()).toEqual(["fire:disk_usage", "resolved:disk_usage"]);
     writeFileSync(statePath, "{坏了");
     expect(new Alerter({ sink, clock: clock.now, statePath }).state.conditions).toEqual({});
+  });
+  it("状态文件是合法 JSON 但结构不对：按损坏处理，记警告、从空状态开始，之后照常告警（S10 部署实测）", async () => {
+    const dir = tmp();
+    const statePath = join(dir, "state.json");
+    const clock = new TestClock();
+    const bad = [
+      "null",
+      "[]",
+      "42",
+      '"x"',
+      '{"conditions":[]}',
+      '{"conditions":{"disk_usage":{"since":"不是时间","lastSent":"2026-11-20T00:00:00Z","alert":{"key":"disk_usage","title":"t","severity":"warning"}}}}',
+      '{"conditions":{"disk_usage":{"since":"2026-11-20T00:00:00Z","lastSent":"2026-11-20T00:00:00Z"}}}',
+      '{"events":{"a":{"lastSent":"2026-11-20T00:00:00Z"}}}',
+      '{"pending":{}}',
+      '{"pending":[null]}',
+      '{"dropped":"3"}',
+      '{"cursors":null}',
+    ];
+    for (const raw of bad) {
+      writeFileSync(statePath, raw);
+      const warns: string[] = [];
+      const sink = new FakeSink();
+      const a = new Alerter({ sink, clock: clock.now, statePath, log: { warn: (_o, m) => warns.push(m), error: () => {} } });
+      expect(warns, raw).toEqual(["监控状态文件坏了，从空状态开始"]);
+      expect(a.state, raw).toEqual(emptyState());
+      await a.flush();
+      await a.condition(true, alert);
+      await a.event({ key: "e", title: "e", severity: "warning" });
+      expect(sink.kinds(), raw).toEqual(["fire:disk_usage", "event:e"]);
+    }
+    // 结构对的（含缺字段的旧文件）照常读进来、不报警告
+    writeFileSync(statePath, JSON.stringify({ conditions: { disk_usage: { since: "2026-11-20T00:00:00Z", lastSent: "2026-11-20T00:00:00Z", alert } } }));
+    const warns: string[] = [];
+    const a = new Alerter({ sink: new FakeSink(), clock: clock.now, statePath, log: { warn: (_o, m) => warns.push(m), error: () => {} } });
+    expect(warns).toEqual([]);
+    expect(a.firing("disk_usage")).toBe(true);
+    expect(a.state.pending).toEqual([]);
   });
 });
 

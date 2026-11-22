@@ -15,7 +15,8 @@
 //    restore.sh 恢复后重放，S10b）；写不成（没配存档桶、写失败）就不删，告警、下一轮重来（PR #20 Codex 1）。
 // 3. 对象清理（clearPurgedObjects）：对 store_purges 里还没清理完的店，再写一遍删除记录（幂等），删商品图桶的 images/<店>/、存档桶的 exports/<店>/、
 //    本机图片缓存目录里这家店的子树（T12）。清除之后马上做第一遍；隔满 1 小时（RESCAN_DELAY_MS）再按前缀扫一遍，
-//    这一遍成功了才记 objects_cleared_at（T17）。每一步都可重做，失败下一轮接着来。
+//    这一遍成功了才记 objects_cleared_at（T17）。每一步都可重做，失败下一轮接着来。商品图桶和存档桶各扫各的，一个报错不挡另一个；
+//    连续失败第 3 次起打 alert=purge_objects_failed、按次数退避（next_try_at，PR #27 Fable S10r-11）。
 // 在途的图片任务、GET /v1/images 的缓存回填可能在清理之后才把对象落地（PR #20 Codex 2）：清除删掉了这家店的 image_jobs，
 // 在途的那个传完之后在店铺锁里复查店还在不在，不在就删掉刚传的（jobs/image-fetch.ts）；缓存回填写完文件后同样复查（cacheFillGuard）。
 // 删不掉就撤回 objects_cleared_at，交给下一轮对象清理（dropLateObject）。
@@ -511,24 +512,46 @@ const SWEEP_ROUNDS = 3;
  * 中止之后它就完成不了。再保险一点：来回做到某一次两边都是空的才算扫干净，最多 SWEEP_ROUNDS 次，还不干净就抛错。
  * 未完成的分片上传（传到一半失败、中止也失败留下的残片，Codex 第二轮 3）delete 删不掉，只能按前缀列出来逐个中止。
  */
-async function sweepStorePrefixes(storeId: string, archive: ObjectStore, images: ObjectStore | null): Promise<void> {
-  const stores: Array<[ObjectStore, string]> = [[archive, storePrefix("exports", storeId)]];
-  if (images) stores.unshift([images, storePrefix("images", storeId)]);
+async function sweepPrefix(store: ObjectStore, prefix: string): Promise<void> {
   for (let round = 0; round < SWEEP_ROUNDS; round++) {
     let found = 0;
-    for (const [store, prefix] of stores) {
-      for (const u of await store.listUploads(prefix)) {
-        found++;
-        await store.abortUpload(u.key, u.uploadId);
-      }
-      for (const k of await store.list(prefix)) {
-        found++;
-        await store.delete(k);
-      }
+    for (const u of await store.listUploads(prefix)) {
+      found++;
+      await store.abortUpload(u.key, u.uploadId);
+    }
+    for (const k of await store.list(prefix)) {
+      found++;
+      await store.delete(k);
     }
     if (!found) return;
   }
   throw Object.assign(new Error("对象一直在冒出来，这一遍没扫干净"), { code: "sweep_not_quiet" });
+}
+
+/**
+ * 存档桶的 exports/ 和商品图桶的 images/ 各扫各的（PR #27 Fable S10r-11）：商品图桶报错（不存在、配错、网络）不挡导出包的删除，
+ * 反过来也一样。任何一个没扫干净就抛第一个错，这一遍不算成功（不跳过不存在的桶：配错桶名时不能记成清完）。
+ */
+async function sweepStorePrefixes(storeId: string, archive: ObjectStore, images: ObjectStore | null): Promise<unknown> {
+  const targets: Array<[ObjectStore, string]> = [[archive, storePrefix("exports", storeId)]];
+  if (images) targets.push([images, storePrefix("images", storeId)]);
+  let err: unknown = null;
+  for (const [store, prefix] of targets) {
+    try {
+      await sweepPrefix(store, prefix);
+    } catch (e) {
+      err ??= e;
+    }
+  }
+  return err;
+}
+
+/** 对象清理连续失败从第几次起告警、退避 */
+export const PURGE_ALERT_ATTEMPTS = 3;
+/** 第 1、2 次失败下一轮照常重试（偶发网络错）；第 3 次起 1 小时、2 小时、4 小时……最长 24 小时。每一遍扫成功都把 attempts 清零、next_try_at 清空 */
+export function purgeBackoffMs(attempts: number): number {
+  if (attempts < PURGE_ALERT_ATTEMPTS) return 0;
+  return Math.min(3_600_000 * 2 ** (attempts - PURGE_ALERT_ATTEMPTS), 24 * 3_600_000);
 }
 
 /**
@@ -555,30 +578,37 @@ export async function clearPurgedObjects(d: AccountJobDeps, limit = 20): Promise
         .selectFrom("store_purges")
         .select(["store_id", "purged_at"])
         .where("objects_cleared_at", "is", null)
+        .where((eb) => eb.or([eb("next_try_at", "is", null), eb("next_try_at", "<=", now)]))
         .where((eb) => eb.or([eb("swept_at", "is", null), eb("purged_at", "<=", rescanBefore)]));
       if (tried.size) q = q.where("store_id", "not in", [...tried]);
-      const row = await q.orderBy("purged_at").orderBy("store_id").limit(1).forUpdate().skipLocked().executeTakeFirst();
+      const row = await q.select("attempts").orderBy("purged_at").orderBy("store_id").limit(1).forUpdate().skipLocked().executeTakeFirst();
       if (!row) return null;
       tried.add(row.store_id);
       const final = new Date(row.purged_at).getTime() <= rescanBefore.getTime();
       try {
         // 删除记录在清除时已写过；这里再写一遍（幂等），保证对象清理完时它一定在
         await archive.put(deletionKey(row.store_id), deletionRecord(row.store_id, new Date(row.purged_at)), "application/json");
-        await sweepStorePrefixes(row.store_id, archive, images);
+        const swept = await sweepStorePrefixes(row.store_id, archive, images);
         await removeStoreDir(d.imageCacheDir, "images", row.store_id);
+        if (swept) throw swept;
         await trx
           .updateTable("store_purges")
-          .set({ swept_at: now, objects_cleared_at: final ? now : null, last_error: null })
+          .set({ swept_at: now, objects_cleared_at: final ? now : null, attempts: 0, last_error: null, next_try_at: null })
           .where("store_id", "=", row.store_id)
           .execute();
         return { id: row.store_id, ok: final };
       } catch (e) {
+        const attempts = row.attempts + 1;
+        const wait = purgeBackoffMs(attempts);
         await trx
           .updateTable("store_purges")
-          .set((eb) => ({ attempts: eb("attempts", "+", 1), last_error: reason(e) }))
+          .set({ attempts, last_error: reason(e), next_try_at: wait ? new Date(now.getTime() + wait) : null })
           .where("store_id", "=", row.store_id)
           .execute();
-        d.log?.error({ store_id: row.store_id, code: reason(e) }, "已清除店的对象清理失败，下一轮重试");
+        // 连续失败第 3 次起告警（商品图桶不存在、配错桶名时导出包和图片一直留着，不能静默），并退避
+        if (attempts >= PURGE_ALERT_ATTEMPTS)
+          d.log?.error({ alert: "purge_objects_failed", store_id: row.store_id, code: reason(e), attempts }, "已清除店的对象清理连续失败，退避后重试");
+        else d.log?.error({ store_id: row.store_id, code: reason(e), attempts }, "已清除店的对象清理失败，下一轮重试");
         return { id: row.store_id, ok: false };
       }
     });

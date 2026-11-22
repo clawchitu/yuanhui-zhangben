@@ -1063,6 +1063,63 @@ describe("满 7 天删除", () => {
     await s.app.close();
   });
 
+  it("商品图桶不存在（NoSuchBucket）：不挡这家店 exports/ 和本机缓存的删除；照样不记清完（不跳过）；连续失败第 3 次起打 alert=purge_objects_failed 并退避，不每轮重试；清完后次数清零（PR #27 Fable S10r-7、S10r-11）", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "没有图片桶店");
+    const sink = logSink();
+    const d = { ...deps(clock), log: sink.log };
+    await plantObjects(d, s.storeId, s.productIds);
+    const exp = `exports/${s.storeId}/${String(T0).padStart(13, "0")}-${"9".repeat(16)}.zip`;
+    await d.archive.put(exp, Buffer.from("zip"), "application/zip");
+    const noBucket = async (): Promise<never> => {
+      throw Object.assign(new Error("The specified bucket does not exist."), { code: "NoSuchBucket" });
+    };
+    d.images.list = noBucket;
+    d.images.listUploads = noBucket;
+    const t = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    clock.advance(DELETE_GRACE_MS + 1);
+    const row = async () => tdb.kysely.selectFrom("store_purges").selectAll().where("store_id", "=", s.storeId).executeTakeFirstOrThrow();
+    const alerts = () => sink.lines.filter((l) => l.obj.alert === "purge_objects_failed");
+    // 第 1 次（清除时）：导出包、本机缓存照样删掉；不记清完
+    expect((await runAccountPurges(d)).purged).toContain(s.storeId);
+    expect(await d.archive.list(storePrefix("exports", s.storeId))).toEqual([]);
+    await expect(readdir(path.join(cacheRoot, "images", s.storeId))).rejects.toThrow(/ENOENT/);
+    expect([(await row()).objects_cleared_at, (await row()).last_error, (await row()).attempts]).toEqual([null, "NoSuchBucket", 1]);
+    expect(alerts()).toEqual([]);
+    // 第 2、3 次（满 1 小时后的每一轮）：第 3 次打告警
+    clock.advance(60 * 60_000);
+    expect(await clearPurgedObjects(d)).not.toContain(s.storeId);
+    expect(alerts()).toEqual([]);
+    expect(await clearPurgedObjects(d)).not.toContain(s.storeId);
+    expect((await row()).attempts).toBe(3);
+    expect(alerts().map((l) => [l.level, l.obj.store_id, l.obj.code, l.obj.attempts])).toEqual([["error", s.storeId, "NoSuchBucket", 3]]);
+    // 退避：马上再跑不重试（次数不涨、不再告警）；过了退避时间才重试
+    const next = (await row()).next_try_at!;
+    const firstGap = next.getTime() - clock.t;
+    expect(firstGap).toBeGreaterThan(0);
+    expect(await clearPurgedObjects(d)).not.toContain(s.storeId);
+    expect((await row()).attempts).toBe(3);
+    clock.t = next.getTime();
+    expect(await clearPurgedObjects(d)).not.toContain(s.storeId);
+    expect((await row()).attempts).toBe(4);
+    expect((await row()).next_try_at!.getTime() - clock.t).toBeGreaterThan(firstGap); // 退避一次比一次长
+    expect(alerts()).toHaveLength(2);
+    // 桶建好以后：下一次到点的重试清完，退避清掉
+    const fresh = new MemoryObjectStore();
+    clock.t = (await row()).next_try_at!.getTime();
+    expect(await clearPurgedObjects({ ...d, images: fresh })).toContain(s.storeId);
+    const done = await row();
+    expect([done.objects_cleared_at?.getTime(), done.last_error, done.next_try_at, done.attempts]).toEqual([clock.t, null, null, 0]);
+    // 成功后次数清零（PR #27 Fable 第二轮建议 2）：之后迟到对象撤回 objects_cleared_at、再失败一次，算第 1 次，不告警、不退避
+    await tdb.kysely.updateTable("store_purges").set({ objects_cleared_at: null }).where("store_id", "=", s.storeId).execute();
+    clock.advance(60_000);
+    expect(await clearPurgedObjects(d)).not.toContain(s.storeId);
+    expect([(await row()).attempts, (await row()).next_try_at]).toEqual([1, null]);
+    expect(alerts()).toHaveLength(2);
+    await s.app.close();
+  });
+
   it("演示店的审核号申请注销满 7 天也不删（每日重置会撤回）", async () => {
     const clock = new TestClock(T0);
     const demo = await makeLoginShop(tdb, { demo: true });

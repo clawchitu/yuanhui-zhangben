@@ -4,6 +4,7 @@
 #   ECS（整机重建，RESTORE_COMPOSE_DIR=/opt/yuanhui）：node 步骤在 backup 容器里跑（docker compose run backup，凭据、口令、
 #     DATABASE_URL 都取自 /opt/yuanhui/.env），pg_restore 在 Postgres 容器里跑（docker compose exec postgres）。数据库不映射端口，
 #     不需要 ssh -L，也不需要在 ECS 上装 node。步骤见 docs/runbook.md「整机重建」。
+#     目标库默认是在用库 yuanhui（整机重建）；ECS 上做恢复演练时设 RESTORE_DB=<另建的空库>，在用库不动（runbook「恢复演练（ECS 上）」）。
 # 用法：deploy/restore.sh <备份 id | latest> [--execute]
 #   默认 dry-run：下载、解密、核对 sha256、pg_restore --list 校验 dump、检查目标库、列出删除记录和「备份里有、将被删掉的店」。目标库一个字节都不写。
 #   --execute：清空目标库并打「恢复中」标记（只许空库或「恢复中」的库）→ pg_restore → 按清单逐项比对 → 重放删除记录
@@ -12,8 +13,13 @@
 # 环境变量（本机跑法）：
 #   DATABASE_URL         目标库（新建的空库；脚本拒绝非空且不是「恢复中」的库）。口令不进 pg_restore 的命令行，经 PGPASSWORD 传
 #   BACKUP_PASSPHRASE    加密口令（钥匙串：security find-generic-password -s yuanhui-backup-passphrase -w）
-#   BACKUP_OSS_REGION / BACKUP_OSS_BUCKET / BACKUP_OSS_ACCESS_KEY_ID / BACKUP_OSS_ACCESS_KEY_SECRET [/ BACKUP_OSS_ENDPOINT]
-#                        或 BACKUP_STORE_DIR（对象已下载到本机目录）
+#   BACKUP_OSS_REGION / BACKUP_OSS_BUCKET（yuanhui-backup）/ BACKUP_OSS_ARCHIVE_BUCKET（yuanhui-archive）/
+#   BACKUP_OSS_ACCESS_KEY_ID / BACKUP_OSS_ACCESS_KEY_SECRET [/ BACKUP_OSS_ENDPOINT]
+#                        或 BACKUP_STORE_DIR（对象已下载到本机目录，backups/ 和 deletions/ 在同一个目录）
+#   BACKUP_OSS_ARCHIVE_BUCKET 必填（PR #27 Fable S10r-8）：删除记录 deletions/ 在存档桶。不设的话会去备份桶里找，找到的是空的、
+#                        不报错，已注销的店会被恢复回来。所以 OSS 跑法没设就拒绝（退出码 2）；单桶老布局显式写成和 BACKUP_OSS_BUCKET 同名。
+#                        整机重建跑法由 compose 从 .env 的 OSS_ARCHIVE_BUCKET 带进 backup 容器，没填同样由 scripts/restore.ts 拒绝。
+#                        dry-run 第一行 restore_source 打印 backups/ 和 deletions/ 各从哪个桶读，核对一眼。
 #   PG_BIN               可选，pg_restore 所在目录
 # 退出码：0 成功（含「已恢复完成」）；1 失败（比对不一致、解密失败、目标库不对等）；2 参数不对
 set -euo pipefail
@@ -27,9 +33,17 @@ CD="${RESTORE_COMPOSE_DIR:-}"
 if [ -n "$CD" ]; then
   [ -f "$CD/compose.yml" ] && [ -f "$CD/.env" ] || { echo "RESTORE_COMPOSE_DIR=$CD 下缺 compose.yml 或 .env" >&2; exit 2; }
   C=(docker compose -f "$CD/compose.yml" --project-directory "$CD" --env-file "$CD/.env")
+  # 目标库名：整机重建是在用库 yuanhui（默认）；在 ECS 上做恢复演练时设 RESTORE_DB=<先 createdb 好的空库>，不碰在用库
+  RDB="${RESTORE_DB:-yuanhui}"
+  [[ $RDB =~ ^[a-z_][a-z0-9_]{0,62}$ ]] || { echo "RESTORE_DB 只许小写字母、数字、下划线：$RDB" >&2; exit 2; }
 else
   [ -n "${DATABASE_URL:-}" ] || { echo "缺 DATABASE_URL（目标新库）" >&2; exit 2; }
   [ -n "${BACKUP_PASSPHRASE:-}" ] || { echo "缺 BACKUP_PASSPHRASE" >&2; exit 2; }
+  if [ -z "${BACKUP_STORE_DIR:-}" ] && [ -z "${BACKUP_OSS_ARCHIVE_BUCKET:-}" ]; then
+    echo "缺 BACKUP_OSS_ARCHIVE_BUCKET（存档桶 yuanhui-archive，删除记录 deletions/ 在那里）：不设就读不到删除记录，已注销的店会被恢复回来。" >&2
+    echo "单桶老布局请显式写成和 BACKUP_OSS_BUCKET 同名。见 docs/runbook.md「恢复」第 2 步" >&2
+    exit 2
+  fi
 fi
 t0=$(date +%s)
 W=$(mktemp -d "${TMPDIR:-/tmp}/yh-restore.XXXXXX")
@@ -54,10 +68,16 @@ if [ -n "$CD" ]; then
   # 容器里是 node 用户（1000），工作目录要让它能写；/work 是同一个目录
   if [ "$(id -u)" = 0 ]; then chown 1000:1000 "$W"; fi
   chmod 700 "$W"
-  node_r() { "${C[@]}" run --rm -T -v "$W:/work" backup node scripts/restore.ts "$@"; }
+  if [ "$RDB" = yuanhui ]; then
+    node_r() { "${C[@]}" run --rm -T -v "$W:/work" backup node scripts/restore.ts "$@"; }
+  else
+    # 演练库：容器里把 .env 拼好的 DATABASE_URL（…/yuanhui）只换库名，口令不进命令行；不依赖镜像里的脚本版本
+    # shellcheck disable=SC2016
+    node_r() { "${C[@]}" run --rm -T -v "$W:/work" -e RESTORE_DB="$RDB" backup sh -c 'DATABASE_URL="${DATABASE_URL%/*}/$RESTORE_DB" exec "$@"' restore node scripts/restore.ts "$@"; }
+  fi
   WD=/work
   pg_list() { "${C[@]}" exec -T postgres pg_restore --list < "$W/db.dump"; }
-  pg_load() { "${C[@]}" exec -T postgres pg_restore -U yuanhui -d yuanhui --no-owner --no-acl --exit-on-error < "$W/db.dump"; }
+  pg_load() { "${C[@]}" exec -T postgres pg_restore -U yuanhui -d "$RDB" --no-owner --no-acl --exit-on-error < "$W/db.dump"; }
 else
   node_r() { node "$SERVER/scripts/restore.ts" "$@"; }
   WD=$W

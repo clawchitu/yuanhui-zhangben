@@ -85,8 +85,16 @@ export async function listBackups(store: ObjectStore): Promise<Array<{ id: strin
 export const RETENTION_DAYS = 35;
 
 /**
+ * 生命周期正常时，最旧一份最多能活多久（PR #27 Fable，原来是 35 + 1 天，合规保留下 12/27 前后会误报）：
+ * 合规保留恰好 35 天（到期前删不掉）；OSS 生命周期每天一轮（北京时间 0 点开始、24 小时内跑完、不保证准点），
+ * 对象满 35 天之后的下一轮才删。最坏情况：满 35 天的时刻刚好错过当天那一轮的扫描 → 等下一轮（+1 天）→ 那一轮又拖到快结束（+1 天），
+ * 再加按天对齐的零头，正常情况下最旧一份也可能活到 37 天多。阈值放到 35 + 3 = 38 天：超过它说明连续两轮以上没删，才是生命周期没生效。
+ */
+export const LIFECYCLE_GRACE_DAYS = 3;
+
+/**
  * 备份桶的状态（给日志和 S10c 的告警）：份数、最新和最旧的时间、心跳。
- * 最旧的一份超过 35 + 1 天 → lifecycle_stale（生命周期规则没生效，「35 天内彻底清除」就不成立了）
+ * 最旧的一份超过 RETENTION_DAYS + LIFECYCLE_GRACE_DAYS（38）天 → lifecycle_stale（生命周期规则没生效，「35 天内彻底清除」就不成立了）
  */
 export async function backupStatus(store: ObjectStore, now: Date) {
   const list = await listBackups(store);
@@ -99,7 +107,7 @@ export async function backupStatus(store: ObjectStore, now: Date) {
     newest: list.at(-1)?.id ?? null,
     oldest: list[0]?.id ?? null,
     oldest_age_days: oldestAgeDays === null ? null : Math.round(oldestAgeDays * 10) / 10,
-    lifecycle_stale: oldestAgeDays !== null && oldestAgeDays > RETENTION_DAYS + 1,
+    lifecycle_stale: oldestAgeDays !== null && oldestAgeDays > RETENTION_DAYS + LIFECYCLE_GRACE_DAYS,
     heartbeat,
   };
 }
