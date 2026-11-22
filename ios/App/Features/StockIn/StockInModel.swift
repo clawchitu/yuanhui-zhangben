@@ -69,6 +69,8 @@ final class StockInModel {
     var expiryUnknown = false
     /// 进价填 0 时等人确认（「进价是 0 元，确定吗」）
     private(set) var confirmZeroCost = false
+    /// T30：到期日早于今天、或生产日期晚于今天时，先问一句再记
+    private(set) var confirmDate = false
     private(set) var notice: Notice?
     private(set) var noticeSeq = 0
     private(set) var pendingCount: Int
@@ -180,6 +182,16 @@ final class StockInModel {
     }
 
     var canCommit: Bool { conversion != nil && preview != nil && problem == nil }
+
+    /// T30（PR #31 Fable 建议 2）：直接填到期日时年份默认今年，忘改年会记成已经过期的日子；生产日期也可能填成以后。
+    /// 到期日早于今天、或生产日期晚于今天，返回提醒的话（记之前再确认一次）；其余 nil
+    var dateWarning: String? {
+        guard showsExpiry, !expiryUnknown, let d = try? enteredDate() else { return nil }
+        switch expiryMode {
+        case .direct: return d < today ? "到期日 \(d) 已经过了，年份填对了吗？" : nil
+        case .produced: return d > today ? "生产日期 \(d) 在今天之后，年份填对了吗？" : nil
+        }
+    }
 
     // MARK: - 扫码
 
@@ -297,13 +309,18 @@ final class StockInModel {
 
     /// 「记进货」。进价是 0 的第一次只请人确认，返回 false；`confirmedZero` 为真时照记。
     @discardableResult
-    func commit(confirmedZero: Bool = false, at now: Date = Date()) -> Bool {
+    func commit(confirmedZero: Bool = false, confirmedDate: Bool = false, at now: Date = Date()) -> Bool {
         guard canCommit, let conv = conversion, let n = packCount, let f = costFen else { return false }
         if f == 0, !confirmedZero {
             confirmZeroCost = true
             return false
         }
         confirmZeroCost = false
+        if dateWarning != nil, !confirmedDate {
+            confirmDate = true
+            return false
+        }
+        confirmDate = false
         do {
             let payload = try StockInPayload(entryId: UUID(), conversion: conv, packCount: n, unitCostFen: Fen(f),
                                              expiryDate: try expiryDate())
@@ -322,6 +339,7 @@ final class StockInModel {
     }
 
     func cancelZeroCost() { confirmZeroCost = false }
+    func cancelDate() { confirmDate = false }
 
     // MARK: - 其他
 

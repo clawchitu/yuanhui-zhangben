@@ -76,14 +76,13 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         switch self {
         case .reports: "S24"
         case .products: "S25"
-        case .records, .undoLast: "S20"
         case .expiry: "S27"
         case .count: "S26"
         case .pairing, .devices: "S23a"
         case .account: "S23b"
         case .privacy: "S21"
         case .logout: "S22b"
-        case .sell, .manualCode, .discount, .stockIn, .settings, .deviceName, .scanner: nil
+        case .sell, .manualCode, .discount, .stockIn, .settings, .deviceName, .scanner, .records, .undoLast: nil
         }
     }
 
@@ -104,7 +103,7 @@ struct RouteView: View {
 
     /// 这条路由在这些能力下出哪种页面（纯函数，单元测试逐个路由 × 身份测）
     enum Content: Equatable {
-        case denied, sell, manualCode, discountEntry, stockIn, settings, deviceName, scanner, placeholder
+        case denied, sell, manualCode, discountEntry, stockIn, settings, deviceName, scanner, records, placeholder
     }
 
     static func content(for route: Route, capabilities: Capabilities) -> Content {
@@ -117,6 +116,7 @@ struct RouteView: View {
         case .settings: return .settings
         case .deviceName: return .deviceName
         case .scanner: return .scanner
+        case .records, .undoLast: return .records
         default: return .placeholder
         }
     }
@@ -134,7 +134,10 @@ struct RouteView: View {
             case .settings: SettingsView()
             case .deviceName: DeviceNameView()
             case .scanner: ScannerStatusView()
-            case .placeholder: PlaceholderPage(route: route, layout: model.layout)
+            case .records:
+                RecordsView(db: model.db, cashier: model.layout == .cashier, route: route, clock: { [model] in model.now })
+            // 看账（S24 之前是占位页）：家用首页没有「刚记的」条时从这里进记的账（§14 S15-6）
+            case .placeholder: PlaceholderPage(route: route, layout: model.layout, link: route == .reports ? .records : nil)
             }
         }
         .toolbar(.hidden, for: .navigationBar)
@@ -148,6 +151,8 @@ struct PlaceholderPage: View {
     let route: Route
     let layout: ShellLayout
     var message = "这一页还在做"
+    /// 占位页上额外给的一个入口（看账 → 记的账）
+    var link: Route?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -163,6 +168,18 @@ struct PlaceholderPage: View {
                         .foregroundStyle(Tokens.Palette.ink)
                     if let s = route.plannedIn {
                         Text("开发计划 \(s) 段").font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
+                    }
+                    if let link {
+                        NavigationLink(value: link) {
+                            Label(link.title(layout), systemImage: "list.bullet.rectangle")
+                                .font(.system(size: 24, weight: .bold))
+                                .foregroundStyle(Tokens.Palette.ink)
+                                .frame(maxWidth: .infinity, minHeight: 64)
+                                .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Tokens.Palette.ink, lineWidth: 2.5))
+                        }
+                        .buttonStyle(PressDimStyle())
+                        .padding(.top, 20)
+                        .accessibilityIdentifier("\(route.rawValue).\(link.rawValue)")
                     }
                 }
                 .frame(maxWidth: .infinity)

@@ -33,6 +33,13 @@ struct HomeFigures: Equatable, Sendable {
                                     countSummary: "11月 数了 86 种", deviceCount: 3, scannerConnected: true)
 }
 
+extension HomeFigures.LastRecord {
+    /// 本地库最近一张卡 → 首页「刚记的 19:32 / 卖出 3 样 ¥53.00」
+    init(_ c: RecordCard) {
+        self.init(time: c.time, kind: c.kindText, itemCount: c.openLines.count, amountFen: Int(c.amountFen ?? 0))
+    }
+}
+
 /// 首页提醒条（25a）。规则：「没同步」在「快过期」上面。
 enum HomeReminder: Hashable, Sendable {
     case unsynced(Int)
@@ -65,6 +72,11 @@ final class AppModel {
     private(set) var onboarded: Bool
     var figures: HomeFigures
     let today: Date
+    /// 夹具固定的「现在」（稿子上的时间）；正常启动为 nil，用真时间
+    let fixedNow: Date?
+    /// 「刚记的」从本地库取（正常启动，和带 `-uiRecords` 的夹具）；false = 夹具用稿子上的数
+    var liveRecent = true
+    var now: Date { fixedNow ?? Date() }
     /// `-uiScrollTo bottom`：首页一打开就滚到底（截最大辅助字号下的整页用）
     let scrollToBottom: Bool
     /// 卖出页的测试夹具（只在 Debug 下由启动参数填，正式构建永远是空的）
@@ -82,7 +94,9 @@ final class AppModel {
     var scannerConnected: Bool { figures.scannerConnected ?? gun.connected }
 
     init(db: LocalDB, session: LocalSession, figures: HomeFigures, today: Date = Date(),
-         defaults: UserDefaults = .standard, scrollToBottom: Bool = false, gun: ScannerGunMonitor = ScannerGunMonitor()) {
+         defaults: UserDefaults = .standard, scrollToBottom: Bool = false, gun: ScannerGunMonitor = ScannerGunMonitor(),
+         fixedNow: Date? = nil) {
+        self.fixedNow = fixedNow
         self.db = db
         self.gun = gun
         self.session = session
@@ -102,6 +116,13 @@ final class AppModel {
         defaults.set(largeText, forKey: AppSettings.largeTextModeKey)
         defaults.set(session.deviceId.uuidString, forKey: AppSettings.onboardedDeviceKey)
         onboarded = true
+    }
+
+    /// 首页「刚记的」和待传笔数从本地库重取（§14 S15-1：刚记的接真数据，S20）
+    func refreshRecent() {
+        guard liveRecent else { return }
+        figures.lastRecord = (try? db.lastRecord()).flatMap { $0.map(HomeFigures.LastRecord.init) } ?? nil
+        if let n = try? db.pendingOps().count { figures.pendingCount = n }
     }
 
     func rename(_ name: String) throws {

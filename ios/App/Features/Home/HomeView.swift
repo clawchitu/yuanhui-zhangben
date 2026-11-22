@@ -33,6 +33,7 @@ struct HomeView: View {
             }
         }
         .background(Tokens.Palette.paper.ignoresSafeArea())
+        .onAppear { model.refreshRecent() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("page.home")
     }
@@ -279,13 +280,10 @@ struct RecentCard: View {
                 PriceText(cents: record.amountFen, size: 26)
             }
         }
-        if cashier {
-            NavigationLink(value: Route.records) { body.contentShape(Rectangle()) }
-                .buttonStyle(PressDimStyle())
-                .accessibilityIdentifier("home.records")
-        } else {
-            body
-        }
+        // 收银员带「点开看」字样；家用整条也可点进 07a，不加字样（§14 S15-6）
+        NavigationLink(value: Route.records) { body.contentShape(Rectangle()) }
+            .buttonStyle(PressDimStyle())
+            .accessibilityIdentifier("home.records")
     }
 
     @ViewBuilder private var undo: some View {
