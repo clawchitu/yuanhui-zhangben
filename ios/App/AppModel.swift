@@ -125,8 +125,33 @@ final class AppModel {
         if let n = try? db.pendingOps().count { figures.pendingCount = n }
     }
 
+    /// 网络服务（正常启动才有；夹具为 nil，改名只改本机）
+    var services: AppServices?
+
+    /// 改手机名（§14 S15-2）：先改本机，再报服务器（`PATCH /v1/devices/me`），名字以服务器返回的为准（重名会加序号）。
+    /// 报不上就留在 `pendingDeviceLabel`，回前台再报。收银员本机拒改（`renameCurrentDevice` 里拦）。
     func rename(_ name: String) throws {
         try db.renameCurrentDevice(name)
         if let s = try db.currentSession() { session = s }
+        guard let services else { return }
+        services.pendingDeviceLabel = session.deviceLabel
+        Task { await reportPendingLabel() }
+    }
+
+    /// 把没报上的手机名报给服务器；成功后清掉。失败（断网、服务器拒）留着，下次回前台再试
+    func reportPendingLabel() async {
+        guard let services, let pending = services.pendingDeviceLabel, capabilities.has(.renameDevice),
+              let label = LoginModel.validLabel(pending),
+              let token = services.tokens.token(ref: session.tokenRef) else { return }
+        do {
+            let final = try await services.api.renameDevice(label, token: token)
+            if services.pendingDeviceLabel == pending { services.pendingDeviceLabel = nil }
+            if final != session.deviceLabel {
+                try db.renameCurrentDevice(final)
+                if let s = try db.currentSession() { session = s }
+            }
+        } catch {
+            // 留在 pendingDeviceLabel，回前台再报
+        }
     }
 }

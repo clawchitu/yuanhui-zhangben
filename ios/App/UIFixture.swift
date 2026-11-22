@@ -75,6 +75,10 @@ enum UIFixture {
         if args.contains("-uiFreshInstall") {
             defaults.removeObject(forKey: AppSettings.largeTextModeKey)
             defaults.removeObject(forKey: AppSettings.onboardedDeviceKey)
+            defaults.removeObject(forKey: AuthDefaults.lastUsername)
+            defaults.removeObject(forKey: AuthDefaults.pendingDeviceLabel)
+            // 当作刚装好：钥匙串里的令牌也清掉（本机库里留下的会话因此不算登录，启动时结束掉）
+            KeychainTokenStore().deleteAll()
         }
         #endif
         if let on = largeTextOverride(from: args) {
@@ -206,6 +210,20 @@ extension UIFixture {
         // 19:32 本机的卖出（稿子 03 / 08：53.50 抹到 53.00），还没传上去
         try sale([("6901234500011", 1), ("6901035600016", 4), ("6902514300011", 1)], paid: 5300, at: at("19:32"))
         return true
+    }
+
+    /// 登录页截图夹具：-uiLoginUser 名字、-uiLoginPassword 口令（预填）、-uiLoginLockedUntil ISO 时间（25c）、
+    /// -uiLoginScreen scan（直接开扫码登录页）；-uiLoginCode YHZB1:… 由扫码登录页自己读
+    @MainActor static func applyLoginFixture(_ m: LoginModel, args: [String]) {
+        if let u = value(for: "-uiLoginUser", in: args) {
+            m.username = u
+            m.services?.defaults.set(u, forKey: AuthDefaults.lastUsername)
+        }
+        if let p = value(for: "-uiLoginPassword", in: args) { m.password = p }
+        if let t = value(for: "-uiLoginLockedUntil", in: args), let d = ISO8601DateFormatter().date(from: t) {
+            m.setLocked(until: d)
+        }
+        if value(for: "-uiLoginScreen", in: args) == "scan" { m.scanOpen = true }
     }
 
     enum DemoSeedIds {

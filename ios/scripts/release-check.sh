@@ -23,7 +23,7 @@ bin="$dd/Build/Products/Release-iphonesimulator/YuanhuiZhangben.app/YuanhuiZhang
 [ -f "$bin" ] || { echo "找不到 Release 构建的二进制 $bin" >&2; exit 1; }
 # 查二进制：只在 Debug 里编译的代码留下的字样（演示策略的分支名进反射元数据；长字符串字面量进常量区）。
 # 短于 16 字节的字符串 Swift 内联进指令，查不到，所以不查 -uiRole 这类短参数名，由上面的 UI 测试管。
-markers=(demoSession scannerLab zhangben-demo.sqlite 5EED0000-0000-4000-8000-00000000F001 5EED0000-0000-4000-8000-00000000F002)
+markers=(-uiSeedStoredAPIBase -uiResetStoredAPIBase -uiLoginLockedUntil scannerLab zhangben-demo.sqlite 5EED0000-0000-4000-8000-00000000F001 5EED0000-0000-4000-8000-00000000F002)
 has() { LC_ALL=C grep -aqF -- "$2" "$1"; }
 bad=0
 for s in "${markers[@]}"; do
@@ -37,5 +37,8 @@ if [ -n "${3:-}" ]; then
     has "$3" "$s" || { echo "Debug 构建 $3 里也找不到「$s」，查法可能失效" >&2; bad=1; }
   done
 fi
+# S21：Release 包里不许出现 IP 字面量（Beta / Debug 的地址写成长于 15 字节的整条地址，进常量区，所以查得到）
+if has "$bin" "47.117.184.253"; then echo "Release 二进制里有 IP 地址 47.117.184.253" >&2; bad=1; fi
+if [ -n "${3:-}" ]; then has "$3" "https://47.117.184.253" || { echo "Debug 构建里也找不到 IP 地址，查法可能失效" >&2; bad=1; }; fi
 [ $bad -eq 0 ] || exit 1
 echo "Release 检查通过：没有演示会话和会话夹具"

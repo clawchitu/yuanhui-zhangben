@@ -34,8 +34,8 @@ final class ReleaseBuildUITests: XCTestCase {
         ]
         for args in attempts {
             let app = launch(args)
-            XCTAssertTrue(app.otherElements["page.signedOut"].waitForExistence(timeout: 10), "\(args) 应出「还没登录」页")
-            XCTAssertTrue(app.staticTexts["还没登录"].exists, "\(args)")
+            XCTAssertTrue(app.otherElements["page.login"].waitForExistence(timeout: 10), "\(args) 应出登录页")
+            XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS '注册'")).firstMatch.exists, "\(args) 登录页不应有「注册」")
             for page in ["page.home", "page.onboarding", "page.settings", "page.stockIn", "page.denied", "page.scannerLab"] {
                 XCTAssertFalse(app.otherElements[page].exists, "\(args) 不应出 \(page)")
             }
@@ -47,6 +47,6 @@ final class ReleaseBuildUITests: XCTestCase {
     func testReleaseBuildKeepsGalleryFixture() throws {
         let app = launch(["-uiFixture", "gallery-3"])
         XCTAssertTrue(app.descendants(matching: .any)["gallery.stepperCompact"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.otherElements["page.signedOut"].exists)
+        XCTAssertFalse(app.otherElements["page.login"].exists)
     }
 }

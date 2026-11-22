@@ -23,7 +23,10 @@ enum APIEnvironment {
     }
 
     #if BETA || DEBUG
-    static let betaIPHost = "47.117.184.253"
+    /// 备案前的服务器地址。写成整条地址（长于 15 字节，进常量区）：`release-check.sh` 查 Beta 二进制里有它、
+    /// Release 二进制里没有 IP，查法才有效（Swift 把 15 字节以内的字符串直接编进指令，`grep` 查不到）
+    static let betaIPBase = "https://47.117.184.253"
+    static var betaIPHost: String { URL(string: betaIPBase)!.host! }
     #endif
 
     /// 包内默认地址。Debug 可用 `-uiAPIBase http://localhost:端口` 换成测试桩的地址（仍要过白名单）
@@ -32,7 +35,7 @@ enum APIEnvironment {
         if let v = UIFixture.value(for: "-uiAPIBase", in: args) { return v }
         return "http://localhost:8787"
         #elseif BETA
-        return "https://\(betaIPHost)"
+        return betaIPBase
         #else
         return "https://\(domainHost)"
         #endif

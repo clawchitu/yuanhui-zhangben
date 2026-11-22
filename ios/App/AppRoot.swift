@@ -44,23 +44,52 @@ struct AppShell<Content: View>: View {
 struct AppRoot: View {
     static let title = "元辉账本"
 
-    @State private var boot: Boot = AppRoot.makeBoot(ProcessInfo.processInfo.arguments)
+    @State private var boot: Boot
+    /// 网络服务（地址、令牌、配置）。夹具和组件陈列页不连服务器，为 nil
+    @State private var services: AppServices?
+    @Environment(\.scenePhase) private var scenePhase
+
+    init(args: [String] = ProcessInfo.processInfo.arguments) {
+        let services = AppRoot.needsServices(args) ? AppServices.make(args: args) : nil
+        _services = State(initialValue: services)
+        _boot = State(initialValue: AppRoot.makeBoot(args, services: services))
+    }
 
     var body: some View {
         AppShell {
-            switch boot {
-            case .gallery(let page):
-                ComponentGallery(page: page)
-            case .app(let model, let initialPath):
-                MainView(initialPath: initialPath).environment(model)
-            case .signedOut:
-                SignedOutView()
-            case .failed(let message):
-                StartupErrorView(message: message)
-            #if DEBUG
-            case .scannerLab(let login):
-                ScannerLab(login: login, args: ProcessInfo.processInfo.arguments)
-            #endif
+            ZStack {
+                switch boot {
+                case .gallery(let page):
+                    ComponentGallery(page: page)
+                case .app(let model, let initialPath):
+                    MainView(initialPath: initialPath).environment(model)
+                case .signedOut(let login):
+                    LoginFlow(model: login)
+                case .failed(let message):
+                    StartupErrorView(message: message)
+                #if DEBUG
+                case .scannerLab(let login):
+                    ScannerLab(login: login, args: ProcessInfo.processInfo.arguments)
+                #endif
+                }
+                if services?.needsUpdate == true {
+                    UpdateRequiredView().transition(.opacity)
+                }
+            }
+        }
+        .task { await services?.refreshConfig() }
+        .onReceive(NotificationCenter.default.publisher(for: AppRoot.signedIn)) { note in
+            // 登录成功：进新会话（还没做完首次进入，先到 16 / 16b）
+            guard let db = note.object as? LocalDB, let session = note.userInfo?["session"] as? LocalSession else { return }
+            do { boot = .app(try AppRoot.liveModel(db: db, session: session, services: services), []) }
+            catch { boot = .failed(String(describing: error)) }
+        }
+        .onChange(of: scenePhase) { old, phase in
+            // 回到前台：再取一次配置、补报没报上的手机名（§14 S15-2）
+            guard phase == .active, old == .background else { return }
+            Task {
+                await services?.refreshConfig()
+                if case .app(let model, _) = boot { await model.reportPendingLabel() }
             }
         }
     }
@@ -68,13 +97,25 @@ struct AppRoot: View {
     enum Boot {
         case gallery(Int?)
         case app(AppModel, [Route])
-        /// 没有会话（Beta / Release）：「还没登录」占位页，S21 换成登录页
-        case signedOut
+        /// 没有会话：登录页（13）
+        case signedOut(LoginModel)
         case failed(String)
         #if DEBUG
         /// 扫码测试页（S14，只在 Debug）
         case scannerLab(login: Bool)
         #endif
+    }
+
+    /// 只有正常启动连服务器；组件陈列页、扫码测试页、Debug 夹具不连
+    static func needsServices(_ args: [String]) -> Bool {
+        guard UIFixture.screen(from: args) != nil else {
+            #if DEBUG
+            return UIFixture.role(from: args) == nil
+            #else
+            return true
+            #endif
+        }
+        return false
     }
 
     /// 本机正式库所在目录（Application Support）
@@ -83,7 +124,7 @@ struct AppRoot: View {
                                     appropriateFor: nil, create: true)
     }
 
-    @MainActor static func makeBoot(_ args: [String]) -> Boot {
+    @MainActor static func makeBoot(_ args: [String], services: AppServices? = nil) -> Boot {
         let screen = UIFixture.screen(from: args)
         if case .gallery(let page) = screen { return .gallery(page) }
         #if DEBUG
@@ -96,44 +137,80 @@ struct AppRoot: View {
                 return .app(try fixtureModel(role: role, screen: screen, args: args), initial)
             }
             #endif
-            return try liveBoot(directory: try storeDirectory(), policy: .current)
+            let tokens = services?.tokens ?? KeychainTokenStore()
+            let boot = try liveBoot(directory: try storeDirectory(), tokens: tokens,
+                                    defaults: services?.defaults ?? .standard, services: services)
+            #if DEBUG
+            if case .signedOut(let login) = boot { UIFixture.applyLoginFixture(login, args: args) }
+            #endif
+            return boot
         } catch {
             return .failed(String(describing: error))
         }
     }
 
-    /// 正常启动（C 阶段还没有登录，S21 接）：打开本机正式库，有会话就进；没有会话按 `policy` 办（§14 S15-4）。
-    @MainActor static func liveBoot(directory: URL, policy: NoSessionPolicy) throws -> Boot {
+    /// 正常启动：打开本机正式库，有会话且钥匙串里有它的令牌就进；否则出登录页。
+    /// `tokenRef` 为 `demo-local` 的遗留会话（S15 时 Debug 包自动建的演示会话）不当作已登录，清掉（§14 S15-4）；
+    /// 它改过的手机名留到 `pendingDeviceLabel`，第一次登录时带上（§14 S15-2）。
+    @MainActor static func liveBoot(directory: URL, tokens: TokenStore, defaults: UserDefaults = .standard,
+                                    services: AppServices? = nil) throws -> Boot {
         let db = try LocalDB(path: directory.appendingPathComponent(liveDBName).path)
+        try clearLegacyDemo(directory: directory, db: db, defaults: defaults)
         if let session = try db.currentSession() {
-            return .app(try liveModel(db: db, session: session), [])
-        }
-        switch policy {
-        case .signedOut:
-            return .signedOut
-        #if DEBUG
-        case .demoSession:
-            // 演示会话放在单独的演示库里，正式库一个字也不写
-            let demo = try LocalDB(path: directory.appendingPathComponent(demoDBName).path)
-            if try demo.currentSession() == nil {
-                try demo.beginSession(try LocalSession(deviceId: UUID(), storeId: DemoSeed.storeId, role: .family,
-                                                       tokenRef: "demo-local", storeName: "元辉烟酒店", deviceLabel: "新手机"))
-                try DemoSeed.install(into: demo)
+            if tokens.token(ref: session.tokenRef) != nil {
+                let model = try liveModel(db: db, session: session, services: services)
+                return .app(model, [])
             }
-            guard let session = try demo.currentSession() else { throw ShopCoreError.invalid("没有会话") }
-            return .app(try liveModel(db: demo, session: session), [])
-        #endif
+            // 钥匙串里没有这个会话的令牌（重装、换机恢复）：不能当作已登录
+            try db.endSession()
+        }
+        return .signedOut(makeLogin(db: db, services: services))
+    }
+
+    @MainActor static func makeLogin(db: LocalDB, services: AppServices?) -> LoginModel {
+        LoginModel(services: services, db: db) { session in
+            NotificationCenter.default.post(name: AppRoot.signedIn, object: db, userInfo: ["session": session])
         }
     }
+
+    /// 登录成功的通知：`AppRoot` 收到后切到首页
+    static let signedIn = Notification.Name("yh.signedIn")
+
+    /// S15 留下的演示会话：正式库里的 `demo-local` 会话结束掉；Debug 的演示库整个删掉
+    static func clearLegacyDemo(directory: URL, db: LocalDB, defaults: UserDefaults) throws {
+        func keepLabel(_ s: LocalSession) {
+            if s.deviceLabel != legacyDefaultLabel, defaults.string(forKey: AuthDefaults.pendingDeviceLabel) == nil {
+                defaults.set(s.deviceLabel, forKey: AuthDefaults.pendingDeviceLabel)
+            }
+        }
+        if let s = try db.currentSession(), s.tokenRef == legacyDemoTokenRef {
+            keepLabel(s)
+            try db.endSession()
+        }
+        #if DEBUG
+        let demoPath = directory.appendingPathComponent(demoDBName).path
+        if FileManager.default.fileExists(atPath: demoPath) {
+            if let s = try? LocalDB(path: demoPath).currentSession() { keepLabel(s) }
+            for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: demoPath + suffix) }
+        }
+        #endif
+    }
+
+    static let legacyDemoTokenRef = "demo-local"
+    /// S15 演示会话的默认手机名：没改过就不用补报
+    static let legacyDefaultLabel = "新手机"
 
     /// 本机正式库的文件名（登录后的真账都在这里）
     static let liveDBName = "zhangben.sqlite"
 
-    @MainActor private static func liveModel(db: LocalDB, session: LocalSession) throws -> AppModel {
+    @MainActor static func liveModel(db: LocalDB, session: LocalSession, services: AppServices?) throws -> AppModel {
         var figures = HomeFigures()
         figures.pendingCount = try db.pendingOps().count
         figures.lastRecord = try db.lastRecord().map(HomeFigures.LastRecord.init)
-        return AppModel(db: db, session: session, figures: figures)
+        let model = AppModel(db: db, session: session, figures: figures)
+        model.services = services
+        Task { await model.reportPendingLabel() }
+        return model
     }
 
     #if DEBUG
@@ -178,24 +255,6 @@ struct AppRoot: View {
     #endif
 }
 
-/// 本机没有会话时怎么办（§14 S15-4）。
-enum NoSessionPolicy: Equatable {
-    /// Beta / Release：出「还没登录」页，不建会话、不写演示数据
-    case signedOut
-    #if DEBUG
-    /// 只有 Debug 构建有：在单独的演示库里开一个家用演示会话、装上演示数据
-    case demoSession
-    #endif
-
-    /// 当前构建用哪种。非 Debug 构建里根本没有 `demoSession` 这个分支
-    static var current: NoSessionPolicy {
-        #if DEBUG
-        .demoSession
-        #else
-        .signedOut
-        #endif
-    }
-}
 
 /// 首次进入没做完 → 16 / 16b；做完 → 首页和它下面的各页（导航骨架）。
 struct MainView: View {
@@ -216,26 +275,6 @@ struct MainView: View {
                     .navigationDestination(for: Route.self) { RouteView(route: $0) }
             }
         }
-    }
-}
-
-/// 没有会话时的中性占位页（Beta / Release）。不建会话、不写演示数据；S21 换成登录页。
-struct SignedOutView: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(AppRoot.title).font(TypeScale.title.weight(.bold))
-            Text("还没登录").font(TypeScale.body)
-            Text("这一版还不能登录，请等新版本。")
-                .font(TypeScale.secondary)
-                .foregroundStyle(Tokens.Palette.ink2)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .foregroundStyle(Tokens.Palette.ink)
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Tokens.Palette.paper.ignoresSafeArea())
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("page.signedOut")
     }
 }
 
