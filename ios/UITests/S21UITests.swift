@@ -223,6 +223,28 @@ final class S21UITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["请更新"].exists)
     }
 
+    /// 回到前台再取一次 `/v1/config`（PR #35 Fable 实测：原来回前台从不重取）。按 Home 再拉回来，系统走的是
+    /// background → inactive → active；每回来一次桩上多一次 config，回来时新下发的 `min_build` 立刻生效
+    func testReturningToForegroundRefetchesConfig() {
+        let app = launch()
+        waitFor(a, "/v1/config", count: 1)
+        XCTAssertTrue(app.descendants(matching: .any)["page.login"].waitForExistence(timeout: 10))
+        pause(1)
+        XCTAssertEqual(a.count("/v1/config"), 1, "冷启动只取一次")
+        for n in 2...3 {
+            XCUIDevice.shared.press(.home)
+            pause(1.5)
+            app.activate()
+            waitFor(a, "/v1/config", count: n)
+        }
+        a.update { $0.minBuild = 999_999 }
+        XCUIDevice.shared.press(.home)
+        pause(1.5)
+        app.activate()
+        waitFor(a, "/v1/config", count: 4)
+        XCTAssertTrue(app.descendants(matching: .any)["page.updateRequired"].waitForExistence(timeout: 10))
+    }
+
     /// 「看看演示」：开关开时能进演示小店，关时界面上找不到
     func testDemoEntryFollowsSwitch() {
         let off = launch()

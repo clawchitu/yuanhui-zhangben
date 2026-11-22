@@ -48,6 +48,7 @@ struct AppRoot: View {
     /// 网络服务（地址、令牌、配置）。夹具和组件陈列页不连服务器，为 nil
     @State private var services: AppServices?
     @Environment(\.scenePhase) private var scenePhase
+    @State private var foreground = ForegroundRefresh()
 
     init(args: [String] = ProcessInfo.processInfo.arguments) {
         let services = AppRoot.needsServices(args) ? AppServices.make(args: args) : nil
@@ -84,14 +85,17 @@ struct AppRoot: View {
             do { boot = .app(try AppRoot.liveModel(db: db, session: session, services: services), []) }
             catch { boot = .failed(String(describing: error)) }
         }
-        .onChange(of: scenePhase) { old, phase in
-            // 回到前台：再取一次配置、补报没报上的手机名（§14 S15-2）
-            guard phase == .active, old == .background else { return }
-            Task {
-                await services?.refreshConfig()
-                if case .app(let model, _) = boot { await model.reportPendingLabel() }
-            }
+        .onChange(of: scenePhase) { _, phase in
+            // 回到前台（进过后台、又变成 active）：再取一次配置、补报没报上的手机名（§14 S15-2）
+            guard foreground.shouldRefresh(on: phase) else { return }
+            Task { await onReturnToForeground() }
         }
+    }
+
+    /// 回到前台要做的事
+    @MainActor private func onReturnToForeground() async {
+        await services?.refreshConfig()
+        if case .app(let model, _) = boot { await model.reportPendingLabel() }
     }
 
     enum Boot {
