@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 @testable import ShopCore
 
@@ -104,9 +105,21 @@ import Testing
         let t = MemoryTokenStore()
         let ref = TokenRef.forDevice(UUID())
         try t.save("x", ref: ref)
-        #expect(t.token(ref: ref) == "x")
+        #expect(try t.token(ref: ref) == "x")
         t.delete(ref: ref)
-        #expect(t.token(ref: ref) == nil)
+        #expect(try t.token(ref: ref) == nil)
+        t.readFailure = errSecInteractionNotAllowed
+        #expect(throws: TokenReadError(status: errSecInteractionNotAllowed)) { try t.token(ref: ref) }
+    }
+
+    /// 钥匙串读失败和「没有」分开：只有 errSecItemNotFound 是 nil
+    @Test func keychainStatusInterpretation() throws {
+        #expect(try KeychainTokenStore.interpret(status: errSecSuccess, data: Data("tok".utf8)) == "tok")
+        #expect(try KeychainTokenStore.interpret(status: errSecItemNotFound, data: nil) == nil)
+        for st in [errSecInteractionNotAllowed, errSecAuthFailed, errSecNotAvailable, errSecParam] {
+            #expect(throws: TokenReadError(status: st)) { try KeychainTokenStore.interpret(status: st, data: nil) }
+        }
+        #expect(throws: TokenReadError.self) { try KeychainTokenStore.interpret(status: errSecSuccess, data: nil) }
     }
 
     @Test func errorBodyDecodes() {

@@ -142,7 +142,7 @@ final class AppModel {
     func reportPendingLabel() async {
         guard let services, let pending = services.pendingDeviceLabel, capabilities.has(.renameDevice),
               let label = LoginModel.validLabel(pending),
-              let token = services.tokens.token(ref: session.tokenRef) else { return }
+              let token = try? services.tokens.token(ref: session.tokenRef) else { return }  // 读不出来也留着，下次再报
         do {
             let final = try await services.api.renameDevice(label, token: token)
             if services.pendingDeviceLabel == pending { services.pendingDeviceLabel = nil }

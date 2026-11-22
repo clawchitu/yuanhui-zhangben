@@ -1,3 +1,4 @@
+import Security
 import ShopCore
 import XCTest
 @testable import YuanhuiZhangben
@@ -49,6 +50,24 @@ final class LaunchPolicyTests: XCTestCase {
                                              storeName: "店", deviceLabel: "手机"))
         guard case .signedOut = try boot(MemoryTokenStore()) else { return XCTFail() }
         XCTAssertNil(defaults.string(forKey: AuthDefaults.pendingDeviceLabel))
+    }
+
+    /// PR #35 Fable 可选 2：钥匙串读失败（重启后首次解锁前 errSecInteractionNotAllowed）不是「没有令牌」，
+    /// 不结束会话；解锁后再启动照常进
+    func testKeychainReadFailureKeepsSession() throws {
+        let db = try LocalDB(path: liveDB.path)
+        let id = UUID()
+        let s = try LocalSession(deviceId: id, storeId: UUID(), role: .family, tokenRef: TokenRef.forDevice(id),
+                                 storeName: "店", deviceLabel: "手机")
+        try db.beginSession(s)
+        let tokens = MemoryTokenStore()
+        try tokens.save("t", ref: s.tokenRef)
+        tokens.readFailure = errSecInteractionNotAllowed
+        guard case .tokenUnavailable = try boot(tokens) else { return XCTFail("读失败应提示重试，不进登录页") }
+        XCTAssertEqual(try LocalDB(path: liveDB.path).currentSession()?.deviceId, id, "会话还在")
+        tokens.readFailure = nil
+        guard case .app(let model, _) = try boot(tokens) else { return XCTFail("解锁后应直接进") }
+        XCTAssertEqual(model.session.deviceId, id)
     }
 
     /// 杀掉重开仍是登录状态：库里有会话、钥匙串里有令牌

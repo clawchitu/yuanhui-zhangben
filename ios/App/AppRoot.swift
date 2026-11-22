@@ -68,6 +68,8 @@ struct AppRoot: View {
                     LoginFlow(model: login)
                 case .failed(let message):
                     StartupErrorView(message: message)
+                case .tokenUnavailable:
+                    TokenUnavailableView { retryBoot() }
                 #if DEBUG
                 case .scannerLab(let login):
                     ScannerLab(login: login, args: ProcessInfo.processInfo.arguments)
@@ -94,8 +96,14 @@ struct AppRoot: View {
 
     /// 回到前台要做的事
     @MainActor private func onReturnToForeground() async {
+        if case .tokenUnavailable = boot { retryBoot() }
         await services?.refreshConfig()
         if case .app(let model, _) = boot { await model.reportPendingLabel() }
+    }
+
+    /// 钥匙串读不出来时重走一遍启动（会话没结束，读出来就直接进）
+    @MainActor private func retryBoot() {
+        boot = AppRoot.makeBoot(ProcessInfo.processInfo.arguments, services: services)
     }
 
     enum Boot {
@@ -104,6 +112,8 @@ struct AppRoot: View {
         /// 没有会话：登录页（13）
         case signedOut(LoginModel)
         case failed(String)
+        /// 有会话，但钥匙串这会儿读不出来（例如重启后还没解锁）：会话不动，提示后重试（PR #35 Fable 可选 2）
+        case tokenUnavailable
         #if DEBUG
         /// 扫码测试页（S14，只在 Debug）
         case scannerLab(login: Bool)
@@ -161,7 +171,9 @@ struct AppRoot: View {
         let db = try LocalDB(path: directory.appendingPathComponent(liveDBName).path)
         try clearLegacyDemo(directory: directory, db: db, defaults: defaults)
         if let session = try db.currentSession() {
-            if tokens.token(ref: session.tokenRef) != nil {
+            let token: String?
+            do { token = try tokens.token(ref: session.tokenRef) } catch { return .tokenUnavailable }
+            if token != nil {
                 let model = try liveModel(db: db, session: session, services: services)
                 return .app(model, [])
             }
@@ -279,6 +291,23 @@ struct MainView: View {
                     .navigationDestination(for: Route.self) { RouteView(route: $0) }
             }
         }
+    }
+}
+
+/// 钥匙串暂时读不出来：不退出登录，解锁后再试
+private struct TokenUnavailableView: View {
+    let retry: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("手机还没准备好").font(TypeScale.title)
+            Text("刚开机的手机要先解锁一次。解锁以后点「再试一次」，账和登录都还在。")
+                .font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
+            Button("再试一次", action: retry).accessibilityIdentifier("tokenUnavailable.retry")
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Tokens.Palette.paper.ignoresSafeArea())
+        .accessibilityIdentifier("page.tokenUnavailable")
     }
 }
 
