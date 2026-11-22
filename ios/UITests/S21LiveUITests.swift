@@ -6,6 +6,7 @@ import XCTest
 ///   TEST_RUNNER_YH_LIVE_USER / TEST_RUNNER_YH_LIVE_PASSWORD   账号和密码（运行时从钥匙串读，不写文件）
 ///   TEST_RUNNER_YH_LIVE_LOCK=1    另跑「错 5 次锁定」（只对本机服务端：线上会把测试号锁 15 分钟）
 ///   TEST_RUNNER_YH_LIVE_CODE      另跑扫码登录，给一个已过期的 `YHZB1:` 码（本机服务端出码后在库里改过期）
+/// 用例按名字顺序跑，锁定在登录成功之前：同一个号同时测两样时，登录成功要另跑一次（`-only-testing:…/testLiveLoginSucceeds`）。
 @MainActor
 final class S21LiveUITests: XCTestCase {
     private var env: [String: String] { ProcessInfo.processInfo.environment }

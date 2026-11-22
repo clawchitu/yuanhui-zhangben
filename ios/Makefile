@@ -4,7 +4,7 @@ shots:
 shots-s15:
 	scripts/shots-s15.sh ../docs/screenshots/s15
 
-.PHONY: shots shots-s15 shots-s14 shots-s16 shots-s17 shots-s18 shots-s19 shots-s20
+.PHONY: shots shots-s15 shots-s14 shots-s16 shots-s17 shots-s18 shots-s19 shots-s20 shots-s21
 
 shots-s14:
 	scripts/shots-s14.sh ../docs/screenshots/s14
@@ -23,3 +23,6 @@ shots-s19:
 
 shots-s20:
 	scripts/shots-s20.sh ../docs/screenshots/s20
+
+shots-s21:
+	scripts/shots-s21.sh ../docs/screenshots/s21
