@@ -4,6 +4,7 @@
 #   ECS（整机重建，RESTORE_COMPOSE_DIR=/opt/yuanhui）：node 步骤在 backup 容器里跑（docker compose run backup，凭据、口令、
 #     DATABASE_URL 都取自 /opt/yuanhui/.env），pg_restore 在 Postgres 容器里跑（docker compose exec postgres）。数据库不映射端口，
 #     不需要 ssh -L，也不需要在 ECS 上装 node。步骤见 docs/runbook.md「整机重建」。
+#     目标库默认是在用库 yuanhui（整机重建）；ECS 上做恢复演练时设 RESTORE_DB=<另建的空库>，在用库不动（runbook「恢复演练（ECS 上）」）。
 # 用法：deploy/restore.sh <备份 id | latest> [--execute]
 #   默认 dry-run：下载、解密、核对 sha256、pg_restore --list 校验 dump、检查目标库、列出删除记录和「备份里有、将被删掉的店」。目标库一个字节都不写。
 #   --execute：清空目标库并打「恢复中」标记（只许空库或「恢复中」的库）→ pg_restore → 按清单逐项比对 → 重放删除记录
@@ -32,6 +33,9 @@ CD="${RESTORE_COMPOSE_DIR:-}"
 if [ -n "$CD" ]; then
   [ -f "$CD/compose.yml" ] && [ -f "$CD/.env" ] || { echo "RESTORE_COMPOSE_DIR=$CD 下缺 compose.yml 或 .env" >&2; exit 2; }
   C=(docker compose -f "$CD/compose.yml" --project-directory "$CD" --env-file "$CD/.env")
+  # 目标库名：整机重建是在用库 yuanhui（默认）；在 ECS 上做恢复演练时设 RESTORE_DB=<先 createdb 好的空库>，不碰在用库
+  RDB="${RESTORE_DB:-yuanhui}"
+  [[ $RDB =~ ^[a-z_][a-z0-9_]{0,62}$ ]] || { echo "RESTORE_DB 只许小写字母、数字、下划线：$RDB" >&2; exit 2; }
 else
   [ -n "${DATABASE_URL:-}" ] || { echo "缺 DATABASE_URL（目标新库）" >&2; exit 2; }
   [ -n "${BACKUP_PASSPHRASE:-}" ] || { echo "缺 BACKUP_PASSPHRASE" >&2; exit 2; }
@@ -64,10 +68,16 @@ if [ -n "$CD" ]; then
   # 容器里是 node 用户（1000），工作目录要让它能写；/work 是同一个目录
   if [ "$(id -u)" = 0 ]; then chown 1000:1000 "$W"; fi
   chmod 700 "$W"
-  node_r() { "${C[@]}" run --rm -T -v "$W:/work" backup node scripts/restore.ts "$@"; }
+  if [ "$RDB" = yuanhui ]; then
+    node_r() { "${C[@]}" run --rm -T -v "$W:/work" backup node scripts/restore.ts "$@"; }
+  else
+    # 演练库：容器里把 .env 拼好的 DATABASE_URL（…/yuanhui）只换库名，口令不进命令行；不依赖镜像里的脚本版本
+    # shellcheck disable=SC2016
+    node_r() { "${C[@]}" run --rm -T -v "$W:/work" -e RESTORE_DB="$RDB" backup sh -c 'DATABASE_URL="${DATABASE_URL%/*}/$RESTORE_DB" exec "$@"' restore node scripts/restore.ts "$@"; }
+  fi
   WD=/work
   pg_list() { "${C[@]}" exec -T postgres pg_restore --list < "$W/db.dump"; }
-  pg_load() { "${C[@]}" exec -T postgres pg_restore -U yuanhui -d yuanhui --no-owner --no-acl --exit-on-error < "$W/db.dump"; }
+  pg_load() { "${C[@]}" exec -T postgres pg_restore -U yuanhui -d "$RDB" --no-owner --no-acl --exit-on-error < "$W/db.dump"; }
 else
   node_r() { node "$SERVER/scripts/restore.ts" "$@"; }
   WD=$W
