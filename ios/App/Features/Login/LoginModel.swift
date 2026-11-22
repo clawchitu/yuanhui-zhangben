@@ -115,6 +115,8 @@ final class LoginModel {
             message = "试得太多了，过一会儿再试"
         case .transport:
             message = "连不上服务器，看看网络再试"
+        case .redirected:
+            message = Self.redirectedText
         default:
             message = "登录没成功，再试一次"
         }
@@ -134,6 +136,7 @@ final class LoginModel {
         } catch let e as APIError {
             switch e {
             case .transport: message = "连不上服务器，看看网络再试"
+            case .redirected: message = Self.redirectedText
             default: message = "演示小店现在进不去，过一会儿再试"
             }
         } catch {
@@ -172,12 +175,16 @@ final class LoginModel {
             case .server(_, "delete_pending", _, _): "这家店的账号正在注销，现在不能开通新手机"
             case .server(_, "rate_limited", _, _): "试得太多了，过一会儿再试"
             case .transport: "连不上服务器，看看网络再试"
+            case .redirected: Self.redirectedText
             default: "没登录上，再扫一次"
             }
         } catch {
             scanMessage = "没登录上，再扫一次"
         }
     }
+
+    /// 服务器想把请求转去别的地址：没跟过去，账号密码没有发出去
+    static let redirectedText = "服务器地址不对，已经拦下，登录信息没有发出去。过一会儿再试，还不行就找店里"
 
     private func finish(_ session: LocalSession) {
         password = ""

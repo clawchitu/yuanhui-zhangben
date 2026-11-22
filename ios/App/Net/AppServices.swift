@@ -39,7 +39,7 @@ final class AppServices {
     /// 启动时建。包内默认地址不在白名单里（配置写错）时返回 nil，登录页提示「连不上」
     static func make(args: [String] = ProcessInfo.processInfo.arguments) -> AppServices? {
         guard let bases = APIEnvironment.makeStore(args: args) else { return nil }
-        let api = APIClient(bases: bases, session: URLSession(configuration: .ephemeral))
+        let api = APIClient(bases: bases)  // 会话：ephemeral、不跟重定向（APIClient.makeSession）
         let s = AppServices(api: api, tokens: KeychainTokenStore())
         #if DEBUG
         s.forceUpdate = args.contains("-uiRequireUpdate")

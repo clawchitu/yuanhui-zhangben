@@ -38,6 +38,8 @@ public enum APIError: Error, Equatable, Sendable {
     case server(status: Int, code: String, lockedUntil: Date?, retryAfterS: Int?)
     case transport(String)
     case badResponse(Int)
+    /// 服务器回了 30x 要把请求转去别处：一律不跟（白名单只认第一跳，跟过去就可能把密码发到白名单外）
+    case redirected(Int)
 
     public var code: String? { if case .server(_, let c, _, _) = self { c } else { nil } }
 }
@@ -55,13 +57,30 @@ public enum PairingCode {
 
 /// 网络层（S21）：基址来自 `APIBaseStore`。请求先打当前地址；用的是下发地址且**连不上**（传输错误，不是 HTTP 错误）时，
 /// 这一次退回包内默认地址重发，已存地址不删，下次再试（§8 S21）。本段不做同步（S22a）。
+///
+/// **不跟随重定向**：会话和每个任务都挂 `NoRedirect`，30x 原样交回来，按 `APIError.redirected` 失败处理，
+/// 请求不会发往 `Location` 指的地址（PR #35 Codex 评审必须修 1）。
 public final class APIClient: Sendable {
     public let bases: APIBaseStore
     let session: URLSession
 
-    public init(bases: APIBaseStore, session: URLSession = .shared) {
+    public init(bases: APIBaseStore, session: URLSession = APIClient.makeSession()) {
         self.bases = bases
         self.session = session
+    }
+
+    /// 本 App 发 API 请求用的会话：ephemeral（不落 cookie、缓存），拒绝一切重定向
+    public static func makeSession(_ configuration: URLSessionConfiguration = .ephemeral) -> URLSession {
+        URLSession(configuration: configuration, delegate: NoRedirect.shared, delegateQueue: nil)
+    }
+
+    /// 收到 30x 时告诉系统「不跟」：`completionHandler(nil)`，任务带着 30x 响应结束
+    final class NoRedirect: NSObject, URLSessionTaskDelegate, Sendable {
+        static let shared = NoRedirect()
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
     }
 
     public func config() async throws -> RemoteConfig {
@@ -110,8 +129,10 @@ public final class APIClient: Sendable {
         }
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let data: Data, resp: URLResponse
-        do { (data, resp) = try await session.data(for: req) } catch { throw APIError.transport(String(describing: error)) }
+        // 任务级也挂上：外面传进来的会话没带 delegate 时同样不跟
+        do { (data, resp) = try await session.data(for: req, delegate: NoRedirect.shared) } catch { throw APIError.transport(String(describing: error)) }
         guard let http = resp as? HTTPURLResponse else { throw APIError.badResponse(0) }
+        if (300..<400).contains(http.statusCode) { throw APIError.redirected(http.statusCode) }
         guard (200..<300).contains(http.statusCode) else { throw Self.error(status: http.statusCode, data: data) }
         do { return try JSONDecoder().decode(T.self, from: data) } catch { throw APIError.badResponse(http.statusCode) }
     }
