@@ -70,6 +70,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       MIN_BUILD: ${MIN_BUILD:-0}
       DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-0}
+      # S21 服务器地址下发：空 = 不下发；不在白名单（§9.2）api 拒绝启动
+      API_BASE: ${API_BASE:-}
       # 恢复模式（§4.6）：平时 0。整机恢复后临时开 1，让重新开通的设备补交保留的 op，补完改回 0（runbook「恢复模式」）
       RECOVERY_MODE: ${RECOVERY_MODE:-0}
       PRODUCT_IMAGES_ENABLED: ${PRODUCT_IMAGES_ENABLED:-0}

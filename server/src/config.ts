@@ -14,6 +14,8 @@ export interface Config {
   demoLoginEnabled: boolean;
   privacyUrl: string;
   supportUrl: string;
+  /** GET /v1/config 的 api_base（S21 服务器地址下发，§9.2）。没配 = undefined，不返回该字段；配了必须在白名单内，否则拒绝启动 */
+  apiBase?: string;
   /** 恢复模式：平时关闭，打开后才接受 POST /v1/recovery/import（§4.6） */
   recoveryMode: boolean;
   /** 前面有 Caddy 反代时为真：只信一跳，取 X-Forwarded-For 最右边一项（Caddy 填的对端地址）作客户端 IP（§7 按 IP 限速，§14 S03-6） */
@@ -94,6 +96,38 @@ function url(env: Env, key: string, def: string): string {
   return raw;
 }
 
+/** S21 白名单：和 App 包内写死的一致（Beta 两个都允许，Release 只允许域名）。服务器只下发这两个之一 */
+export const API_BASE_HOSTS = ["47.117.184.253", "api.yuanhuishop.cn"] as const;
+const API_BASE_RAW = /^https:\/\/(47\.117\.184\.253|api\.yuanhuishop\.cn)(:443)?\/?$/;
+
+function apiBase(env: Env): Pick<Config, "apiBase"> {
+  const raw = env.API_BASE;
+  if (raw === undefined || raw === "") return {};
+  // 报错里不带值：值里可能夹着用户信息（https://user:pw@…）
+  const reject = () =>
+    new ConfigError(
+      `API_BASE 不在白名单：只能是 https://${API_BASE_HOSTS.join(" 或 https://")}（主机整串相等，不带用户名密码，端口空或 443，路径空或 /，不带 ? 和 #）；不下发就留空`,
+    );
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw reject();
+  }
+  const okParts =
+    u.protocol === "https:" &&
+    u.username === "" &&
+    u.password === "" &&
+    (API_BASE_HOSTS as readonly string[]).includes(u.hostname) &&
+    (u.port === "" || u.port === "443") &&
+    u.pathname === "/" &&
+    u.search === "" &&
+    u.hash === "";
+  // 再按原串比一次：URL 解析会把大写主机、末尾点、百分号编码等规范化掉，手机的 URLComponents 不会，按原串最严
+  if (!okParts || !API_BASE_RAW.test(raw)) throw reject();
+  return { apiBase: raw };
+}
+
 export function loadConfig(env: Env = process.env): Config {
   const databaseUrl = env.DATABASE_URL;
   if (!databaseUrl) throw new ConfigError("缺少 DATABASE_URL");
@@ -106,6 +140,7 @@ export function loadConfig(env: Env = process.env): Config {
     demoLoginEnabled: bool(env, "DEMO_LOGIN_ENABLED", false),
     privacyUrl: url(env, "PRIVACY_URL", "https://yuanhuishop.cn/privacy"),
     supportUrl: url(env, "SUPPORT_URL", "https://yuanhuishop.cn/support"),
+    ...apiBase(env),
     recoveryMode: bool(env, "RECOVERY_MODE", false),
     ...trustProxy(env),
     storeQueueLimit: int(env, "STORE_QUEUE_LIMIT", 32, 1, 10_000),
