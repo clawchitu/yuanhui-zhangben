@@ -174,7 +174,8 @@ final class LoginModel {
             case .server(_, "not_found", _, _): "这个码不对，让家里人换一个新码"
             case .server(_, "delete_pending", _, _): "这家店的账号正在注销，现在不能开通新手机"
             case .server(_, "rate_limited", _, _): "试得太多了，过一会儿再试"
-            case .transport: "连不上服务器，看看网络再试"
+            // 兑码只发一次（不退回默认地址重发）：没连上就让用户重扫
+            case .transport: "没连上服务器，看看网络，再扫一次"
             case .redirected: Self.redirectedText
             default: "没登录上，再扫一次"
             }

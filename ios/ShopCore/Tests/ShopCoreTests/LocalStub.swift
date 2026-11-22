@@ -13,6 +13,8 @@ final class LocalStub: @unchecked Sendable {
         var status: Int
         var headers: [String: String] = [:]
         var body: String = "{}"
+        /// 收下请求后不回包、直接断开（模拟服务器已处理、回包没到）
+        var drop = false
     }
 
     private let listener: NWListener
@@ -40,6 +42,7 @@ final class LocalStub: @unchecked Sendable {
     var port: UInt16 { listener.port?.rawValue ?? 0 }
     var base: String { "http://127.0.0.1:\(port)" }
     var requests: [Request] { lock.withLock { log } }
+    func count(_ path: String) -> Int { requests.filter { $0.path == path }.count }
     func stop() { listener.cancel() }
 
     private func accept(_ c: NWConnection) {
@@ -55,7 +58,7 @@ final class LocalStub: @unchecked Sendable {
             if let req = Self.parse(buf) {
                 lock.withLock { log.append(req) }
                 let r = handler(req)
-                queue.asyncAfter(deadline: .now() + delay) { Self.send(c, r) }
+                queue.asyncAfter(deadline: .now() + delay) { if r.drop { c.cancel() } else { Self.send(c, r) } }
             } else if done || error != nil {
                 c.cancel()
             } else {

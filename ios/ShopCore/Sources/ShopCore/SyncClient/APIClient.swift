@@ -58,6 +58,9 @@ public enum PairingCode {
 /// 网络层（S21）：基址来自 `APIBaseStore`。请求先打当前地址；用的是下发地址且**连不上**（传输错误，不是 HTTP 错误）时，
 /// 这一次退回包内默认地址重发，已存地址不删，下次再试（§8 S21）。本段不做同步（S22a）。
 ///
+/// **兑码不退回重发**：传输错误也可能是服务器已经处理、回包没到（超时、连接中途断）。兑码是一次性的，
+/// 重发只会得到 `pairing_used`，用户看到「已经用过了」其实已经兑成功。所以兑码只发一次，失败让用户重扫（PR #35 Fable 可选 4）。
+///
 /// **不跟随重定向**：会话和每个任务都挂 `NoRedirect`，30x 原样交回来，按 `APIError.redirected` 失败处理，
 /// 请求不会发往 `Location` 指的地址（PR #35 Codex 评审必须修 1）。
 public final class APIClient: Sendable {
@@ -94,7 +97,8 @@ public final class APIClient: Sendable {
     }
 
     public func redeem(code: String, deviceId: UUID) async throws -> SessionGrant {
-        try await send("POST", "/v1/auth/pair/redeem", body: ["code": code, "device_id": deviceId.uuidString.lowercased()], token: nil)
+        try await send("POST", "/v1/auth/pair/redeem", body: ["code": code, "device_id": deviceId.uuidString.lowercased()],
+                       token: nil, fallback: false)
     }
 
     public func demoLogin(deviceId: UUID) async throws -> SessionGrant {
@@ -109,12 +113,13 @@ public final class APIClient: Sendable {
         return r.label
     }
 
-    func send<B: Encodable, T: Decodable>(_ method: String, _ path: String, body: B?, token: String?) async throws -> T {
+    /// `fallback`：下发地址连不上时是否退回默认地址重发一次。一次性的写请求（兑码）传 false
+    func send<B: Encodable, T: Decodable>(_ method: String, _ path: String, body: B?, token: String?,
+                                          fallback: Bool = true) async throws -> T {
         let primary = bases.current
         do {
             return try await sendOnce(method, base: primary, path, body: body, token: token)
-        } catch APIError.transport(let why) where primary != bases.defaultBase {
-            _ = why
+        } catch APIError.transport where fallback && primary != bases.defaultBase {
             return try await sendOnce(method, base: bases.defaultBase, path, body: body, token: token)
         }
     }

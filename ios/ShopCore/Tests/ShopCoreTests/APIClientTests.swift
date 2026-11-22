@@ -61,4 +61,60 @@ import Testing
         #expect(c.minBuild == 1)
         #expect(a.requests.map(\.path) == ["/v1/config"])
     }
+
+    // MARK: 退回默认地址（PR #35 Fable 可选 4）
+
+    static let grant = #"{"token":"t","epoch":"e","role":"family","store":{"name":"x"},"label":"l"}"#
+
+    /// 下发地址 A 收下兑码请求后断开（服务器已处理、回包没到）→ 不退回默认地址 B 重发：兑码接口一共只被调一次
+    @Test func redeemIsNotResentOnDefault() async throws {
+        let a = try LocalStub { _ in .init(status: 200, body: Self.grant, drop: true) }
+        defer { a.stop() }
+        let b = try LocalStub { _ in .init(status: 200, body: Self.grant) }
+        defer { b.stop() }
+        let bases = APIBaseStore(defaultBase: "http://localhost:\(b.port)", policy: debug, defaults: freshDefaults())!
+        #expect(bases.adopt(a.base) == .adopted(URL(string: a.base)!))
+        let api = APIClient(bases: bases)
+
+        await #expect {
+            _ = try await api.redeem(code: "abc", deviceId: UUID())
+        } throws: { e in
+            if case APIError.transport = e { true } else { false }
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(a.count("/v1/auth/pair/redeem") == 1)
+        #expect(b.count("/v1/auth/pair/redeem") == 0, "兑码不应退回默认地址重发")
+        #expect(a.count("/v1/auth/pair/redeem") + b.count("/v1/auth/pair/redeem") == 1)
+    }
+
+    /// 下发地址连不上（端口没人听）时兑码同样只试一次，默认地址收不到
+    @Test func redeemDoesNotFallBackWhenAdoptedUnreachable() async throws {
+        let dead = try LocalStub { _ in .init(status: 200) }
+        let deadBase = dead.base
+        dead.stop()
+        try await Task.sleep(for: .milliseconds(100))
+        let b = try LocalStub { _ in .init(status: 200, body: Self.grant) }
+        defer { b.stop() }
+        let bases = APIBaseStore(defaultBase: "http://localhost:\(b.port)", policy: debug, defaults: freshDefaults())!
+        _ = bases.adopt(deadBase)
+        let api = APIClient(bases: bases)
+        await #expect(throws: (any Error).self) { _ = try await api.redeem(code: "abc", deviceId: UUID()) }
+        #expect(b.requests.isEmpty)
+    }
+
+    /// 对照：读请求（config）在下发地址断开时照旧退回默认地址，证明上面的「没退回」不是桩没起来
+    @Test func configStillFallsBack() async throws {
+        let a = try LocalStub { _ in .init(status: 200, drop: true) }
+        defer { a.stop() }
+        let b = try LocalStub { _ in
+            .init(status: 200, body: #"{"min_build":1,"demo_login_enabled":false,"privacy_url":"p","support_url":"s"}"#)
+        }
+        defer { b.stop() }
+        let bases = APIBaseStore(defaultBase: "http://localhost:\(b.port)", policy: debug, defaults: freshDefaults())!
+        _ = bases.adopt(a.base)
+        let c = try await APIClient(bases: bases).config()
+        #expect(c.minBuild == 1)
+        #expect(a.count("/v1/config") >= 1)  // GET 断连时 URLSession 自己会重试几次，数不定
+        #expect(b.count("/v1/config") == 1)
+    }
 }
