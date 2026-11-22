@@ -19,6 +19,10 @@ dd="${2:-$(mktemp -d -t yuanhui-release-check)}"
 log="$dd/release-check-$config.log"
 mkdir -p "$dd"
 set -o pipefail
+# 先卸掉模拟器上的 App：同一台模拟器先跑过 Debug UI 测试，库里会留下当前会话；检查用的构建没签名，读钥匙串
+# 必然失败（-34018），按 PR #35 评审修 3 读失败不结束会话，会停在「手机还没准备好」而不是登录页。
+# 本检查验证的是「没有会话时」的表现，从干净安装开始
+xcrun simctl uninstall "$udid" cn.yuanhuishop.zhangben 2>/dev/null || true
 xcodebuild test -project YuanhuiZhangben.xcodeproj -scheme "$scheme" \
   -destination "id=$udid" -derivedDataPath "$dd" CODE_SIGNING_ALLOWED=NO \
   -only-testing:YuanhuiZhangbenUITests/ReleaseBuildUITests \
