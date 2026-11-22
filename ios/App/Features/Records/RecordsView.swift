@@ -44,6 +44,14 @@ struct RecordsView: View {
             let a = app
             model.onChange = { a.refreshRecent() }
             if undoLast { model.openLatestUndo() }
+            #if DEBUG
+            // 截图 / UI 测试：-uiRecordsTab yesterday|earlier [-uiRecordsDay 0]
+            let args = ProcessInfo.processInfo.arguments
+            if let t = UIFixture.value(for: "-uiRecordsTab", in: args).flatMap(RecordsModel.Tab.init(rawValue:)) { model.tab = t }
+            if let i = UIFixture.value(for: "-uiRecordsDay", in: args).flatMap(Int.init), i < model.visibleDays.count {
+                model.openDay = model.visibleDays[i].day
+            }
+            #endif
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(route.pageId)

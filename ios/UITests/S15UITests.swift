@@ -61,7 +61,8 @@ final class S15UITests: XCTestCase {
         walker.assertEverythingCovered(file: file, line: line)
         XCTAssertTrue(visited.isSuperset(of: Self.cashierForbidden),
                       "家用到不了：\(Self.cashierForbidden.subtracting(visited))", file: file, line: line)
-        XCTAssertTrue(visited.isSuperset(of: ["page.home", "page.sell", "page.settings", "page.undoLast",
+        // S20（§14 S15-6）：家用首页没有提醒条时「刚记的」整条可点进记的账，必达集合加回 page.records
+        XCTAssertTrue(visited.isSuperset(of: ["page.home", "page.sell", "page.settings", "page.records", "page.undoLast",
                                               "page.scanner", "page.privacy", "page.logout"]), "\(visited)", file: file, line: line)
         XCTAssertFalse(visited.contains("page.denied"), file: file, line: line)
         assertSellEmptyGreyed(walker, file: file, line: line)

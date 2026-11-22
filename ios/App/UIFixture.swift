@@ -18,6 +18,7 @@ import ShopCore
 ///   -uiPriorSales N                              先记 N 笔卖出（03 顶栏「2 笔待传」）
 ///   -uiLongName                                  多登记一个名字很长、单价很高的商品（码 6900000000017）
 ///   -uiRecords | -uiRecords none                S20：装上稿子 07a / 07b / 07c 的账（none = 一笔都没有，但「刚记的」走真数据）
+///   -uiRecordsTab yesterday|earlier、-uiRecordsDay N   记的账页一打开就切到这一栏 / 点开 07c 第 N 天
 ///   -uiMoreGoods                                 S17：多登记同前缀的面、几样牛奶、一个零价购物袋（见 `installSellExtras`）
 ///   -uiFixture scanner | scanner-login           扫码测试页（27a / 27b 的样子，S14）
 ///   -uiCamera denied|authorized|notDetermined    把相机权限当成这个值（S14；卖出页同样认）
