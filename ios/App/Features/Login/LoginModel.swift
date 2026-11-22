@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 import ShopCore
 
 /// 登录页（13 / 25c）和扫码登录页（14 / 27b）的状态（S21）。成功后开好本地会话，交给 `onSignedIn` 切到首页（新会话
@@ -21,7 +22,8 @@ final class LoginModel {
     let services: AppServices?
     let db: LocalDB
     private let onSignedIn: @MainActor (LocalSession) -> Void
-    private let now: () -> Date
+    /// 现在几点（测试、截图夹具可换成稿子上的时间）
+    var now: () -> Date
     private var unlockTask: Task<Void, Never>?
 
     init(services: AppServices?, db: LocalDB, now: @escaping () -> Date = Date.init,
@@ -73,6 +75,8 @@ final class LoginModel {
         }
     }
 
+    private static let logger = Logger(subsystem: "cn.yuanhuishop.zhangben", category: "login")
+
     // MARK: 账号密码
 
     func login() async {
@@ -92,8 +96,10 @@ final class LoginModel {
             if pending != nil { services.pendingDeviceLabel = nil }
             finish(try services.establish(grant, deviceId: deviceId, db: db))
         } catch let e as APIError {
+            Self.logger.notice("登录没成功：\(String(describing: e), privacy: .public)")
             handle(e)
         } catch {
+            Self.logger.error("登录后开本地会话没成功：\(String(describing: error), privacy: .public)")
             message = "登录没成功，再试一次"
         }
     }

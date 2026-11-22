@@ -221,6 +221,8 @@ extension UIFixture {
         }
         if let p = value(for: "-uiLoginPassword", in: args) { m.password = p }
         if let t = value(for: "-uiLoginLockedUntil", in: args), let d = ISO8601DateFormatter().date(from: t) {
+            // 稿子 25c 的时间：现在 19:48，锁到 20:03。锁定时间早于真实的现在时，把登录页的「现在」定在稿子时间
+            if d <= Date() { m.now = { designNow } }
             m.setLocked(until: d)
         }
         if value(for: "-uiLoginScreen", in: args) == "scan" { m.scanOpen = true }

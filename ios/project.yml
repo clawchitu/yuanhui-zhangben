@@ -91,6 +91,18 @@ schemes:
         YH_RELEASE_CHECK: "1"
       targets:
         - YuanhuiZhangbenUITests
+  # 只给 scripts/release-check.sh --config Beta 用：Beta 配置构建 App，跑同样的 ReleaseBuildUITests（§8 S21）
+  YuanhuiZhangben-BetaCheck:
+    build:
+      targets:
+        YuanhuiZhangben: all
+        YuanhuiZhangbenUITests: [test]
+    test:
+      config: Beta
+      environmentVariables:
+        YH_RELEASE_CHECK: "1"
+      targets:
+        - YuanhuiZhangbenUITests
   YuanhuiZhangben-Beta:
     build:
       targets:

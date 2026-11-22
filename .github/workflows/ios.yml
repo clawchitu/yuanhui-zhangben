@@ -43,6 +43,8 @@ jobs:
           xcrun simctl boot "${{ steps.sim.outputs.udid }}"
           xcrun simctl bootstatus "${{ steps.sim.outputs.udid }}" -b >/dev/null
       - name: xcodebuild test
+        # 模拟器上本地签名（ad-hoc，不用证书和描述文件）：不签名的 App 写钥匙串会得到 -34018（errSecMissingEntitlement），
+        # S21 登录后令牌进钥匙串，S21UITests 要靠它（§8 S21）
         run: |
           set -o pipefail
           xcodebuild test \
@@ -50,16 +52,20 @@ jobs:
             -scheme YuanhuiZhangben \
             -destination "id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath "$DERIVED" \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
             | tee "$RUNNER_TEMP/xcodebuild.log" | grep -E "error:|warning: |Test Case|Executed|\*\* TEST" || true
           grep -q "\*\* TEST SUCCEEDED \*\*" "$RUNNER_TEMP/xcodebuild.log"
       - name: Release 构建检查（没有演示会话和会话夹具，§14 S15-4）
         run: |
           scripts/release-check.sh "${{ steps.sim.outputs.udid }}" "$RUNNER_TEMP/yuanhui-dd-rel-${{ github.run_id }}" \
             "$DERIVED/Build/Products/Debug-iphonesimulator/YuanhuiZhangben.app/YuanhuiZhangben.debug.dylib"
+      - name: Beta 构建检查（同一套检查跑 Beta 配置，二进制里应有包内默认的 IP 地址，§8 S21）
+        run: |
+          scripts/release-check.sh --config Beta "${{ steps.sim.outputs.udid }}" "$RUNNER_TEMP/yuanhui-dd-beta-${{ github.run_id }}" \
+            "$DERIVED/Build/Products/Debug-iphonesimulator/YuanhuiZhangben.app/YuanhuiZhangben.debug.dylib"
       - name: 清理自己建的模拟器
         if: always()
         run: |
           scripts/sim-destroy.sh "${{ steps.sim.outputs.udid }}"
           [ -n "${DERIVED:-}" ] && rm -rf "$DERIVED" || true
-          rm -rf "$RUNNER_TEMP/yuanhui-dd-rel-${{ github.run_id }}"
+          rm -rf "$RUNNER_TEMP/yuanhui-dd-rel-${{ github.run_id }}" "$RUNNER_TEMP/yuanhui-dd-beta-${{ github.run_id }}"
