@@ -99,6 +99,18 @@ final class RecordsModel {
 
     // MARK: 文字
 
+    /// 带千分位的金额「1,102.00」「-53.00」（整数分，不经浮点）
+    static func grouped(_ fen: Int64) -> String {
+        let sign = fen < 0 ? "-" : ""
+        let m = fen.magnitude
+        var yuan = String(m / 100)
+        var parts: [String] = []
+        while yuan.count > 3 { parts.insert(String(yuan.suffix(3)), at: 0); yuan.removeLast(3) }
+        parts.insert(yuan, at: 0)
+        let cents = m % 100
+        return sign + parts.joined(separator: ",") + "." + (cents < 10 ? "0" : "") + String(cents)
+    }
+
     static func dayTitle(_ d: CalendarDate) -> String {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(identifier: "Asia/Shanghai")!

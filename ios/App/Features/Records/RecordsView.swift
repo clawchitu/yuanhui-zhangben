@@ -143,7 +143,7 @@ struct RecordsView: View {
     private func dayLabel(_ d: LedgerDay) -> some View {
         let parts = RecordsModel.dayTitle(d.day).split(separator: " ")
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(String(parts[0])).font(.system(size: 26, weight: .bold)).foregroundStyle(Tokens.Palette.ink).fixedSize()
+            Text(String(parts[0])).font(.system(size: 24, weight: .bold)).foregroundStyle(Tokens.Palette.ink).fixedSize()
             Text("\(parts[1]) \(d.count) 笔").font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -151,7 +151,13 @@ struct RecordsView: View {
 
     private func dayAmount(_ d: LedgerDay) -> some View {
         HStack(spacing: 8) {
-            PriceText(cents: Int(d.saleFen), size: 30)
+            // 07c 的金额带千分位（¥1,102.00）
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text("¥").font(TypeScale.number(17))
+                Text(RecordsModel.grouped(d.saleFen)).font(TypeScale.number(28))
+            }
+            .foregroundStyle(Tokens.Palette.ink).lineLimit(1).fixedSize()
+            .accessibilityElement(children: .ignore).accessibilityLabel("\(Money.yuanString(Int(d.saleFen))) 元")
             Image(systemName: "chevron.right").font(.system(size: 20, weight: .semibold)).foregroundStyle(Tokens.Palette.ink)
         }
     }
@@ -234,10 +240,7 @@ struct RecordCardView: View {
     @ViewBuilder private var amount: some View {
         VStack(alignment: .leading, spacing: 2) {
             if card.type == .sale, card.discountFen != 0, let l = card.listTotalFen {
-                HStack(spacing: 10) {
-                    Text("原价 ¥\(Money.yuanString(Int(l)))").strikethrough()
-                    Text("实收")
-                }
+                (Text("原价 ") + Text("¥\(Money.yuanString(Int(l)))").strikethrough() + Text("    实收"))
                 .font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)
             } else if card.type == .expireLoss || card.type == .supplierReturn, card.amountFen != nil {

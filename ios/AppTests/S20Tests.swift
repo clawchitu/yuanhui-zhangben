@@ -88,6 +88,14 @@ final class S20Tests: XCTestCase {
         XCTAssertFalse(tomorrow.canUndo(late))
     }
 
+    func testGroupedAmount() {
+        XCTAssertEqual(RecordsModel.grouped(110_200), "1,102.00")
+        XCTAssertEqual(RecordsModel.grouped(128_650), "1,286.50")
+        XCTAssertEqual(RecordsModel.grouped(5), "0.05")
+        XCTAssertEqual(RecordsModel.grouped(-5300), "-53.00")
+        XCTAssertEqual(RecordsModel.grouped(123_456_789_01), "123,456,789.01")
+    }
+
     func testUndoLastOpensLatestCard() throws {
         let m = RecordsModel(db: try db(.family), cashier: false, clock: { Self.now })
         m.openLatestUndo()
