@@ -18,7 +18,7 @@ struct SettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             ModeBar(title: Route.settings.title(model.layout), pendingCount: model.figures.pendingCount,
-                    onBack: { dismiss() })
+                    offline: model.offline, onBack: { dismiss() })
             ScrollView {
                 VStack(spacing: 12) {
                     if cashier { cashierBody } else { familyBody }

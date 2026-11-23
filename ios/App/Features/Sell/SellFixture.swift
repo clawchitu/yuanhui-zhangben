@@ -136,7 +136,10 @@ enum SellProbe {
                     "lastPaid=\(last.reduce(0) { $0 + $1.amountFen.raw })",
                     "lastAmounts=\(last.map { String($0.amountFen.raw) }.joined(separator: "|"))",
                     "lastQty=\(qty)", "saleOps=\(ops.count)", "commits=\(commits)",
-                    "lastBase=\(last.reduce(Int64(0)) { $0 + $1.qtyDelta })"]
+                    "lastBase=\(last.reduce(Int64(0)) { $0 + $1.qtyDelta })",
+                    // S22a 强杀验收：最后一笔第一样商品的显示库存（基线 + 待传增减），对照服务器的库存看有没有重复扣
+                    "lastStock=\(last.first.flatMap { try? db.displayStock($0.productId) }.map { String($0.qty) } ?? "-")",
+                    "pending=\((try? db.syncStatus().pendingCount) ?? -1)"]
             return (base + registrationCounts(db)).joined(separator: ";")
         } catch {
             return "error=\(error)"

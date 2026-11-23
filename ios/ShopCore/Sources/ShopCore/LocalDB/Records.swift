@@ -96,17 +96,25 @@ public struct RecordCard: Hashable, Sendable, Identifiable {
     public let listTotalFen: Int64?
     public let paidTotalFen: Int64?
     public let lines: [RecordLine]
+    /// 服务器拒收了这笔（outbox 里这条 op 是 rejected）：卡上标「没记上」，库存已经按服务器纠正（S22a）
+    public var rejected: Bool = false
 
     public var day: String { String(occurredAt.prefix(10)) }
     /// 「19:32」
     public var time: String { String(occurredAt.dropFirst(11).prefix(5)) }
     public var allVoided: Bool { lines.allSatisfy(\.voided) }
+    /// 撤了一部分（07a 金额上面写「撤了一部分，还剩」）
+    public var partlyVoided: Bool { lines.contains(where: \.voided) && !allVoided }
     public var openLines: [RecordLine] { lines.filter { !$0.voided } }
 
     /// 卡片上的大数：卖出 = 实收；进货 = 总价；过期扔掉 / 退货 = 按进价算的货值（有才显示）；盘点、期初不显示
     public var amountFen: Int64? {
         switch type {
-        case .sale: return paidTotalFen ?? lines.reduce(0) { $0 + $1.amountFen }
+        // 撤过一部分的：只算还没撤的行（各行的摊后实收），不显示整笔原实收（PR #34 Fable 可选 1）。
+        // 全撤了的仍显示原实收（卡片上划掉）
+        case .sale:
+            if lines.contains(where: \.voided), !allVoided { return openLines.reduce(0) { $0 + $1.amountFen } }
+            return paidTotalFen ?? lines.reduce(0) { $0 + $1.amountFen }
         case .stockIn: return lines.reduce(0) { $0 + $1.amountFen }
         case .expireLoss, .supplierReturn:
             let v = lines.compactMap(\.valueDeltaFen)
@@ -205,12 +213,15 @@ extension LocalDB {
         }
     }
 
-    /// 写入拉下来的流水和批次头（同 id 覆盖）
+    /// 写入拉下来的流水和批次头（同 id 覆盖）。批次头用冲突更新，不用 `INSERT OR REPLACE`：
+    /// `entry.batch_id` 带 `ON DELETE CASCADE`，REPLACE 会先删旧头、连带删掉已有明细（PR #34 Codex 可选 1）
     public func applyPulledLedger(batches: [PulledBatch], entries: [PulledEntry]) throws {
         try writer.write { db in
             for b in batches {
                 try db.execute(sql: """
-                    INSERT OR REPLACE INTO sale_batch (id, device_id, list_total_fen, paid_total_fen, occurred_at) VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO sale_batch (id, device_id, list_total_fen, paid_total_fen, occurred_at) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET device_id = excluded.device_id, list_total_fen = excluded.list_total_fen,
+                      paid_total_fen = excluded.paid_total_fen, occurred_at = excluded.occurred_at
                     """, arguments: [b.id.uuidString, b.deviceId.uuidString, b.listTotalFen, b.paidTotalFen,
                                      Op.formatTimestamp(b.occurredAt)])
             }
@@ -267,11 +278,12 @@ extension LocalDB {
     static func cards(_ db: Database, _ s: LocalSession, where cond: String, args: [DatabaseValueConvertible],
                       limitRows: Int = 5000) throws -> [RecordCard] {
         let rows = try Row.fetchAll(db, sql: """
-            SELECT e.*, b.list_total_fen AS b_list, b.paid_total_fen AS b_paid, d.label AS d_label
+            SELECT e.*, b.list_total_fen AS b_list, b.paid_total_fen AS b_paid, d.label AS d_label, o.status AS o_status
             FROM (SELECT *, rowid AS rid FROM entry WHERE \(cond) ORDER BY occurred_at DESC, rowid DESC LIMIT ?) e
             LEFT JOIN sale_batch b ON b.id = e.batch_id LEFT JOIN device_label d ON d.device_id = e.device_id
+            LEFT JOIN outbox o ON o.id = e.op_id AND o.store_id = ?
             ORDER BY e.occurred_at DESC, e.rid DESC
-            """, arguments: StatementArguments(args + [limitRows]))
+            """, arguments: StatementArguments(args + [limitRows, s.storeId.uuidString]))
         var order: [String] = []
         var groups: [String: [Row]] = [:]
         for r in rows {
@@ -294,8 +306,17 @@ extension LocalDB {
             return RecordCard(id: key, opId: try (first["op_id"] as String?).map(parseUUID), type: type,
                               occurredAt: first["occurred_at"], deviceId: device, deviceLabel: label,
                               batchId: try (first["batch_id"] as String?).map(parseUUID), listTotalFen: first["b_list"],
-                              paidTotalFen: first["b_paid"], lines: lines)
+                              paidTotalFen: first["b_paid"], lines: lines,
+                              rejected: (first["o_status"] as String?) == OutboxItem.Status.rejected.rawValue
+                                  || Self.isRejectedFlag(first["flags"]))
         }
+    }
+
+    /// 被拒 op 的本机临时行：同步时打的 `{"rejected":true}`（outbox 那条清掉之后靠它认）
+    static func isRejectedFlag(_ flags: String?) -> Bool {
+        guard let flags, let d = flags.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return false }
+        return (o["rejected"] as? Bool) == true
     }
 
     /// 07c「更早」：前天往前、本地有的天（家用本地 35 天，§3.4），每天一行，只列笔数 > 0 或金额非零的日子（§14 S07-7）。
@@ -315,6 +336,7 @@ extension LocalDB {
                   COUNT(DISTINCT CASE WHEN reverses_entry_id IS NULL AND type <> 'cost_adjust' THEN COALESCE(op_id, id) END) AS n,
                   COALESCE(SUM(CASE WHEN type = 'sale' THEN amount_fen ELSE 0 END), 0) AS fen
                 FROM entry WHERE occurred_at BETWEEN ? AND ?
+                  AND (flags IS NULL OR COALESCE(json_extract(flags, '$.rejected'), 0) = 0)
                 GROUP BY d ORDER BY d DESC
                 """, arguments: [from, to])
             return try rows.compactMap { r in

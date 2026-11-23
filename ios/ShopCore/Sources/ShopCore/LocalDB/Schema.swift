@@ -178,13 +178,52 @@ enum LocalSchema {
                 CREATE TABLE device_label (device_id TEXT PRIMARY KEY, label TEXT NOT NULL);
                 """)
         }
+        // S22a：本机记下的商品别名（§4.2 remap）。outbox 和 outbox_effect 的内容不可改（op 原样重发，服务器按别名认），
+        // 待传 op 的增减仍挂在旧商品 id 上；显示库存时把旧 id 的增减并到赢家上，否则 remap 到确认之间赢家少算这几笔。
+        m.registerMigration("v3-sync") { db in
+            try db.execute(sql: """
+                CREATE TABLE product_remap (
+                  store_id TEXT NOT NULL,
+                  old_id   TEXT NOT NULL,
+                  new_id   TEXT NOT NULL,
+                  PRIMARY KEY (store_id, old_id)
+                );
+                CREATE INDEX product_remap_new ON product_remap(store_id, new_id);
+                """)
+        }
+        // PR #36 评审必须修 1：商品流按 rev 分页，条码可能先于它的商品到达。商品还没到的条码先放这里（不带外键），
+        // 商品到了再挂进 `barcode`；`catalogDone` 之前不让卖，这些条码也扫不到。
+        m.registerMigration("v4-sync-pending-barcode") { db in
+            try db.execute(sql: """
+                CREATE TABLE barcode_pending (
+                  barcode        TEXT PRIMARY KEY,
+                  product_id     TEXT NOT NULL,
+                  pack_qty       INTEGER NOT NULL CHECK (pack_qty >= 1),
+                  unit_name      TEXT NOT NULL,
+                  pack_price_fen INTEGER
+                );
+                CREATE INDEX barcode_pending_product ON barcode_pending(product_id);
+                """)
+            // PR #36 评审必须修 2：op 已确认、但它动过的商品的新库存基线还在商品流后页时，这几笔增减继续算进显示库存，
+            // 直到该商品的新基线拉下来（或商品流拉到底）才放掉，否则库存先对后错回（10 卖 1 → 9 → 又变回 10）
+            try db.execute(sql: """
+                CREATE TABLE effect_hold (
+                  store_id   TEXT NOT NULL,
+                  op_id      TEXT NOT NULL,
+                  product_id TEXT NOT NULL,
+                  PRIMARY KEY (store_id, op_id, product_id),
+                  FOREIGN KEY (store_id, op_id) REFERENCES outbox(store_id, id) ON DELETE CASCADE
+                );
+                """)
+        }
         return m
     }
 
     /// 投影表（清空顺序照外键）
-    static let projectionTables = ["device_label", "entry", "sale_batch", "lot", "barcode", "product_private", "product"]
+    static let projectionTables = ["device_label", "entry", "sale_batch", "lot", "barcode_pending", "barcode", "product_private", "product"]
     /// meta 里属于投影的键
-    static let projectionMetaKeys = [MetaKey.catalogCursor, .ledgerCursor, .serverEpoch]
+    static let projectionMetaKeys = [MetaKey.catalogCursor, .ledgerCursor, .serverEpoch, .lastSyncAt, .catalogDone, .serverTimeAtSync,
+                                     .deletePendingUntil]
 }
 
 /// `meta` 表的键（§3.4：游标、server_epoch；角色、店名、设备名在 `session` 表里）
@@ -194,4 +233,12 @@ public enum MetaKey: String, Sendable {
     case serverEpoch = "server_epoch"
     /// 清投影 / 删旧进货 op 之后还没压缩完（§14 S13-1）。不属于投影，换身份时不清
     case compactPending = "compact.pending"
+    /// S22a：上次同步成功（拿到响应并提交）的时间
+    case lastSyncAt = "sync.last_at"
+    /// S22a：上次同步响应里的 `server_time`。和 `lastSyncAt`（本机时钟）一比就是手机时钟偏了多少（T5）
+    case serverTimeAtSync = "sync.server_time"
+    /// S22a：首次同步的商品流已经拉到底（之后就能进首页开卖）
+    case catalogDone = "sync.catalog_done"
+    /// S22a：账号注销期间（§14 S04-2），值是服务器给的 `delete_pending_until`
+    case deletePendingUntil = "sync.delete_pending_until"
 }

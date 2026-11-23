@@ -11,7 +11,7 @@ struct HomeFigures: Equatable, Sendable {
         var time: String          // "19:32"
         var kind: String          // "卖出"
         var itemCount: Int        // 3 样
-        var amountFen: Int        // 5300
+        var amountFen: Int?       // 5300；盘点、期初这类没有金额的为 nil，不显示（PR #34 Fable 可选 4）
     }
 
     /// 待传笔数；nil = 不显示同步状态，0 = 已同步
@@ -26,6 +26,8 @@ struct HomeFigures: Equatable, Sendable {
     var deviceCount: Int?           // 3 台
     /// 扫码枪 已连上 / 没连：只有夹具用稿子上的值；nil = 用真实的连接状态（`ScannerGunMonitor`）
     var scannerConnected: Bool?
+    /// 手机时钟和服务器差了几分钟（超过 5 分钟才有值，T5 的提醒条）
+    var clockSkewMinutes: Int?
 
     /// 设计稿 01 / 02 / 21a 上的数
     static let design = HomeFigures(pendingCount: 0, staleUnsyncedCount: 0, expiringCount: 3,
@@ -36,7 +38,14 @@ struct HomeFigures: Equatable, Sendable {
 extension HomeFigures.LastRecord {
     /// 本地库最近一张卡 → 首页「刚记的 19:32 / 卖出 3 样 ¥53.00」
     init(_ c: RecordCard) {
-        self.init(time: c.time, kind: c.kindText, itemCount: c.openLines.count, amountFen: Int(c.amountFen ?? 0))
+        self.init(time: c.time, kind: c.kindText, itemCount: c.openLines.count, amountFen: c.amountFen.map { Int($0) })
+    }
+
+    /// 首页「刚记的」只取今天的（只有时间没有日期，几天前的一笔会被看成今天的，PR #34 Fable 可选 5）；
+    /// 服务器拒收的（没记上）不算
+    static func today(_ c: RecordCard?, now: Date) -> Self? {
+        guard let c, !c.rejected, c.day == LocalDB.shanghaiDay(now).description else { return nil }
+        return Self(c)
     }
 }
 
@@ -44,11 +53,14 @@ extension HomeFigures.LastRecord {
 enum HomeReminder: Hashable, Sendable {
     case unsynced(Int)
     case expiring(Int)
+    /// 手机时间不准（T5）：差了几分钟
+    case clockOff(Int)
 
     /// 要显示哪些提醒、按什么顺序。快过期只给有「处理快过期」能力的手机（收银员没有黄条，S27）
     static func list(_ f: HomeFigures, capabilities: Capabilities) -> [HomeReminder] {
         var r: [HomeReminder] = []
         if f.staleUnsyncedCount > 0 { r.append(.unsynced(f.staleUnsyncedCount)) }
+        if let m = f.clockSkewMinutes { r.append(.clockOff(m)) }
         if f.expiringCount > 0, capabilities.has(.expiry) { r.append(.expiring(f.expiringCount)) }
         return r
     }
@@ -76,7 +88,28 @@ final class AppModel {
     let fixedNow: Date?
     /// 「刚记的」从本地库取（正常启动，和带 `-uiRecords` 的夹具）；false = 夹具用稿子上的数
     var liveRecent = true
-    var now: Date { fixedNow ?? Date() }
+    /// 「现在」。收银员按服务器的钟算（S22a：收银员的「今天」——07b 列哪天、能不能撤——以服务器为准，
+    /// 手机时钟不准时不和服务器的判断打架）；家用仍用手机时钟（记账时间由服务器按 §4.4 校正）
+    var now: Date {
+        if let fixedNow { return fixedNow }
+        if layout == .cashier, let off = clockOffset { return Date().addingTimeInterval(off) }
+        return Date()
+    }
+    /// 服务器时间 − 手机时间（上次同步时量的，秒）
+    var clockOffset: TimeInterval? {
+        guard let st = sync?.status, let server = st.serverTimeAtSync, let local = st.lastSyncAt else { return nil }
+        return server.timeIntervalSince(local)
+    }
+    /// T5：差多少才提醒（服务器把比它快 5 分钟以上的 occurred_at 改成收到时间，§4.4；慢的分不出来，只能靠人校）
+    static let clockSkewThreshold: TimeInterval = 5 * 60
+    /// 同步调度（正常启动才有；夹具为 nil）
+    var sync: SyncCoordinator?
+    /// 首次同步的商品流拉完了没有（没拉完先显示 29，拉完就能进首页开卖）。夹具一律当作拉完了
+    var catalogReady: Bool { firstSyncFixture == nil && (sync?.catalogDone ?? true) }
+    /// 截 29 用：稿子上的 194 / 312
+    var firstSyncFixture: (done: Int, total: Int)?
+    /// 网络不通：右上角「↑ 没网」
+    var offline: Bool { sync?.offline ?? false }
     /// `-uiScrollTo bottom`：首页一打开就滚到底（截最大辅助字号下的整页用）
     let scrollToBottom: Bool
     /// 卖出页的测试夹具（只在 Debug 下由启动参数填，正式构建永远是空的）
@@ -119,10 +152,41 @@ final class AppModel {
     }
 
     /// 首页「刚记的」和待传笔数从本地库重取（§14 S15-1：刚记的接真数据，S20）
+    /// 正常启动时顺带踢一趟同步（写入之后回到首页 / 记的账里撤销之后都会走到这里）
     func refreshRecent() {
         guard liveRecent else { return }
-        figures.lastRecord = (try? db.lastRecord()).flatMap { $0.map(HomeFigures.LastRecord.init) } ?? nil
-        if let n = try? db.pendingOps().count { figures.pendingCount = n }
+        figures.lastRecord = HomeFigures.LastRecord.today((try? db.lastRecord()) ?? nil, now: now)
+        if let sync {
+            sync.refreshStatus()
+            applySyncStatus()
+            sync.kick()
+        } else if let n = try? db.pendingOps().count {
+            figures.pendingCount = n
+        }
+    }
+
+    /// 同步状态 → 首页 / 设置 / 07a 的数（§14 S15-1：来自真数据）
+    func applySyncStatus() {
+        guard let st = sync?.status else { return }
+        figures.pendingCount = st.pendingCount
+        figures.staleUnsyncedCount = st.overdueCount
+        if let off = clockOffset, abs(off) >= Self.clockSkewThreshold {
+            figures.clockSkewMinutes = Int((abs(off) / 60).rounded())
+        } else {
+            figures.clockSkewMinutes = nil
+        }
+    }
+
+    /// 接上同步：每跑完一趟刷新首页的数和「刚记的」（拉下来的流水可能换掉了本机的行）
+    func attach(_ sync: SyncCoordinator) {
+        self.sync = sync
+        sync.onFinish = { [weak self] in
+            guard let self else { return }
+            self.applySyncStatus()
+            self.figures.lastRecord = HomeFigures.LastRecord.today((try? self.db.lastRecord()) ?? nil, now: self.now)
+        }
+        applySyncStatus()
+        sync.start()
     }
 
     /// 网络服务（正常启动才有；夹具为 nil，改名只改本机）

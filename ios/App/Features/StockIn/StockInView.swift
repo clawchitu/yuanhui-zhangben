@@ -20,8 +20,8 @@ struct StockInView: View {
     @State private var fedFixture = false
     private let fixture: SellFixture
 
-    init(db: LocalDB, today: Date, fixture: SellFixture) {
-        _model = State(initialValue: StockInModel(db: db, today: StockInModel.shanghaiToday(today)))
+    init(db: LocalDB, clock: @escaping () -> Date, fixture: SellFixture) {
+        _model = State(initialValue: StockInModel(db: db, clock: clock))
         _permission = State(initialValue: CameraPermission(forced: fixture.camera))
         self.fixture = fixture
     }

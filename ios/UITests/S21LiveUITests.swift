@@ -39,7 +39,7 @@ final class S21LiveUITests: XCTestCase {
         let user = try XCTUnwrap(env["YH_LIVE_USER"]), password = try XCTUnwrap(env["YH_LIVE_PASSWORD"])
         let app = launch()
         type(app, user: user, password: password)
-        XCTAssertTrue(app.descendants(matching: .any)["page.onboarding"].waitForExistence(timeout: 20), "登录成功应进 16")
+        XCTAssertTrue(app.descendants(matching: .any)["page.onboarding"].waitForExistence(timeout: 60), "登录成功应进 16（S22a 起先过 29，商品拉完再进 16）")
         app.terminate()
         // 杀掉重开仍是登录状态
         let again = XCUIApplication()

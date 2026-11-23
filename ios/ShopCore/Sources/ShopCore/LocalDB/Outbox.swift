@@ -194,14 +194,21 @@ extension LocalDB {
     }
 
     /// 删掉确认超过 14 天的 op（§4.6）。未确认的永远不删。
+    /// 还在分页对账的也不删，不按时间一刀切（PR #36 Codex 增量复审必须修）：
+    /// - 还有 `effect_hold`：新库存基线还在商品流后页，删了会级联带走 hold，库存错回；商品流拉到底或新基线到了才放
+    /// - 已确认的 void 还留着本机临时冲销行：流水还没拉到底，拉到底那一步按 outbox 里的 applied 认残留行，删了会多算一次冲销
     @discardableResult
     public func purgeConfirmed(now: Date = Date()) throws -> Int {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(identifier: "Asia/Shanghai")!
         guard let cutoff = cal.date(byAdding: .day, value: -Self.confirmedRetentionDays, to: now) else { return 0 }
         return try writer.write { db in
-            try db.execute(sql: "DELETE FROM outbox WHERE status <> 'pending' AND confirmed_at < ?",
-                           arguments: [Op.formatTimestamp(cutoff)])
+            try db.execute(sql: """
+                DELETE FROM outbox WHERE status <> 'pending' AND confirmed_at < ?
+                  AND NOT EXISTS (SELECT 1 FROM effect_hold h WHERE h.store_id = outbox.store_id AND h.op_id = outbox.id)
+                  AND NOT (status = 'applied' AND EXISTS (SELECT 1 FROM entry e
+                           WHERE e.op_id = outbox.id AND e.seq IS NULL AND e.reverses_entry_id IS NOT NULL))
+                """, arguments: [Op.formatTimestamp(cutoff)])
             return db.changesCount
         }
     }
