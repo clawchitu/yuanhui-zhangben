@@ -31,6 +31,8 @@ public enum LocalDBFaultPoint: Sendable {
     case afterCompactBeforeClearingMark
     /// `recordResults` 的事务已提交（可能刚记下「待压缩」）、它自己的压缩还没开始
     case afterResultsBeforeCompact
+    /// S22a：处理同步响应的事务里，结果已记、变更已写一半（游标还没推进）。抛错 = 整个响应回滚
+    case midSyncCommit
 }
 
 public enum LocalDBError: Error, Equatable, Sendable {

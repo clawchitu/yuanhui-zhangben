@@ -205,12 +205,15 @@ extension LocalDB {
         }
     }
 
-    /// 写入拉下来的流水和批次头（同 id 覆盖）
+    /// 写入拉下来的流水和批次头（同 id 覆盖）。批次头用冲突更新，不用 `INSERT OR REPLACE`：
+    /// `entry.batch_id` 带 `ON DELETE CASCADE`，REPLACE 会先删旧头、连带删掉已有明细（PR #34 Codex 可选 1）
     public func applyPulledLedger(batches: [PulledBatch], entries: [PulledEntry]) throws {
         try writer.write { db in
             for b in batches {
                 try db.execute(sql: """
-                    INSERT OR REPLACE INTO sale_batch (id, device_id, list_total_fen, paid_total_fen, occurred_at) VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO sale_batch (id, device_id, list_total_fen, paid_total_fen, occurred_at) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET device_id = excluded.device_id, list_total_fen = excluded.list_total_fen,
+                      paid_total_fen = excluded.paid_total_fen, occurred_at = excluded.occurred_at
                     """, arguments: [b.id.uuidString, b.deviceId.uuidString, b.listTotalFen, b.paidTotalFen,
                                      Op.formatTimestamp(b.occurredAt)])
             }

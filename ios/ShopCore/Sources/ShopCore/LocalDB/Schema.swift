@@ -184,7 +184,8 @@ enum LocalSchema {
     /// 投影表（清空顺序照外键）
     static let projectionTables = ["device_label", "entry", "sale_batch", "lot", "barcode", "product_private", "product"]
     /// meta 里属于投影的键
-    static let projectionMetaKeys = [MetaKey.catalogCursor, .ledgerCursor, .serverEpoch]
+    static let projectionMetaKeys = [MetaKey.catalogCursor, .ledgerCursor, .serverEpoch, .lastSyncAt, .catalogDone,
+                                     .deletePendingUntil]
 }
 
 /// `meta` 表的键（§3.4：游标、server_epoch；角色、店名、设备名在 `session` 表里）
@@ -194,4 +195,10 @@ public enum MetaKey: String, Sendable {
     case serverEpoch = "server_epoch"
     /// 清投影 / 删旧进货 op 之后还没压缩完（§14 S13-1）。不属于投影，换身份时不清
     case compactPending = "compact.pending"
+    /// S22a：上次同步成功（拿到响应并提交）的时间
+    case lastSyncAt = "sync.last_at"
+    /// S22a：首次同步的商品流已经拉到底（之后就能进首页开卖）
+    case catalogDone = "sync.catalog_done"
+    /// S22a：账号注销期间（§14 S04-2），值是服务器给的 `delete_pending_until`
+    case deletePendingUntil = "sync.delete_pending_until"
 }
