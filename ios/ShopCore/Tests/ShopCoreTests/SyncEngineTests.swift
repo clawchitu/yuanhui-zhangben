@@ -104,6 +104,39 @@ final class SyncEngineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try db.count("effect_hold"), 0)
     }
 
+    /// 本机流水行原样变成服务器行的 JSON（seq、voided_at 由调用方给）
+    func serverEntries(_ db: LocalDB, where cond: String, seq: Int, voidedAt: String? = nil) throws -> [[String: Any]] {
+        try db.writer.read { d in
+            try Row.fetchAll(d, sql: "SELECT * FROM entry WHERE \(cond) ORDER BY rowid").enumerated().map { (i, r) in
+                ["id": r["id"] as String, "seq": seq + i, "op_id": (r["op_id"] as String?) ?? NSNull(),
+                 "batch_id": (r["batch_id"] as String?) ?? NSNull(), "type": r["type"] as String,
+                 "reverses_entry_id": (r["reverses_entry_id"] as String?) ?? NSNull(), "product_id": r["product_id"] as String,
+                 "name_snapshot": r["name_snapshot"] as String, "qty_delta": r["qty_delta"] as Int64,
+                 "amount_fen": r["amount_fen"] as Int64, "list_amount_fen": r["list_amount_fen"] as Int64,
+                 "device_id": r["device_id"] as String, "occurred_at": r["occurred_at"] as String,
+                 "voided_at": voidedAt ?? NSNull(), "rev": seq + i] as [String: Any]
+            }
+        }
+    }
+
+    /// PR #36 评审必须修 3（Codex 原场景）：卖出的确认请求在途时撤销，旧响应带回「没撤」的原行不能冲掉本机撤销；
+    /// 否则同一笔又能撤一次，库存 10 → 11
+    func testInFlightLocalVoidSurvivesStaleResponse() throws {
+        let db = try makeDB()
+        let (batchId, pid) = try sell(db)
+        let start = try XCTUnwrap(try db.displayStock(pid)).qty + 1
+        let batch = try XCTUnwrap(try db.nextPushBatch())
+        let stale = try serverEntries(db, where: "batch_id = '\(batchId.uuidString)'", seq: 1)
+        guard case .voided = try db.void(.batch(batchId)) else { return XCTFail() }   // 请求在途时撤销
+        let r = try SyncResponse.decode(try response(ops: ops(try db.syncRequestBody(batch, appBuild: 1)),
+                                                      products: [productJSON(pid, stock: start - 1)], entries: stale))
+        try db.applySyncResponse(r, sent: batch)
+        XCTAssertEqual(try db.writer.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM entry WHERE batch_id = ? AND reverses_entry_id IS NULL AND voided_at IS NULL", arguments: [batchId.uuidString]) }, 0,
+                       "本机在途撤销优先")
+        XCTAssertEqual(try db.void(.batch(batchId)), .alreadyVoided, "不能再撤一次")
+        XCTAssertEqual(try db.displayStock(pid)?.qty, start, "库存回到卖前，不多加")
+    }
+
     func testBatchesSplitByBytes() throws {
         let db = try makeDB()
         for _ in 0..<5 { _ = try sell(db) }

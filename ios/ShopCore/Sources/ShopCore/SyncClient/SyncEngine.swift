@@ -418,7 +418,12 @@ extension LocalDB {
                   list_amount_fen = excluded.list_amount_fen, amount_fen = excluded.amount_fen,
                   unit_cost_fen = excluded.unit_cost_fen, cogs_fen = excluded.cogs_fen, value_delta_fen = excluded.value_delta_fen,
                   cost_missing = excluded.cost_missing, expiry_date = excluded.expiry_date, device_id = excluded.device_id,
-                  occurred_at = excluded.occurred_at, voided_at = excluded.voided_at, flags = excluded.flags
+                  occurred_at = excluded.occurred_at, flags = excluded.flags,
+                  -- 合并不覆盖（PR #36 评审必须修 3）：本机在途的撤销（临时冲销行的 void op 还待传）优先，直到它确认
+                  voided_at = CASE WHEN excluded.voided_at IS NULL AND entry.voided_at IS NOT NULL AND EXISTS (
+                      SELECT 1 FROM entry r JOIN outbox o ON o.id = r.op_id
+                      WHERE r.reverses_entry_id = entry.id AND r.seq IS NULL AND o.status = 'pending')
+                    THEN entry.voided_at ELSE excluded.voided_at END
                 """, arguments: [e.id.uuidString, e.seq, e.opId?.uuidString, batch, e.type, e.reversesEntryId?.uuidString,
                                  e.productId.uuidString, e.barcode, e.nameSnapshot, e.unitName, e.packQty, e.packCount,
                                  e.qtyDelta, e.listAmountFen, e.amountFen, priv ? e.unitCostFen : nil, priv ? e.cogsFen : nil,
