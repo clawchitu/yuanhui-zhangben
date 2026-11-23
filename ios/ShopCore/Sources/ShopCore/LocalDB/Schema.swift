@@ -204,6 +204,17 @@ enum LocalSchema {
                 );
                 CREATE INDEX barcode_pending_product ON barcode_pending(product_id);
                 """)
+            // PR #36 评审必须修 2：op 已确认、但它动过的商品的新库存基线还在商品流后页时，这几笔增减继续算进显示库存，
+            // 直到该商品的新基线拉下来（或商品流拉到底）才放掉，否则库存先对后错回（10 卖 1 → 9 → 又变回 10）
+            try db.execute(sql: """
+                CREATE TABLE effect_hold (
+                  store_id   TEXT NOT NULL,
+                  op_id      TEXT NOT NULL,
+                  product_id TEXT NOT NULL,
+                  PRIMARY KEY (store_id, op_id, product_id),
+                  FOREIGN KEY (store_id, op_id) REFERENCES outbox(store_id, id) ON DELETE CASCADE
+                );
+                """)
         }
         return m
     }

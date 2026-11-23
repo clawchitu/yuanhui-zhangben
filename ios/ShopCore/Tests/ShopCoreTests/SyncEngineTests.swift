@@ -86,6 +86,24 @@ final class SyncEngineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try db.count("barcode_pending"), 0)
     }
 
+    /// PR #36 评审必须修 2（Codex 原场景）：库存 10、卖 1 显示 9；确认响应不带这样商品（新基线在商品流后页）时仍显示 9，
+    /// 后页带来新基线 9 后还是 9，不错回 10、也不重复扣成 8
+    func testAppliedDeltaHeldUntilNewBaselineArrives() throws {
+        let db = try makeDB()
+        let (_, pid) = try sell(db)
+        let shown = try XCTUnwrap(try db.displayStock(pid))
+        let base = shown.baselineQty
+        let batch = try XCTUnwrap(try db.nextPushBatch())
+        let r1 = try SyncResponse.decode(try response(ops: ops(try db.syncRequestBody(batch, appBuild: 1)), cursor: 5, moreCatalog: true))
+        try db.applySyncResponse(r1, sent: batch)
+        XCTAssertEqual(try db.syncStatus().pendingCount, 0)
+        XCTAssertEqual(try db.displayStock(pid)?.qty, shown.qty, "已确认但新基线未到：不错回原库存")
+        let r2 = try SyncResponse.decode(try response(ops: [], cursor: 9, products: [productJSON(pid, stock: base - 1)], moreCatalog: true))
+        try db.applySyncResponse(r2, sent: nil)
+        XCTAssertEqual(try db.displayStock(pid)?.qty, shown.qty, "新基线到了：增减放掉，不重复扣")
+        XCTAssertEqual(try db.count("effect_hold"), 0)
+    }
+
     func testBatchesSplitByBytes() throws {
         let db = try makeDB()
         for _ in 0..<5 { _ = try sell(db) }

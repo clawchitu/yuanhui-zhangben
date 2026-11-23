@@ -174,7 +174,9 @@ extension LocalDB {
             let pending = try Int64.fetchOne(db, sql: """
                 SELECT COALESCE(SUM(e.qty_delta), 0) FROM outbox_effect e
                 JOIN outbox o ON o.store_id = e.store_id AND o.id = e.op_id
-                WHERE e.store_id = ?1 AND o.status = 'pending'
+                WHERE e.store_id = ?1
+                  AND (o.status = 'pending' OR EXISTS (SELECT 1 FROM effect_hold h
+                       WHERE h.store_id = e.store_id AND h.op_id = e.op_id AND h.product_id = e.product_id))
                   AND (e.product_id = ?2
                        OR e.product_id IN (SELECT old_id FROM product_remap WHERE store_id = ?1 AND new_id = ?2))
                 """, arguments: [s.storeId.uuidString, productId.uuidString]) ?? 0

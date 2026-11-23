@@ -249,6 +249,13 @@ extension LocalDB {
                     UPDATE outbox SET status = ?, reject_code = ?, result_json = ?, confirmed_at = ?
                     WHERE store_id = ? AND id = ? AND status = 'pending'
                     """, arguments: [st.rawValue, res.code, raw, ts, store.uuidString, res.id.uuidString])
+                // 确认了、但商品流还没拉到底：增减先留着，等这些商品的新基线（见第 3 步之后）
+                if st == .applied, db.changesCount > 0, r.hasMore.catalog {
+                    try db.execute(sql: """
+                        INSERT OR IGNORE INTO effect_hold (store_id, op_id, product_id)
+                        SELECT store_id, op_id, product_id FROM outbox_effect WHERE store_id = ? AND op_id = ?
+                        """, arguments: [store.uuidString, res.id.uuidString])
+                }
             }
             // 2. remap：投影里对旧商品 id 的引用改成赢家；outbox 的字节和增减不可改（服务器按 product_aliases 认旧 id），
             //    本机记进 product_remap，显示库存时把旧 id 上的待传增减并到赢家
@@ -284,6 +291,17 @@ extension LocalDB {
             }
             // 3. 变更
             try Self.applyChanges(db, r.changes, session: s)
+            // 放掉已确认增减：商品流拉到底就全放；否则只放本页带了新基线的商品（含经 remap 并到赢家的旧 id）
+            if !r.hasMore.catalog {
+                try db.execute(sql: "DELETE FROM effect_hold WHERE store_id = ?", arguments: [store.uuidString])
+            } else {
+                for p in r.changes.products where p.private != nil {
+                    try db.execute(sql: """
+                        DELETE FROM effect_hold WHERE store_id = ?1 AND (product_id = ?2
+                          OR product_id IN (SELECT old_id FROM product_remap WHERE store_id = ?1 AND new_id = ?2))
+                        """, arguments: [store.uuidString, p.id.uuidString])
+                }
+            }
             try faultHook?(.midSyncCommit)
             // 4. 游标、epoch、状态
             func put(_ k: MetaKey, _ v: String?) throws {
