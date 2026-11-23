@@ -39,7 +39,7 @@ struct StockInView: View {
 
     var body: some View {
         GeometryReader { geo in
-            // 商品卡在的时候取景框压暗、不识别，收小到屏高 16%（下沿不动），给上面的卡片多留地方
+            // 商品卡在的时候取景框压暗、不识别，收小到屏高 16%（连同按钮沉到底部），给上面的卡片多留地方
             let layout = ScanLayout(size: geo.size, insets: geo.safeAreaInsets, compact: holding || typeSize.isAccessibilitySize)
             VStack(spacing: 0) {
                 ModeBar(title: "进货", mode: .stock, pendingCount: model.pendingCount, onBack: { dismiss() })

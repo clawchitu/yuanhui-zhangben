@@ -303,6 +303,13 @@ final class S16UITests: XCTestCase {
         waitItems(app, 6)
         let checkout = el(app, "sell.checkout"), basket = el(app, "sell.basket"), camera = el(app, "sell.camera")
         let w = app.windows.firstMatch.frame
+        // 第 3 行起取景框收到 16%（带 0.2 秒动画）：等结算条位置稳定再量
+        var last = CGRect.null
+        wait("结算条位置稳定") {
+            let f = checkout.frame
+            defer { last = f }
+            return f == last
+        }
         func assertCheckoutFixed(_ ctx: String) {
             XCTAssertGreaterThanOrEqual(checkout.frame.minY, basket.frame.maxY - 0.5, "\(ctx)：结算条在清单下面 \(checkout.frame)")
             XCTAssertLessThanOrEqual(checkout.frame.maxY, camera.frame.minY + 0.5, "\(ctx)：结算条在取景框上面 \(checkout.frame)")

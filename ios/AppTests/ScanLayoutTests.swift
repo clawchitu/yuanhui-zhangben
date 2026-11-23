@@ -65,15 +65,18 @@ final class ScanLayoutTests: XCTestCase {
         }
     }
 
-    /// 第 5 条（可选）：收小时取景框高约屏高 16%，下沿不动
-    func testCompactFinderKeepsTheBottomEdge() {
+    /// 第 5 条（可选）：收小时取景框高约屏高 16%，连同按钮沉到按钮底离安全区 16pt（用掉按钮下面的空地，不往上走）
+    func testCompactFinderSinksIntoTheSpareSpace() {
         for (name, screen, top, bottom) in Self.phones {
             let normal = layout(screen, top: top, bottom: bottom)
             let small = layout(screen, top: top, bottom: bottom, compact: true)
             XCTAssertEqual(small.finder.height / screen.height, 0.16, accuracy: 0.005, name)
             XCTAssertEqual(small.finder.width, normal.finder.width)
-            XCTAssertEqual(finderFrame(small, screen, bottom: bottom).maxY, finderFrame(normal, screen, bottom: bottom).maxY,
-                           accuracy: 1, "\(name) 下沿不动")
+            let f = finderFrame(small, screen, bottom: bottom), n = finderFrame(normal, screen, bottom: bottom)
+            XCTAssertGreaterThanOrEqual(f.maxY, n.maxY - 0.5, "\(name) 收小时下沿只沉不升")
+            XCTAssertGreaterThan(f.minY - n.minY, n.height - f.height, "\(name) 上沿让出的比单纯收小更多")
+            let buttonsBottom = f.maxY + ScanLayout.buttonGap + ScanLayout.buttonHeight
+            XCTAssertEqual(screen.height - bottom - buttonsBottom, ScanLayout.bottomPadding, accuracy: 1, "\(name) 按钮底离安全区 16pt")
         }
     }
 

@@ -31,7 +31,8 @@ enum Torch {
 /// - 取景框宽 = 屏宽 86%（左右各 7%），高 = 屏高 23%（约 2:1）；垂直中心在屏高 64%
 /// - 手电筒、手输条码紧贴取景框下方（间距 16pt）横排两个等宽大按钮（左右边和取景框齐，高 64pt）；
 ///   按钮下面剩的地方留在底部安全区上方（不再让按钮贴底，免得框和按钮之间空出一大块）
-/// - 卖出页购物篮到第 3 行、或系统辅助字号下，取景框收到屏高 16%：下沿不动，上沿下移，让出地方给上面的清单
+/// - 卖出页购物篮到第 3 行、进货页商品卡在、或系统辅助字号下，取景框收到屏高 16%，并连同按钮沉到按钮离底部安全区 16pt，
+///   让出地方给上面的清单 / 商品卡
 ///
 /// 比例按整个屏幕算（含状态栏和底部安全区），换算到页面安全区内的坐标。屏幕矮时相机区不小于放下取景框和按钮的高度。
 struct ScanLayout: Equatable {
@@ -64,8 +65,11 @@ struct ScanLayout: Equatable {
         let h = compact ? (fullH * Self.compactFinderHeightRatio).rounded() : normalH
         finder = CGSize(width: (fullW * Self.finderWidthRatio).rounded(), height: h)
         bottomInset = insets.bottom
-        // 取景框下沿（收小时也不动）换到安全区坐标
-        let bottom = fullH * Self.finderCenterRatio + normalH / 2 - insets.top
+        // 取景框下沿换到安全区坐标。收小时取景框连同按钮往下沉，用掉按钮下面的空地（按钮底离安全区 16pt），
+        // 上沿下移得更多，让上面的清单多露一行；只沉不升（屏幕矮、本来就没空地时下沿不动）
+        let normalBottom = fullH * Self.finderCenterRatio + normalH / 2 - insets.top
+        let lowest = size.height - Self.bottomPadding - Self.buttonHeight - Self.buttonGap
+        let bottom = compact ? max(normalBottom, lowest) : normalBottom
         let top = bottom - h - Self.topPadding
         let minBand = Self.topPadding + h + Self.buttonGap + Self.buttonHeight + Self.bottomPadding
         bandHeight = max(minBand, size.height - top).rounded()
@@ -125,7 +129,6 @@ struct CameraStrip: View {
     private var scanning: some View {
         VStack(spacing: 0) {
             viewfinder
-            // 收小时取景框上沿下移、下沿不动：按钮位置也不动
             Spacer().frame(height: ScanLayout.buttonGap)
             HStack(spacing: ScanLayout.buttonSpacing) {
                 stripButton(torchOn ? "关手电筒" : "手电筒", systemImage: torchOn ? "flashlight.on.fill" : "flashlight.off.fill",

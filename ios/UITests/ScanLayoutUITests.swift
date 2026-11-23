@@ -34,7 +34,7 @@ final class ScanLayoutUITests: XCTestCase {
         XCTFail("等不到：\(what)", file: file, line: line)
     }
 
-    /// 取景框在屏幕下半：宽约 86%、高约 22–24%（收小时 16%）、中心在 62–65%（收小时下沿不动）；两个按钮紧贴框下 16pt、等宽、≥ 64pt、横排
+    /// 取景框在屏幕下半：宽约 86%、高约 22–24%（收小时 16%，连同按钮沉到离底部安全区 16pt）、中心在 62–65%；两个按钮紧贴框下 16pt、等宽、≥ 64pt、横排
     private func assertCameraArea(_ app: XCUIApplication, compact: Bool = false, _ ctx: String,
                                   file: StaticString = #filePath, line: UInt = #line) {
         let w = app.windows.firstMatch.frame
@@ -43,7 +43,7 @@ final class ScanLayoutUITests: XCTestCase {
         XCTAssertEqual(finder.width / w.width, 0.86, accuracy: 0.01, "\(ctx) 取景框宽 \(finder)", file: file, line: line)
         if compact {
             XCTAssertEqual(finder.height / w.height, 0.16, accuracy: 0.01, "\(ctx) 收小的取景框高 \(finder)", file: file, line: line)
-            XCTAssertEqual(finder.maxY / w.height, 0.64 + 0.115, accuracy: 0.01, "\(ctx) 收小时下沿不动", file: file, line: line)
+            XCTAssertEqual(manual.maxY, w.maxY - 34 - 16, accuracy: 1.5, "\(ctx) 收小时连同按钮沉到离安全区 16pt", file: file, line: line)
         } else {
             XCTAssertTrue((0.22...0.24).contains(finder.height / w.height), "\(ctx) 取景框高 \(finder)", file: file, line: line)
             XCTAssertTrue((0.62...0.65).contains(finder.midY / w.height), "\(ctx) 取景框中心 \(finder.midY / w.height)",
@@ -131,7 +131,9 @@ final class ScanLayoutUITests: XCTestCase {
         let app = launch("sell", ["-uiScan", [Self.beer, Self.erguotou].joined(separator: ",")])
         wait("两件") { el(app, "sell.itemCount").label == "一共 2 件" }
         XCTAssertFalse(el(app, "scanner.holding").exists, "卖出页扫到不暂停")
-        XCTAssertTrue(el(app, "sell.tag").label.contains("二锅头"), "最新一件置顶：\(el(app, "sell.tag").label)")
+        // 价签是 .contain 容器，自身没有 label：看里面的字
+        let tagTexts = el(app, "sell.tag").staticTexts.allElementsBoundByIndex.map(\.label)
+        XCTAssertTrue(tagTexts.contains { $0.contains("二锅头") }, "最新一件置顶：\(tagTexts)")
         assertCameraArea(app, "卖出两行")
         let app3 = launch("sell", ["-uiScan", [Self.beer, Self.erguotou, Self.noodle].joined(separator: ",")])
         wait("三件") { el(app3, "sell.itemCount").label == "一共 3 件" }
