@@ -225,7 +225,7 @@ unset A S K
 | 备份心跳、失败（T26） | `backup_heartbeat_stale`、`backup_failed`、`backup_consecutive_failures`、`backup_lifecycle_stale`、`backup_skipped`、`backup_gate_skipped`、`restore_failed` | 服务器 | 营业时间 2 小时（从 8:00 起算，不在 8:00 切换时误报）/ 任何时候 6 小时；连续失败 ≥ 2 升严重 |
 | 营业时间没有同步 | `no_sync:<店>` | 服务器 | 8:00–21:00 超过 3 小时；真同步过才发「已恢复」（打烊不算恢复） |
 | 接口错误率 | `http_5xx_rate` | 服务器 | 一小时 > 20 次 |
-| 快鸟额度（S08-3 条件二） | `kuainiao_store_daily:<店>`、`kuainiao_quota` | 服务器 | 单店当天 ≥ 200 次；网关报额度用完 / 限流 |
+| 快鸟额度（S08-3 条件二） | `kuainiao_store_daily:<店>`、`kuainiao_quota` | 服务器 | 单店当天 ≥ 700 次；网关报额度用完 / 限流 |
 | 登录异常 | `login_locked:<店>` | 服务器 | 刚锁上那一次 |
 | 账号注销申请 | `account_delete_request:<店>`、`account_delete_export:<店>` | 服务器 | 申请时一条；导出包生成后再一条（带对象键） |
 | 被退出的手机有待确认的账 | `held_ops:<店>` | 服务器 | > 24 小时 |
@@ -260,7 +260,7 @@ unset A S K
 | M6 | 门禁跳过、恢复失败 | B8 的 `--skip-backup-gate` → `backup_gate_skipped`；`RESTORE_COMPOSE_DIR=/opt/yuanhui deploy/restore.sh latest --execute`（目标库不空，必然被拒）→ `restore_failed` | **部分（仅到 outbox）**，时间为 UTC：`backup_gate_skipped` 20:31:41；ECS 上 `restore.sh latest --execute`（目标库非空）被拒 → `restore_failed` 20:38:48 |
 | M7 | 营业时间无同步 | 测试店唯一一台在用的手机关机 3 小时（营业时间内） | 未做：要测试店和真手机 |
 | M8 | 5xx | `docker compose stop postgres` 1 分钟，期间从本机打 25 次 `/healthz`（查库，失败回 503），再 `start` | **部分（仅到 outbox）**，时间为 UTC，没记「已恢复」：停 postgres 期间 25 次 `/healthz` 全 503，`http_5xx_rate` fire 20:39:48（count 25） |
-| M9 | 快鸟 200 次 | T9 配上 AppCode 之后，测试店用脚本查 200 个不同条码 | 未做：T9 AppCode 未配 |
+| M9 | 快鸟 700 次 | T9 配上 AppCode 之后，测试店用脚本查 700 个不同条码 | 未做：T9 AppCode 未配 |
 | M10 | 登录锁定、注销申请、导出包 | 测试店连输错 5 次密码；测试店申请注销 → 两条（申请、导出包位置）；然后撤回 | 未做：要测试店（建测试店是下一步） |
 | M11 | 被退出手机暂存的账 | 测试手机离线记一笔、在另一台撤销它、它再联网，24 小时后 | 未做：要两台测试手机 |
 | M12 | outbox 拉不到 | 本机 `PROBE_SSH_TARGET` 临时改成不存在的主机 30 分钟 | 待配置（本机探测） |

@@ -299,14 +299,14 @@ describe("额度与限速", () => {
     await app.close();
   });
 
-  it("默认上限是每店每天 300 次", async () => {
+  it("默认上限是每店每天 1000 次", async () => {
     const src = new FakeSource();
     src.behave = async () => ({ kind: "not_found", raw: {} });
-    const app = mk({ source: src, rateLimits: { barcodeLookup: { limit: 1000, windowMs: 60_000 } } });
+    const app = mk({ source: src, rateLimits: { barcodeLookup: { limit: 2000, windowMs: 60_000 } } });
     const a = await shop(app);
-    for (let i = 0; i < 300; i++) expect((await get(app, a.token, newBarcode())).statusCode).toBe(200);
+    for (let i = 0; i < 1000; i++) expect((await get(app, a.token, newBarcode())).statusCode).toBe(200);
     expect((await get(app, a.token, newBarcode())).json().code).toBe("lookup_quota_exceeded");
-    expect(src.calls).toHaveLength(300);
+    expect(src.calls).toHaveLength(1000);
     await app.close();
   }, 30_000);
 

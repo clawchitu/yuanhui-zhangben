@@ -281,7 +281,7 @@ describe("阈值", () => {
     expect(certVerdict({ ...c, authorized: false }, nb).active).toBe(true);
     expect(renewalOverdue(c, new Date(na.getTime() - 41 * H))).toBe(false);
     expect(renewalOverdue(c, new Date(na.getTime() - 39 * H))).toBe(true);
-    expect(THRESHOLDS.kuainiaoStoreDaily).toBe(200);
+    expect(THRESHOLDS.kuainiaoStoreDaily).toBe(700);
     expect(THRESHOLDS.errorsPerHour).toBe(20);
   });
 });

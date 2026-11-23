@@ -1,5 +1,5 @@
 // 服务器内的检查任务（S10c，§9.5）。scheduler 每分钟跑一次 run()：
-//   日志转来的事件（T16、登录锁定、注销申请、快鸟额度报错）、5xx 一小时窗口、快鸟单店当天 200 次（S08-3 条件二）、
+//   日志转来的事件（T16、登录锁定、注销申请、快鸟额度报错）、5xx 一小时窗口、快鸟单店当天 700 次（S08-3 条件二）、
 //   元辉店营业时间无同步、被退出手机的暂存账超过 24 小时、ops 表体积和增长、磁盘用量（T3）、
 //   备份：心跳、失败、连续失败、被跳过（锁）、生命周期没生效、gate-skips.log 新行、restore-events.log 里的 restore_failed（T26）。
 // 不在这里的：服务存活和 IP 证书（本机探测 scripts/probe.ts，api 挂了这里也挂了）；CPU、内存、磁盘 80%（阿里云云监控，runbook）。
@@ -106,7 +106,7 @@ export class ServerMonitor {
       seen.add(key);
       await this.d.alerter.condition(u.used >= THRESHOLDS.kuainiaoStoreDaily, {
         key,
-        title: "单店当天调快鸟已到 200 次（每店每天上限 300）",
+        title: "单店当天调快鸟已到 700 次（每店每天上限 1000）",
         severity: "warning",
         details: { store_id: u.storeId, used: u.used, threshold: THRESHOLDS.kuainiaoStoreDaily },
       });
