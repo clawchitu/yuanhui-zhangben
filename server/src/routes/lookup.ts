@@ -1,6 +1,6 @@
 // GET /v1/barcode-lookup/:barcode 与 GET /v1/images/:product_id（§7、§6.1）。
 // 权限由 guard 按 permissions.json 判（被踢 401）；店 id 一律取自令牌。
-// - 条码查询：每设备每分钟 20 次（超了 429 rate_limited），每店每天调外部 300 次（超了 429 lookup_quota_exceeded）。
+// - 条码查询：每设备每分钟 20 次（超了 429 rate_limited），每店每天调外部 1000 次（超了 429 lookup_quota_exceeded）。
 //   收银员只拿到 found、name、spec、has_image（§6.1）；家用 / 审核另有 brand。
 //   第三方图片地址不下发给任何人（App 只从自家服务器取图，§0），所以 image_url 不出现。
 //   has_image = 图片总开关开着且条码库里有图（演示店永远 false：不用第三方图）。

@@ -150,7 +150,7 @@ export function loadConfig(env: Env = process.env): Config {
       endpoint: url(env, "KUAINIAO_ENDPOINT", "https://icode.market.alicloudapi.com/getBarcode"),
     },
     barcodeLookupTimeoutMs: int(env, "BARCODE_LOOKUP_TIMEOUT_MS", 2000, 100, 10_000),
-    barcodeDailyLimit: int(env, "BARCODE_DAILY_LIMIT", 300, 0, 100_000),
+    barcodeDailyLimit: int(env, "BARCODE_DAILY_LIMIT", 1000, 0, 100_000),
     objectStore: objectStore(env),
     imageCacheDir: env.IMAGE_CACHE_DIR || "/var/cache/yuanhui/images",
     monitor: monitor(env),

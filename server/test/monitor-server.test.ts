@@ -1,4 +1,4 @@
-// S10c 服务器内的检查任务（连真实 Postgres）：日志里的告警（登录锁定、注销申请、T16）、5xx、快鸟单店 200 次、
+// S10c 服务器内的检查任务（连真实 Postgres）：日志里的告警（登录锁定、注销申请、T16）、5xx、快鸟单店 700 次、
 // 营业时间无同步、被退出手机的暂存账、ops 表、磁盘、备份（心跳、失败、连续失败、跳过、生命周期、门禁跳过、恢复失败）。
 import { mkdtempSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,19 +88,19 @@ describe("服务器监控", () => {
     await bad.close();
   });
 
-  it("快鸟：单店当天到 200 次告警（S08-3 条件二），199 次不报；过零点清零后恢复；接的是 app.catalog.quota", async () => {
+  it("快鸟：单店当天到 700 次告警（S08-3 条件二），699 次不报；过零点清零后恢复；接的是 app.catalog.quota", async () => {
     const r = rig();
-    r.setUsage([{ storeId: "s1", used: 199 }]);
+    r.setUsage([{ storeId: "s1", used: 699 }]);
     await r.run();
     expect(r.alerter.firing("kuainiao_store_daily:s1")).toBe(false);
-    r.setUsage([{ storeId: "s1", used: 200 }, { storeId: "s2", used: 3 }]);
+    r.setUsage([{ storeId: "s1", used: 700 }, { storeId: "s2", used: 3 }]);
     await r.run();
     expect(r.alerter.firing("kuainiao_store_daily:s1")).toBe(true);
     r.setUsage([]);
     await r.run();
     expect(r.sink.kinds().filter((k) => k.includes("kuainiao"))).toEqual(["fire:kuainiao_store_daily:s1", "resolved:kuainiao_store_daily:s1"]);
     // 真实的 DailyQuota.usage：按上海日期分
-    const app = buildApp({ config: testConfig({ barcodeDailyLimit: 300 }), db: tdb, logger: false });
+    const app = buildApp({ config: testConfig({ barcodeDailyLimit: 1000 }), db: tdb, logger: false });
     const now = new Date(sh("2026-11-20T23:59:00"));
     for (let i = 0; i < 3; i++) app.catalog.quota.take("s9", now);
     expect(app.catalog.quota.usage(now)).toEqual([{ storeId: "s9", used: 3 }]);
@@ -113,7 +113,7 @@ describe("服务器监控", () => {
     const r = rig();
     const { SourceError } = await import("../src/lookup/kuainiao.ts");
     const app = buildApp({
-      config: testConfig({ barcodeDailyLimit: 300 }),
+      config: testConfig({ barcodeDailyLimit: 1000 }),
       db: tdb,
       logStream: { write: (l) => r.tap.line(l) },
       barcodeSource: { name: "kuainiao", lookup: async () => Promise.reject(new SourceError("http", "快鸟 HTTP 403（quota）")) },

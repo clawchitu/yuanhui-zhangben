@@ -13,8 +13,8 @@ export const THRESHOLDS = {
   noSyncToHour: 21,
   /** §9.5：5xx 每小时超过 20 次 */
   errorsPerHour: 20,
-  /** §14 S08-3 条件二：单店当天调快鸟到 200 次 */
-  kuainiaoStoreDaily: 200,
+  /** §14 S08-3 条件二：单店当天调快鸟到 700 次 */
+  kuainiaoStoreDaily: 700,
   /** §9.5：被退出的手机暂存的账超过 24 小时没人处理 */
   heldMs: 24 * 3600_000,
   /** §14 T3：ops 表体积、24 小时增长、磁盘用量（磁盘和云监控的 80% 一致） */
