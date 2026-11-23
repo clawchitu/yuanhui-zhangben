@@ -94,6 +94,7 @@ struct CameraViewfinder: View {
             FinderCorners()
                 .stroke(Tokens.Palette.tag, style: StrokeStyle(lineWidth: 4, lineCap: .square))
                 .padding(6)
+                .allowsHitTesting(false)   // 点按对焦：点在框角上也交给相机画面
         }
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .task { await permission.requestIfNeeded() }

@@ -48,6 +48,10 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     nonisolated(unsafe) private var validRect: CGRect?
     nonisolated(unsafe) private var relay: Relay?
     nonisolated(unsafe) private var restartLimiter = RestartLimiter()
+    /// 正在用的相机（真机）
+    nonisolated(unsafe) private var device: AVCaptureDevice?
+    /// 可见取景框（识别坐标，没放大一圈的）：放大倍数和默认对焦点按它算
+    nonisolated(unsafe) private var visibleRect: CGRect?
     /// 只在主线程读写：当前这一代，和已经装好回调、允许交码的那一代
     @MainActor private(set) var epoch = 0
     @MainActor private var acceptedEpoch: Int?
@@ -57,9 +61,13 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     /// 这台机器有没有后置相机（模拟器没有）
     static var hasCamera: Bool { AVCaptureDevice.default(for: .video) != nil }
 
-    /// 扫码用的相机：后置广角，没有就系统默认的。手电筒（`Torch`）也用它，两处是同一个设备
+    /// 扫码用的相机：后置虚拟多摄优先（三摄 → 双广角 → 双摄），近处系统自动切超广角微距；都没有退到广角单摄，
+    /// 再没有就系统默认的（`ScanOptics.preferredDeviceTypes`）。手电筒（`Torch`）也用它，两处是同一个设备
     nonisolated static func preferredDevice() -> AVCaptureDevice? {
-        AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) ?? AVCaptureDevice.default(for: .video)
+        let found = AVCaptureDevice.DiscoverySession(deviceTypes: ScanOptics.preferredDeviceTypes,
+                                                     mediaType: .video, position: .back).devices
+        let type = ScanOptics.pickDeviceType(available: Set(found.map(\.deviceType)))
+        return found.first { $0.deviceType == type } ?? AVCaptureDevice.default(for: .video)
     }
 
     init(includeQR: Bool = false) {
@@ -72,6 +80,11 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
                 self?.resumeIfWanted()
             })
         }
+        // 点按对焦后画面一变（换了个商品）：回到取景框中心连续对焦
+        observers.append(center.addObserver(forName: AVCaptureDevice.subjectAreaDidChangeNotification, object: nil,
+                                            queue: nil) { [weak self] note in
+            self?.subjectAreaChanged(note.object as? AVCaptureDevice)
+        })
     }
 
     /// 测试用：输出端换成记录器，不开真相机
@@ -133,8 +146,57 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
         }
     }
 
+    /// 可见取景框变了（识别坐标，没放大一圈的）：按它重算放大倍数，对焦 / 测光点放到它中心
+    @MainActor func setVisibleRect(_ rect: CGRect?) {
+        guard let rect = rect.flatMap(Self.validRectOfInterest) else { return }
+        queue.async { [self] in
+            visibleRect = rect
+            tuneOptics()
+        }
+    }
+
+    /// 点按取景区：按点的位置（设备坐标 0…1）对一次焦、测一次光
+    @MainActor func focus(atDevicePoint point: CGPoint) {
+        guard point.x.isFinite, point.y.isFinite else { return }
+        queue.async { [self] in
+            configureDevice { d in d.apply(ScanOptics.focusPlan(at: point, tapped: true, caps: .init(d))) }
+        }
+    }
+
+    nonisolated private func subjectAreaChanged(_ changed: AVCaptureDevice?) {
+        queue.async { [self] in
+            guard let device, changed == nil || changed === device else { return }
+            configureDevice { d in
+                d.apply(ScanOptics.focusPlan(at: centerPoint, tapped: false, caps: .init(d)))
+            }
+        }
+    }
+
+    /// 会话队列上：默认对焦点 = 取景框中心（还不知道框在哪时用画面中心）
+    nonisolated private var centerPoint: CGPoint {
+        visibleRect.map(ScanOptics.center(of:)) ?? CGPoint(x: 0.5, y: 0.5)
+    }
+
+    /// 会话队列上：按取景框设放大倍数（AVCamBarcode 的算法）、连续自动对焦 / 测光到框中心
+    nonisolated private func tuneOptics() {
+        configureDevice { d in
+            if let rect = visibleRect {
+                let zoom = d.scanZoomFactor(fill: ScanOptics.horizontalFill(ofVisibleRect: rect))
+                if zoom.isFinite, abs(d.videoZoomFactor - zoom) > 0.01 { d.videoZoomFactor = zoom }
+            }
+            d.apply(ScanOptics.focusPlan(at: centerPoint, tapped: false, caps: .init(d)))
+        }
+    }
+
+    /// 会话队列上：锁住设备改设置（锁不上就算了，不影响识别）
+    nonisolated private func configureDevice(_ body: (AVCaptureDevice) -> Void) {
+        guard drivesSession, let device, (try? device.lockForConfiguration()) != nil else { return }
+        defer { device.unlockForConfiguration() }
+        body(device)
+    }
+
     /// 收进 0…1 的单位方块；算不出来（空、NaN、完全在画面外）返回 nil——不交码，不退回整个画面
-    static func validRectOfInterest(_ rect: CGRect) -> CGRect? {
+    nonisolated static func validRectOfInterest(_ rect: CGRect) -> CGRect? {
         let full = CGRect(x: 0, y: 0, width: 1, height: 1)
         guard !rect.isNull, !rect.isInfinite,
               [rect.minX, rect.minY, rect.width, rect.height].allSatisfy(\.isFinite) else { return nil }
@@ -183,12 +245,15 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
         session.addOutput(output)
         output.metadataObjectTypes = types.filter(output.availableMetadataObjectTypes.contains)
         self.output = output
-        // 近距离扫小条码：能自动对焦近处就打开
-        if (try? device.lockForConfiguration()) != nil {
-            if device.isAutoFocusRangeRestrictionSupported { device.autoFocusRangeRestriction = .near }
+        self.device = device
+        configured = true
+        // 虚拟多摄：让系统按距离自动切镜头（近处切超广角微距）
+        if device.isVirtualDevice, (try? device.lockForConfiguration()) != nil {
+            device.setPrimaryConstituentDeviceSwitchingBehavior(.auto, restrictedSwitchingBehaviorConditions: [])
             device.unlockForConfiguration()
         }
-        configured = true
+        // 取景框位置还不知道：先按画面中心连续对焦、限近处；框布局好后（`setVisibleRect`）再按框放大、移对焦点
+        tuneOptics()
     }
 
     /// 某一代的识别回调：带着自己的代号，代号过期的码在 `deliver` 里丢掉
@@ -281,6 +346,35 @@ final class CameraPreviewView: UIView {
     override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
     var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
     var onVisibleRect: ((CGRect?) -> Void)?
+    /// 点了取景区：点的位置换算成设备坐标（0…1）交出去，对一次焦
+    var onTapFocus: ((CGPoint) -> Void)?
+    private let focusMark = CAShapeLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped(_:))))
+        focusMark.fillColor = nil
+        focusMark.strokeColor = UIColor(Tokens.Palette.tag).cgColor
+        focusMark.lineWidth = 2
+        focusMark.opacity = 0
+        layer.addSublayer(focusMark)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func tapped(_ g: UITapGestureRecognizer) {
+        let p = g.location(in: self)
+        guard previewLayer.session?.isRunning == true else { return }
+        onTapFocus?(previewLayer.captureDevicePointConverted(fromLayerPoint: p))
+        // 点的位置闪一个小方框
+        let side = min(56, bounds.height - 8)
+        focusMark.path = UIBezierPath(rect: CGRect(x: p.x - side / 2, y: p.y - side / 2, width: side, height: side)).cgPath
+        let fade = CAKeyframeAnimation(keyPath: "opacity")
+        fade.values = [1, 1, 0]
+        fade.keyTimes = [0, 0.7, 1]
+        fade.duration = 0.9
+        focusMark.add(fade, forKey: "fade")
+    }
     /// 上次交出去的范围（外层 nil = 还没交过）
     private var lastRect: CGRect??
     private var startObserver: NSObjectProtocol?
@@ -320,7 +414,12 @@ struct CameraPreview: UIViewRepresentable {
         v.previewLayer.videoGravity = .resizeAspectFill
         v.accessibilityIdentifier = "scanner.preview"
         let camera = camera
-        v.onVisibleRect = { camera.setRectOfInterest($0) }
+        // 识别范围 = 可见取景框四周各大一圈（条码压着框边也认）；放大倍数和对焦点按可见框算
+        v.onVisibleRect = { rect in
+            camera.setRectOfInterest(ScanOptics.paddedRectOfInterest(rect))
+            camera.setVisibleRect(rect)
+        }
+        v.onTapFocus = { camera.focus(atDevicePoint: $0) }
         v.watch(camera.session)
         return v
     }
