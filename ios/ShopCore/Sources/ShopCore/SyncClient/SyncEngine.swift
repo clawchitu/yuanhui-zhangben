@@ -302,6 +302,14 @@ extension LocalDB {
                         """, arguments: [store.uuidString, p.id.uuidString])
                 }
             }
+            // 已确认的 void 的本机临时冲销行：流水流拉到底时服务器的冲销行该到的都到了（到了的已按 op_id 换掉），还剩的就是
+            // 服务器没为它派生冲销（另一台手机先撤了，本机 void 照样 applied），删掉，否则多算一次（PR #36 评审必须修 4）
+            if !r.hasMore.ledger {
+                try db.execute(sql: """
+                    DELETE FROM entry WHERE seq IS NULL AND reverses_entry_id IS NOT NULL
+                      AND op_id IN (SELECT id FROM outbox WHERE store_id = ? AND status = 'applied')
+                    """, arguments: [store.uuidString])
+            }
             try faultHook?(.midSyncCommit)
             // 4. 游标、epoch、状态
             func put(_ k: MetaKey, _ v: String?) throws {
@@ -496,6 +504,7 @@ public final class SyncEngine: Sendable {
     @discardableResult
     public func sync(maxRounds: Int = 200, progress: (@Sendable (SyncProgress) -> Void)? = nil) throws -> SyncStatus {
         var products = 0
+        var lastCursors: SyncResponse.Cursors? = nil
         for _ in 0..<maxRounds {
             let status = try db.syncStatus()
             let batch = status.deletePendingUntil == nil ? try db.nextPushBatch() : nil
@@ -514,6 +523,10 @@ public final class SyncEngine: Sendable {
             progress?(SyncProgress(products: products, totalProducts: Int(r.totalProducts), catalogDone: !r.hasMore.catalog))
             let next = r.deletePendingUntil == nil ? try db.nextPushBatch() : nil; let morePush = next != nil
             if !r.hasMore.catalog && !r.hasMore.ledger && !morePush { return try db.syncStatus() }
+            // 没有进展（推上去的一个都没出队、游标没动）就结束本趟，等下一次触发（PR #36 评审可选 3）
+            let after = try db.syncStatus()
+            if after.pendingCount == status.pendingCount && r.cursors == lastCursors { return after }
+            lastCursors = r.cursors
         }
         return try db.syncStatus()
     }

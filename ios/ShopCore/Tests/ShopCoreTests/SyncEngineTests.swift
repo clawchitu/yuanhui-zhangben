@@ -137,6 +137,39 @@ final class SyncEngineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try db.displayStock(pid)?.qty, start, "库存回到卖前，不多加")
     }
 
+    /// PR #36 评审必须修 4（Codex 原场景）：两台手机撤同一笔，另一台先撤成功；本机 void 回 applied、服务器不为它派生冲销行。
+    /// 本机临时冲销行要清掉，当天卖出合计 ¥0.00（不是 −¥5.00）
+    func testDuplicateVoidFromOtherPhoneDropsLocalReversal() throws {
+        let db = try makeDB()
+        let (batchId, _) = try sell(db)
+        let cond = "batch_id = '\(batchId.uuidString)'"
+        let sale = try serverEntries(db, where: cond, seq: 1)
+        let b1 = try XCTUnwrap(try db.nextPushBatch())
+        try db.applySyncResponse(try SyncResponse.decode(try response(ops: ops(try db.syncRequestBody(b1, appBuild: 1)), entries: sale)), sent: b1)
+        guard case .voided = try db.void(.batch(batchId)) else { return XCTFail() }
+        // 另一台手机的撤销：原行已撤 + 它的冲销行
+        let other = uuid(0x0B)
+        var otherRev = try serverEntries(db, where: "\(cond) AND reverses_entry_id IS NOT NULL", seq: 2)
+        for i in otherRev.indices { otherRev[i]["id"] = UUID().uuidString; otherRev[i]["op_id"] = UUID().uuidString; otherRev[i]["device_id"] = other.uuidString }
+        let voided = try serverEntries(db, where: "\(cond) AND reverses_entry_id IS NULL", seq: 1, voidedAt: "2026-11-22T10:00:00Z")
+        let b2 = try XCTUnwrap(try db.nextPushBatch())
+        try db.applySyncResponse(try SyncResponse.decode(try response(ops: ops(try db.syncRequestBody(b2, appBuild: 1)),
+                                                                         entries: voided + otherRev)), sent: b2)
+        XCTAssertEqual(try db.syncStatus().pendingCount, 0)
+        XCTAssertEqual(try db.writer.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM entry WHERE seq IS NULL") }, 0, "本机临时冲销行清掉")
+        XCTAssertEqual(try db.writer.read { try Int64.fetchOne($0, sql: "SELECT SUM(amount_fen) FROM entry WHERE \(cond)") }, 0, "合计 ¥0.00")
+    }
+
+    /// 可选 3：服务器对 op 不回结果时，一趟不空转 200 次
+    func testNoProgressStopsRound() throws {
+        let db = try makeDB()
+        _ = try sell(db)
+        let calls = Box(0)
+        try SyncEngine(db: db, appBuild: 1) { _ in calls.value += 1; return (200, try self.response(ops: [])) }.sync()
+        XCTAssertLessThanOrEqual(calls.value, 2)
+        XCTAssertEqual(try db.syncStatus().pendingCount, 1)
+    }
+
     func testBatchesSplitByBytes() throws {
         let db = try makeDB()
         for _ in 0..<5 { _ = try sell(db) }
