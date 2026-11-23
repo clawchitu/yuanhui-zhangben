@@ -96,6 +96,8 @@ public struct RecordCard: Hashable, Sendable, Identifiable {
     public let listTotalFen: Int64?
     public let paidTotalFen: Int64?
     public let lines: [RecordLine]
+    /// 服务器拒收了这笔（outbox 里这条 op 是 rejected）：卡上标「没记上」，库存已经按服务器纠正（S22a）
+    public var rejected: Bool = false
 
     public var day: String { String(occurredAt.prefix(10)) }
     /// 「19:32」
@@ -106,7 +108,10 @@ public struct RecordCard: Hashable, Sendable, Identifiable {
     /// 卡片上的大数：卖出 = 实收；进货 = 总价；过期扔掉 / 退货 = 按进价算的货值（有才显示）；盘点、期初不显示
     public var amountFen: Int64? {
         switch type {
-        case .sale: return paidTotalFen ?? lines.reduce(0) { $0 + $1.amountFen }
+        // 撤过一部分的：只算还没撤的行（各行的摊后实收），不显示整笔原实收（PR #34 Fable 可选 1）
+        case .sale:
+            if lines.contains(where: \.voided) { return openLines.reduce(0) { $0 + $1.amountFen } }
+            return paidTotalFen ?? lines.reduce(0) { $0 + $1.amountFen }
         case .stockIn: return lines.reduce(0) { $0 + $1.amountFen }
         case .expireLoss, .supplierReturn:
             let v = lines.compactMap(\.valueDeltaFen)
@@ -270,11 +275,12 @@ extension LocalDB {
     static func cards(_ db: Database, _ s: LocalSession, where cond: String, args: [DatabaseValueConvertible],
                       limitRows: Int = 5000) throws -> [RecordCard] {
         let rows = try Row.fetchAll(db, sql: """
-            SELECT e.*, b.list_total_fen AS b_list, b.paid_total_fen AS b_paid, d.label AS d_label
+            SELECT e.*, b.list_total_fen AS b_list, b.paid_total_fen AS b_paid, d.label AS d_label, o.status AS o_status
             FROM (SELECT *, rowid AS rid FROM entry WHERE \(cond) ORDER BY occurred_at DESC, rowid DESC LIMIT ?) e
             LEFT JOIN sale_batch b ON b.id = e.batch_id LEFT JOIN device_label d ON d.device_id = e.device_id
+            LEFT JOIN outbox o ON o.id = e.op_id AND o.store_id = ?
             ORDER BY e.occurred_at DESC, e.rid DESC
-            """, arguments: StatementArguments(args + [limitRows]))
+            """, arguments: StatementArguments(args + [limitRows, s.storeId.uuidString]))
         var order: [String] = []
         var groups: [String: [Row]] = [:]
         for r in rows {
@@ -297,7 +303,8 @@ extension LocalDB {
             return RecordCard(id: key, opId: try (first["op_id"] as String?).map(parseUUID), type: type,
                               occurredAt: first["occurred_at"], deviceId: device, deviceLabel: label,
                               batchId: try (first["batch_id"] as String?).map(parseUUID), listTotalFen: first["b_list"],
-                              paidTotalFen: first["b_paid"], lines: lines)
+                              paidTotalFen: first["b_paid"], lines: lines,
+                              rejected: (first["o_status"] as String?) == OutboxItem.Status.rejected.rawValue)
         }
     }
 

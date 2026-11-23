@@ -165,12 +165,25 @@ final class SyncEngineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try db.displayStock(w2)?.pendingDelta, 0)
     }
 
+    func testRejectedCardMarkedAndServerTimeKept() throws {
+        let db = try makeDB()
+        _ = try sell(db)
+        try SyncEngine(db: db, appBuild: 1) { body in (200, try self.response(ops: self.ops(body), status: "rejected", code: "forbidden")) }.sync()
+        let card = try XCTUnwrap(try db.recordCards(on: LocalDB.shanghaiDay(Date())).first)
+        XCTAssertTrue(card.rejected, "被拒的这笔卡上标「没记上」")
+        let st = try db.syncStatus()
+        XCTAssertEqual(st.serverTimeAtSync, ISO8601DateFormatter().date(from: "2026-11-22T10:00:00Z"))
+        XCTAssertNotNil(st.lastSyncAt)
+    }
+
     func testOverdueAfterOneDay() throws {
         let db = try makeDB()
         _ = try sell(db)
         let st = try db.syncStatus()
         XCTAssertFalse(st.overdue(now: Date()))
         XCTAssertTrue(st.overdue(now: Date().addingTimeInterval(25 * 3600)), "超过一天没传")
+        XCTAssertEqual(st.overdueCount, 0)
+        XCTAssertEqual(try db.syncStatus(now: Date().addingTimeInterval(25 * 3600)).overdueCount, 1)
     }
 }
 

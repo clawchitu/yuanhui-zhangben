@@ -116,6 +116,7 @@ final class RecordsTests: XCTestCase {
         let after = try XCTUnwrap(try db.recordCards(on: LocalDB.shanghaiDay(Self.t1932)).first)
         XCTAssertEqual(after.lines.map(\.voided), [false, true, false])
         XCTAssertEqual(after.openLines.map(\.amountFen).reduce(0, +) + 2378, 5300, "I4：未撤 + 已撤 = 实收")
+        XCTAssertEqual(after.amountFen, 5300 - 2378, "卡片大数显示还没撤的 ¥29.22，不是整笔 ¥53.00（PR #34 Fable 可选 1）")
         let rev = try rows(db).filter { ($0["reverses_entry_id"] as String?) == beerLine.id.uuidString }
         XCTAssertEqual(rev.map { $0["amount_fen"] as Int64 }, [-2378])
         let op = try XCTUnwrap(try db.pendingOps().last)

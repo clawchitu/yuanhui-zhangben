@@ -154,6 +154,10 @@ public struct SyncStatus: Equatable, Sendable {
     public let lastSyncAt: Date?
     public let catalogDone: Bool
     public let deletePendingUntil: String?
+    /// 上次同步响应里的服务器时间（和 `lastSyncAt` 同一刻，本机时钟）
+    public var serverTimeAtSync: Date? = nil
+    /// 超过一天没传上去的笔数（25a「N 笔超过一天没传上去」）
+    public var overdueCount: Int = 0
 
     /// 「超过一天没传」（§4.2：outbox 里有超过 24 小时的 → 首页提醒条 25a）
     public func overdue(now: Date) -> Bool {
@@ -293,6 +297,7 @@ extension LocalDB {
             try put(.ledgerCursor, String(r.cursors.ledger))
             try put(.serverEpoch, r.epoch.uuidString)
             try put(.lastSyncAt, ts)
+            try put(.serverTimeAtSync, try Self.normalizeTimestamp(r.serverTime))
             try put(.deletePendingUntil, r.deletePendingUntil)
             if !r.hasMore.catalog { try put(.catalogDone, "1") }
             try Self.deleteConfirmedForeignOps(db, current: s)
@@ -405,8 +410,13 @@ extension LocalDB {
         }
     }
 
+    /// 本机有几样商品（首次同步进度「194 / 312 样」的分子；强杀重开后接着数）
+    public func productCount() throws -> Int {
+        try writer.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM product") ?? 0 }
+    }
+
     /// 同步状态：待传笔数、最早一条待传的时间、上次同步时间（首页 / 设置 / 25a 的数来自这里，§14 S15-1）
-    public func syncStatus() throws -> SyncStatus {
+    public func syncStatus(now: Date = Date()) throws -> SyncStatus {
         try writer.read { db in
             let s = try Self.currentSession(db)
             let n = try s.map { try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM outbox WHERE status = 'pending' AND device_id = ? AND store_id = ?",
@@ -415,9 +425,14 @@ extension LocalDB {
                                                              arguments: [$0.deviceId.uuidString, $0.storeId.uuidString]) }
             func m(_ k: MetaKey) throws -> String? { try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [k.rawValue]) }
             let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let dayAgo = Calendar(identifier: .gregorian).date(byAdding: .day, value: -1, to: now).map(Op.formatTimestamp) ?? ""
+            let stale = try s.map { try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM outbox WHERE status = 'pending' AND device_id = ? AND store_id = ? AND occurred_at < ?
+                """, arguments: [$0.deviceId.uuidString, $0.storeId.uuidString, dayAgo]) ?? 0 } ?? 0
             return SyncStatus(pendingCount: n, oldestPendingAt: oldest.flatMap(iso.date(from:)),
                               lastSyncAt: try m(.lastSyncAt).flatMap(iso.date(from:)), catalogDone: try m(.catalogDone) != nil,
-                              deletePendingUntil: try m(.deletePendingUntil))
+                              deletePendingUntil: try m(.deletePendingUntil),
+                              serverTimeAtSync: try m(.serverTimeAtSync).flatMap(iso.date(from:)), overdueCount: stale)
         }
     }
 }
@@ -453,7 +468,8 @@ public final class SyncEngine: Sendable {
             let r = try SyncResponse.decode(data)
             if r.device.revoked { throw SyncError.revoked(discardOutbox: r.device.discardOutbox ?? false) }
             try db.applySyncResponse(r, sent: r.deletePendingUntil == nil ? batch : nil)
-            products += r.changes.products.count
+            // 分子取本机商品数：强杀重开后接着数，不从 0 起
+            products = (try? db.productCount()) ?? products + r.changes.products.count
             progress?(SyncProgress(products: products, totalProducts: Int(r.totalProducts), catalogDone: !r.hasMore.catalog))
             let next = r.deletePendingUntil == nil ? try db.nextPushBatch() : nil; let morePush = next != nil
             if !r.hasMore.catalog && !r.hasMore.ledger && !morePush { return try db.syncStatus() }
