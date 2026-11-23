@@ -26,9 +26,61 @@ enum Torch {
     }
 }
 
-/// 卖出页顶上的相机条（03 / 27a）。高度、字号固定（像键盘一样不随动态字号变），只有 27a 的那句话走动态字号。
+/// 扫码页（卖出 / 进货）的取景框尺寸和相机区高度（扫码页布局方案，负责人 + Fable 定）：
 ///
-/// - 相机允许 / 还没问过：手电筒 + S14 的 `CameraViewfinder`（真相机预览 + 识别，启停由 `CameraController` 管）+ 手输条码
+/// - 取景框宽 = 屏宽 86%（左右各 7%），高 = 屏高 23%（约 2:1）；垂直中心在屏高 64%
+/// - 手电筒、手输条码在取景框正下方横排两个等宽大按钮（左右边和取景框齐，高 64pt），离底部安全区 16pt
+/// - 卖出页购物篮到第 3 行、或系统辅助字号下，取景框收到屏高 16%：下沿不动，上沿下移，让出地方给上面的清单
+///
+/// 比例按整个屏幕算（含状态栏和底部安全区），换算到页面安全区内的坐标。屏幕矮时相机区不小于放下取景框和按钮的高度。
+struct ScanLayout: Equatable {
+    static let finderWidthRatio: CGFloat = 0.86
+    static let finderHeightRatio: CGFloat = 0.23
+    static let compactFinderHeightRatio: CGFloat = 0.16
+    static let finderCenterRatio: CGFloat = 0.64
+    /// 相机区顶到取景框上沿
+    static let topPadding: CGFloat = 12
+    /// 取景框下沿到按钮的最小间距
+    static let buttonGap: CGFloat = 12
+    static let buttonHeight: CGFloat = 64
+    /// 两个按钮之间
+    static let buttonSpacing: CGFloat = 12
+    /// 按钮底到底部安全区
+    static let bottomPadding: CGFloat = 16
+
+    let finder: CGSize
+    /// 底部安全区高度：相机区的深色背景要铺到屏幕底
+    let bottomInset: CGFloat
+    /// 相机区高度（取景框上沿往上 12pt 起，到底部安全区为止；安全区那一截由背景色铺满）
+    let bandHeight: CGFloat
+    var buttonWidth: CGFloat { (finder.width - Self.buttonSpacing) / 2 }
+
+    /// - size: 页面安全区内的大小；insets: 安全区（GeometryReader 读到的）
+    init(size: CGSize, insets: EdgeInsets, compact: Bool) {
+        let fullH = size.height + insets.top + insets.bottom
+        let fullW = size.width + insets.leading + insets.trailing
+        let normalH = (fullH * Self.finderHeightRatio).rounded()
+        let h = compact ? (fullH * Self.compactFinderHeightRatio).rounded() : normalH
+        finder = CGSize(width: (fullW * Self.finderWidthRatio).rounded(), height: h)
+        bottomInset = insets.bottom
+        // 取景框下沿（收小时也不动）换到安全区坐标
+        let bottom = fullH * Self.finderCenterRatio + normalH / 2 - insets.top
+        let top = bottom - h - Self.topPadding
+        let minBand = Self.topPadding + h + Self.buttonGap + Self.buttonHeight + Self.bottomPadding
+        bandHeight = max(minBand, size.height - top).rounded()
+    }
+
+    /// 测试 / 预览用：没有 GeometryReader 时按 iPhone 17 的尺寸
+    static let preview = ScanLayout(size: CGSize(width: 402, height: 778),
+                                    insets: EdgeInsets(top: 62, leading: 0, bottom: 34, trailing: 0), compact: false)
+}
+
+/// 卖出页、进货页底部的相机区（扫码页布局方案；27a 被拒时换成 `NoCameraBand`）。
+/// 取景框和按钮的尺寸固定（像键盘一样不随动态字号变）。
+///
+/// - 相机允许 / 还没问过：S14 的 `CameraViewfinder`（真相机预览 + 识别，启停由 `CameraController` 管），
+///   框内下沿一句「条形码对准框里」；下面横排「手电筒」「手输条码」两个大按钮
+/// - `holding`（进货页扫到了、上面的商品卡还没确认）：取景框压暗，写「已扫到，先确认上面这件」，按钮照常能点
 /// - 被拒：S14 的 `NoCameraBand`（27a）：「去打开」跳系统设置，手输条码和扫码枪照常能用
 struct CameraStrip: View {
     let hub: ScanHub
@@ -36,68 +88,104 @@ struct CameraStrip: View {
     /// 页面被面板盖住 / 弹窗时让相机停（§14 S14-3 ⑨）
     var paused: Bool
     let torchOn: Bool
+    var layout: ScanLayout = .preview
+    /// 压暗取景框（识别由页面暂停，相机不停：同一个码一直在画面里，恢复后也不会马上再算一次）
+    var holding = false
     var onTorch: @MainActor () -> Void
     var onManual: @MainActor () -> Void
 
-    static let height: CGFloat = 112
     static let buttonFill = Color(hex: 0x4C4744)
-    static let labelSize: CGFloat = 17
+    static let labelSize: CGFloat = 20
+    static let holdingText = "已扫到，先确认上面这件"
 
     var body: some View {
         // 被拒时直接用 NoCameraBand（自带 scanner.noCamera 标识）；外面再套一层带标识的容器会把它盖掉
         if permission.access == .denied {
             NoCameraBand(onManual: onManual)
+                .background(alignment: .bottom) { bottomFill }
         } else {
             scanning
                 .frame(maxWidth: .infinity)
                 .background(NoCameraBand.background)
+                .background(alignment: .bottom) { bottomFill }
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("sell.camera")
         }
     }
 
-    // MARK: 03：取景框 + 手电筒 + 手输条码
+    /// 深色背景往下铺满底部安全区（页面在 GeometryReader 里，`ignoresSafeArea` 铺不过去）
+    private var bottomFill: some View {
+        NoCameraBand.background.frame(height: layout.bottomInset).offset(y: layout.bottomInset)
+            .accessibilityHidden(true)
+    }
+
+    // MARK: 取景框 + 下面两个按钮
 
     private var scanning: some View {
-        HStack(spacing: 12) {
-            stripButton(torchOn ? "关手电筒" : "手电筒", systemImage: torchOn ? "flashlight.on.fill" : "flashlight.off.fill",
-                        id: "sell.torch", highlighted: torchOn, action: onTorch)
+        VStack(spacing: 0) {
             viewfinder
-            stripButton("手输条码", systemImage: "keyboard", id: "scanner.manual", highlighted: false, action: onManual)
+            Spacer(minLength: ScanLayout.buttonGap)
+            HStack(spacing: ScanLayout.buttonSpacing) {
+                stripButton(torchOn ? "关手电筒" : "手电筒", systemImage: torchOn ? "flashlight.on.fill" : "flashlight.off.fill",
+                            id: "sell.torch", highlighted: torchOn, action: onTorch)
+                stripButton("手输条码", systemImage: "keyboard", id: "scanner.manual", highlighted: false, action: onManual)
+            }
+            .padding(.bottom, ScanLayout.bottomPadding)
         }
-        .padding(.horizontal, 12)
-        .frame(height: Self.height)
+        .padding(.top, ScanLayout.topPadding)
+        .frame(height: layout.bandHeight)
     }
 
     private func stripButton(_ title: String, systemImage: String, id: String, highlighted: Bool,
                              action: @escaping @MainActor () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 6) {
-                Image(systemName: systemImage).font(.system(size: 26, weight: .semibold))
-                Text(title).font(.system(size: Self.labelSize, weight: .medium)).lineLimit(1).minimumScaleFactor(0.7)
+            HStack(spacing: 8) {
+                Image(systemName: systemImage).font(.system(size: 24, weight: .semibold))
+                Text(title).font(.system(size: Self.labelSize, weight: .bold)).lineLimit(1).minimumScaleFactor(0.7)
             }
             .foregroundStyle(highlighted ? Tokens.Palette.ink : Tokens.Palette.card)
-            .frame(width: 84, height: 76)
-            .background(highlighted ? Tokens.Palette.tag : Self.buttonFill, in: RoundedRectangle(cornerRadius: 14))
+            .frame(width: layout.buttonWidth, height: ScanLayout.buttonHeight)
+            .background(highlighted ? Tokens.Palette.tag : Self.buttonFill, in: RoundedRectangle(cornerRadius: Tokens.Radius.button))
             .contentShape(Rectangle())
         }
         .buttonStyle(PressDimStyle())
         .accessibilityIdentifier(id)
     }
 
-    /// 取景框（S14 的 `CameraViewfinder`）+ 下面一句「条形码对准框里」
+    /// 取景框（S14 的 `CameraViewfinder`，四个黄角加粗），框内下沿一句「条形码对准框里」；暂停时压暗
     private var viewfinder: some View {
-        VStack(spacing: 6) {
-            CameraViewfinder(hub: hub, permission: permission,
-                             hasCamera: permission.forced == nil && CameraSession.hasCamera, paused: paused)
-                .frame(width: 180, height: 66)
-            Text("条形码对准框里")
-                .font(.system(size: Self.labelSize))
-                .foregroundStyle(NoCameraBand.captionColor)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .accessibilityHidden(true)
-        }
-        .frame(maxWidth: .infinity)
+        CameraViewfinder(hub: hub, permission: permission,
+                         hasCamera: permission.forced == nil && CameraSession.hasCamera, paused: paused,
+                         corners: .bold)
+            .overlay(alignment: .bottom) {
+                if !holding {
+                    Text("条形码对准框里")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(NoCameraBand.captionColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .padding(.bottom, 14)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+            .overlay {
+                if holding {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10).fill(Color.black.opacity(0.78))
+                        Text(Self.holdingText)
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(Tokens.Palette.card)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.7)
+                            .padding(.horizontal, 16)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("scanner.holding")
+                }
+            }
+            .frame(width: layout.finder.width, height: layout.finder.height)
+            .animation(.easeOut(duration: 0.2), value: layout.finder.height)
     }
 }
