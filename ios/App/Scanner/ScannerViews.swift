@@ -54,6 +54,9 @@ struct CameraViewfinder: View {
     var hasCamera = CameraSession.hasCamera
     /// 页面让相机暂停（被面板盖住、弹窗中）
     var paused = false
+    /// 扫码登录页（S21）用：相机认出的码原样交给页面，不经 `hub`。`ScanHub.isAcceptable` 只收数字和字母，
+    /// 会把 `YHZB1:…` 里的 `:` 拒掉；登录码由页面交给 `PairingCode.parse` 判断
+    var onRawCode: (@MainActor (String) -> Void)? = nil
 
     @Environment(\.scenePhase) private var scenePhase
     @State private var camera: CameraBox?
@@ -63,10 +66,15 @@ struct CameraViewfinder: View {
     @MainActor final class CameraBox {
         let session: CameraSession?
         let controller: CameraController
-        init(hasCamera: Bool, includeQR: Bool, permission: CameraPermission, hub: ScanHub) {
+        init(hasCamera: Bool, includeQR: Bool, permission: CameraPermission, hub: ScanHub,
+             onRawCode: (@MainActor (String) -> Void)?) {
             session = hasCamera ? CameraSession(includeQR: includeQR) : nil
             controller = CameraController(runner: session, permission: permission)
-            controller.onCode = { [weak hub] in hub?.receive($0, from: .camera) }
+            if let onRawCode {
+                controller.onCode = { onRawCode($0) }
+            } else {
+                controller.onCode = { [weak hub] in hub?.receive($0, from: .camera) }
+            }
         }
     }
 
@@ -91,7 +99,8 @@ struct CameraViewfinder: View {
         .task { await permission.requestIfNeeded() }
         .onAppear {
             if camera == nil {
-                camera = CameraBox(hasCamera: hasCamera, includeQR: includeQR, permission: permission, hub: hub)
+                camera = CameraBox(hasCamera: hasCamera, includeQR: includeQR, permission: permission, hub: hub,
+                                   onRawCode: onRawCode)
             }
             visible = true
             syncCamera()

@@ -1,8 +1,8 @@
 import XCTest
 
 /// §14 S15-4 / S15-7：Beta / Release 构建里没有会话时只出「还没登录」页；会开出会话、换身份、装演示数据的
-/// 夹具参数一律不认，也不往本机写东西。只在 `scripts/release-check.sh` 里跑（Release 配置构建的 App，
-/// scheme `YuanhuiZhangben-ReleaseCheck` 设了 `YH_RELEASE_CHECK=1`）；Debug 的 ios-ci 里跳过。
+/// 夹具参数一律不认，也不往本机写东西。只在 `scripts/release-check.sh` 里跑（Release / Beta 配置构建的 App，
+/// scheme `YuanhuiZhangben-ReleaseCheck` / `YuanhuiZhangben-BetaCheck` 设了 `YH_RELEASE_CHECK=1`）；Debug 的 ios-ci 里跳过。
 @MainActor
 final class ReleaseBuildUITests: XCTestCase {
     override func setUpWithError() throws {
@@ -34,8 +34,8 @@ final class ReleaseBuildUITests: XCTestCase {
         ]
         for args in attempts {
             let app = launch(args)
-            XCTAssertTrue(app.otherElements["page.signedOut"].waitForExistence(timeout: 10), "\(args) 应出「还没登录」页")
-            XCTAssertTrue(app.staticTexts["还没登录"].exists, "\(args)")
+            XCTAssertTrue(app.descendants(matching: .any)["page.login"].waitForExistence(timeout: 10), "\(args) 应出登录页")
+            XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS '注册'")).firstMatch.exists, "\(args) 登录页不应有「注册」")
             for page in ["page.home", "page.onboarding", "page.settings", "page.stockIn", "page.denied", "page.scannerLab"] {
                 XCTAssertFalse(app.otherElements[page].exists, "\(args) 不应出 \(page)")
             }
@@ -47,6 +47,6 @@ final class ReleaseBuildUITests: XCTestCase {
     func testReleaseBuildKeepsGalleryFixture() throws {
         let app = launch(["-uiFixture", "gallery-3"])
         XCTAssertTrue(app.descendants(matching: .any)["gallery.stepperCompact"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.otherElements["page.signedOut"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["page.login"].exists)
     }
 }
