@@ -9,7 +9,8 @@ import XCTest
 final class CameraLifecycleTests: XCTestCase {
     final class FakeRunner: CameraRunning {
         var calls: [String] = []
-        var onCode: ((String) -> Void)?
+        var onFrame: (([CameraCode]) -> Void)?
+        var onSuspended: ((Bool) -> Void)?
         func start() { calls.append("start") }
         func stop() { calls.append("stop") }
     }
@@ -21,7 +22,7 @@ final class CameraLifecycleTests: XCTestCase {
     private func make() -> CameraController {
         let permission = CameraPermission(status: { [unowned self] in status }, requester: { true })
         let c = CameraController(runner: runner, permission: permission)
-        c.onCode = { [unowned self] in codes.append($0) }
+        c.onFrame = { [unowned self] in codes += $0.map(\.value) }
         return c
     }
 
@@ -42,11 +43,11 @@ final class CameraLifecycleTests: XCTestCase {
         c.update(visible: true, sceneActive: true)
         c.update(visible: true, sceneActive: false)
         XCTAssertEqual(runner.calls, ["start", "stop"], "退到后台（或 inactive）停相机")
-        runner.onCode?("6921168509256")
+        runner.onFrame?([CameraCode("6921168509256", kind: .ean13)])
         XCTAssertEqual(codes, [], "后台期间排队的识别回调不交码")
         c.update(visible: true, sceneActive: true)
         XCTAssertEqual(runner.calls, ["start", "stop", "start"], "回前台再开")
-        runner.onCode?("6921168509256")
+        runner.onFrame?([CameraCode("6921168509256", kind: .ean13)])
         XCTAssertEqual(codes, ["6921168509256"])
     }
 
@@ -58,7 +59,7 @@ final class CameraLifecycleTests: XCTestCase {
         c.update(visible: true, sceneActive: true)
         XCTAssertEqual(c.permission.access, .denied, "回前台刷新权限")
         XCTAssertEqual(runner.calls, ["start", "stop"], "权限没了不再开")
-        runner.onCode?("6921168509256")
+        runner.onFrame?([CameraCode("6921168509256", kind: .ean13)])
         XCTAssertEqual(codes, [])
         // 再到设置里打开，回来就开
         c.update(visible: true, sceneActive: false)
@@ -82,10 +83,10 @@ final class CameraLifecycleTests: XCTestCase {
     func testLeavingThePageStopsAndNoMoreCodesAreDelivered() {
         let c = make()
         c.update(visible: true, sceneActive: true)
-        runner.onCode?("6921168509256")
+        runner.onFrame?([CameraCode("6921168509256", kind: .ean13)])
         c.update(visible: false, sceneActive: true)   // 压到下一页 / 退出页面
         XCTAssertEqual(runner.calls, ["start", "stop"])
-        runner.onCode?("6901028075831")
+        runner.onFrame?([CameraCode("6901028075831", kind: .ean13)])
         XCTAssertEqual(codes, ["6921168509256"], "退出页面后不再交码")
     }
 
@@ -122,7 +123,7 @@ final class CameraLifecycleTests: XCTestCase {
 
     private func makeSession(_ out: FakeOutput) -> CameraSession {
         let s = CameraSession(testOutput: out)
-        s.onCode = { [unowned self] in codes.append($0) }
+        s.onFrame = { [unowned self] in codes += $0.map(\.value) }
         return s
     }
 
@@ -189,48 +190,57 @@ final class CameraLifecycleTests: XCTestCase {
         XCTAssertNil(out.relay, "停了摘掉回调")
     }
 
-    // MARK: 同帧多码交付途中换代（PR #17 Codex 第三轮）
+    // MARK: 整帧交付后换代（PR #17 Codex 第三轮；PR #40 第三轮起一帧整帧交给扫码层判定）
 
-    /// 同一帧 3 个码，交出第 1 个时 `onCode` 同步触发 `trigger`（换代），后 2 个必须丢掉
-    private func assertRestOfBatchDropped(_ name: String, trigger: @escaping (CameraSession) -> Void) {
+    /// 一帧 3 个码整帧交出；交的时候 `onFrame` 同步触发 `trigger`（换代），同一个旧回调再交的帧必须丢掉
+    private func assertLaterFramesDropped(_ name: String, trigger: @escaping (CameraSession) -> Void) {
         codes = []
         let out = FakeOutput()
         let s = CameraSession(testOutput: out)
-        s.onCode = { [unowned self, unowned s] code in
-            codes.append(code)
-            if codes.count == 1 { trigger(s) }
+        var frames = 0
+        s.onFrame = { [unowned self, unowned s] frame in
+            frames += 1
+            codes += frame.map(\.value)
+            if frames == 1 { trigger(s) }
         }
         s.setRectOfInterest(visible)
         s.start()
         flush(s)
         let r = try! XCTUnwrap(out.relay)
         r.deliver(["6921168509256", "6901028075831", "6954767412345"])
-        XCTAssertEqual(codes, ["6921168509256"], "交第 1 个时换代（\(name)），同批剩下的码丢掉")
+        XCTAssertEqual(codes, ["6921168509256", "6901028075831", "6954767412345"], "一帧整帧交出（\(name)）")
+        r.deliver(["6921168509256"])
         flush(s)
-        XCTAssertEqual(codes, ["6921168509256"], "换代做完后也不补交（\(name)）")
+        r.deliver(["6921168509256"])
+        XCTAssertEqual(frames, 1, "换代之后旧回调的帧丢掉（\(name)）")
     }
 
-    func testCodesLeftInTheSameFrameAreDroppedWhenTheEpochChangesMidBatch() {
-        assertRestOfBatchDropped("停用") { $0.stop() }
-        assertRestOfBatchDropped("停用再启用") { $0.stop(); $0.start() }
-        assertRestOfBatchDropped("范围无效") { $0.setRectOfInterest(nil) }
-        assertRestOfBatchDropped("换识别范围") { $0.setRectOfInterest(CGRect(x: 0.375, y: 0.25, width: 0.25, height: 0.5)) }
+    func testFramesFromTheOldRelayAreDroppedAfterTheEpochChanges() {
+        assertLaterFramesDropped("停用") { $0.stop() }
+        assertLaterFramesDropped("停用再启用") { $0.stop(); $0.start() }
+        assertLaterFramesDropped("范围无效") { $0.setRectOfInterest(nil) }
+        assertLaterFramesDropped("换识别范围") { $0.setRectOfInterest(CGRect(x: 0.375, y: 0.25, width: 0.25, height: 0.5)) }
     }
 
-    func testControllerStoppedMidBatchDeliversNoMoreCodes() {
+    func testControllerStoppedAfterAFrameDeliversNoMoreFrames() {
         let out = FakeOutput()
         let s = CameraSession(testOutput: out)
         let perm = CameraPermission(status: { .authorized }, requester: { true })
         let c = CameraController(runner: s, permission: perm)
-        c.onCode = { [unowned self] code in
-            codes.append(code)
-            if codes.count == 1 { c.update(visible: false, sceneActive: true) }   // 交第 1 个时离开页面
+        var frames = 0
+        c.onFrame = { [unowned self] frame in
+            frames += 1
+            codes += frame.map(\.value)
+            c.update(visible: false, sceneActive: true)   // 交这一帧时离开页面
         }
         s.setRectOfInterest(visible)
         c.update(visible: true, sceneActive: true)
         flush(s)
-        try! XCTUnwrap(out.relay).deliver(["6921168509256", "6901028075831", "6954767412345"])
-        XCTAssertEqual(codes, ["6921168509256"])
+        let r = try! XCTUnwrap(out.relay)
+        r.deliver(["6921168509256", "6901028075831"])
+        r.deliver(["6954767412345"])
+        XCTAssertEqual(frames, 1)
+        XCTAssertEqual(codes, ["6921168509256", "6901028075831"])
         XCTAssertFalse(c.running)
     }
 

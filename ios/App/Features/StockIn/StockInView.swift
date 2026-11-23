@@ -2,11 +2,14 @@ import ShopCore
 import SwiftUI
 import UIKit
 
-/// 进货页（06a / 06b / 06c）。
+/// 进货页（06a / 06b / 06c；布局按扫码页布局方案改过）。
 ///
-/// 从上到下：靛青顶栏（返回、进货、N 笔待传）→ 还没扫到东西时是相机条和一句说明；扫到之后是可滚动的内容
-/// （商品卡、「进了几箱 / 每箱多少钱」、蓝卡、管保质期时的到期日区）→ 钉在底部的自家键盘（正在填的时候）和「记进货」。
-/// 「记进货」任何字号下都固定在底部可见；填年月日时换成「填好了」（06c），按了收起键盘。
+/// 从上到下：靛青顶栏（返回、进货、N 笔待传）→ 上方内容区 → 底部相机区（取景框 + 手电筒 / 手输条码）。
+/// - 还没扫到：内容区一句「扫一下送来的货」
+/// - 扫到了：内容区变商品卡（品名、规格、「－ 数量 ＋」、进价、蓝卡、到期日区）+ 钉在卡片下沿的「确认入库」；
+///   相机区压暗写「已扫到，先确认上面这件」，相机来的码不收；确认入库或「重新扫」后自动恢复
+/// - 要填数（点进价、数量旁的键盘、年月日）：换成键盘表单，相机区收起让位；「收起」回到商品卡。
+///   「确认入库」任何字号下都固定在底部可见；填年月日时换成「填好了」（06c），按了收起键盘。
 /// 扫码枪随时可扫：换一个码就换一个商品（没记的输入作废）。页面上没有系统键盘的输入框，扫码枪的数字不会打进框里。
 struct StockInView: View {
     @Environment(AppModel.self) private var app
@@ -28,15 +31,31 @@ struct StockInView: View {
 
     private var covered: Bool { showManual || model.registerCode != nil || model.confirmZeroCost || model.confirmDate }
 
+    /// 商品卡在、还没确认：相机区压暗、相机来的码不收（扫码页布局方案第 4 条；扫码枪、手输照常换商品）
+    private var holding: Bool { model.conversion != nil }
+    /// 相机区收起让位：自家键盘出来时（填数量 / 单价 / 年月日）；系统辅助字号下商品卡在的时候也收起（卡上的东西放不下）。
+    /// 收起只是高度变 0、相机暂停，不从视图树里拿掉：再展开时不用重建相机会话
+    private var cameraCollapsed: Bool { holding && (model.active != nil || typeSize.isAccessibilitySize) }
+
     var body: some View {
-        VStack(spacing: 0) {
-            ModeBar(title: "进货", mode: .stock, pendingCount: model.pendingCount, onBack: { dismiss() })
-            if model.conversion == nil {
-                CameraStrip(hub: hub, permission: permission, paused: covered, torchOn: torchOn, onTorch: toggleTorch,
-                            onManual: { showManual = true })
-                emptyHint.frame(maxHeight: .infinity, alignment: .top)
-            } else {
-                form
+        GeometryReader { geo in
+            // 商品卡在的时候取景框压暗、不识别，收小到屏高 16%（连同按钮沉到底部），给上面的卡片多留地方
+            let layout = ScanLayout(size: geo.size, insets: geo.safeAreaInsets, compact: holding || typeSize.isAccessibilitySize)
+            VStack(spacing: 0) {
+                ModeBar(title: "进货", mode: .stock, pendingCount: model.pendingCount, onBack: { dismiss() })
+                if model.conversion == nil {
+                    emptyHint.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if model.active == nil {
+                    card
+                } else {
+                    form
+                }
+                CameraStrip(hub: hub, permission: permission, paused: covered || cameraCollapsed, torchOn: torchOn,
+                            layout: layout, holding: holding, onTorch: toggleTorch, onManual: { showManual = true })
+                    .frame(height: cameraCollapsed ? 0 : nil, alignment: .top)
+                    .opacity(cameraCollapsed ? 0 : 1)
+                    .accessibilityHidden(cameraCollapsed)
+                    .allowsHitTesting(!cameraCollapsed)
             }
         }
         .background(Tokens.Palette.paper.ignoresSafeArea())
@@ -81,6 +100,9 @@ struct StockInView: View {
             model.canRegister = appModel.capabilities.has(.fullRegister)
             let model = model
             hub.handler = { model.handle($0) }
+            hub.onSeveralCodes = { model.showOneAtATime() }
+            model.onRegistered = { [weak hub] in hub?.markRecorded($0) }
+            model.onCardClosed = { [weak hub] in hub?.inputResumed() }
             model.accepting = !covered
         }
         .onChange(of: covered) { _, c in model.accepting = !c }
@@ -98,8 +120,75 @@ struct StockInView: View {
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 40)
+        .padding(.vertical, 16)
+        .accessibilityElement(children: .combine)
         .accessibilityIdentifier("stockIn.empty")
+    }
+
+    // MARK: 商品卡（扫到之后、键盘没出来时；下面是压暗的取景框）
+
+    /// 扫码页布局方案第 4 条：上方内容区变商品卡片——品名、规格、大号「－ 数量 ＋」、进价、蓝卡（管保质期的还有到期日区），
+    /// 「确认入库」钉在卡片下沿、取景框上面。点进价 / 数量旁的键盘 / 年月日，换成下面的键盘表单，相机区收起
+    private var card: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    productCard
+                    stepperRow
+                    costBox
+                    if let p = model.problem {
+                        Text(p).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.sell)
+                            .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("stockIn.problem")
+                    }
+                    blueCard.dynamicTypeSize(...DiscountPanel.labelCap)
+                    if model.showsExpiry { expirySection }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+                .padding(.bottom, 10)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .accessibilityIdentifier("stockIn.scroll")
+            commitButton
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+                .background(Tokens.Palette.paper)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
+        }
+    }
+
+    /// 「进了几箱　－ 5 ＋　⌨」：步进器加减一箱；键盘按钮打开自家键盘直接填（第一个数字替换原来的数）
+    private var stepperRow: some View {
+        let stepper = HStack(spacing: 8) {
+            QuantityStepper(value: Binding(get: { Int(model.qtyText) ?? 0 }, set: { model.setPackCount($0) }),
+                            range: 1...Int(Limits.maxPackCount))
+                .accessibilityIdentifier("stockIn.stepper")
+            Button { model.focus(.qty) } label: {
+                Image(systemName: "keyboard").font(.system(size: 22, weight: .semibold)).foregroundStyle(Tokens.Palette.stock)
+                    .frame(width: Tokens.Size.minHitTarget, height: Tokens.Size.minHitTarget)
+                    .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.key).strokeBorder(Tokens.Palette.stock, lineWidth: 2))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(PressDimStyle())
+            .accessibilityLabel("键盘填\(model.qtyLabel.dropFirst(2))")
+            .accessibilityIdentifier("stockIn.qty")
+        }
+        return ViewThatFits(in: .horizontal) {
+            HStack { Text(model.qtyLabel).font(TypeScale.title.weight(.bold)).foregroundStyle(Tokens.Palette.ink)
+                Spacer(minLength: 8); stepper }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(model.qtyLabel).font(TypeScale.title.weight(.bold)).foregroundStyle(Tokens.Palette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                stepper
+            }
+        }
+    }
+
+    private var commitButton: some View {
+        PrimaryButton("确认入库", systemImage: "checkmark", mode: .stock) { model.commit() }
+            .disabled(!model.canCommit)
+            .accessibilityIdentifier("stockIn.commit")
     }
 
     // MARK: 表单
@@ -147,9 +236,13 @@ struct StockInView: View {
                     PrimaryButton("填好了", mode: .stock) { model.doneEditing() }
                         .accessibilityIdentifier("stockIn.doneEditing")
                 } else {
-                    PrimaryButton("记进货", systemImage: "checkmark", mode: .stock) { model.commit() }
-                        .disabled(!model.canCommit)
-                        .accessibilityIdentifier("stockIn.commit")
+                    // 填数量 / 单价：「收起」回到商品卡（相机区重新展开、仍压暗），或者直接「确认入库」
+                    HStack(spacing: 12) {
+                        PrimaryButton("收起", mode: .stock, style: .ghost, size: .regular) { model.doneEditing() }
+                            .frame(width: 120)
+                            .accessibilityIdentifier("stockIn.hideKeypad")
+                        commitButton
+                    }
                 }
             }
             .padding(.horizontal, 20)

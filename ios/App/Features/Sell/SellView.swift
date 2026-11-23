@@ -2,15 +2,16 @@ import ShopCore
 import SwiftUI
 import UIKit
 
-/// 卖出页（03 / 03b / 03c / 03d / 24b / 27a）。
+/// 卖出页（03 / 03b / 03c / 03d / 24b / 27a；布局按扫码页布局方案改过）。
 ///
-/// 从上到下：朱红顶栏（返回、卖出、N 笔待传）→ 相机条（常开，固定高）→ 购物篮（刚扫的在价签里，其余两行式往下排；
-/// 空篮是虚线框）→ 底部结算区（一共几件、抹零 / 改总价、要收、收好钱了，记账）。
-/// 结算区固定在底部、不随购物篮滚动：系统最大辅助字号下总价和记账按钮也完整可见。
+/// 从上到下：朱红顶栏（返回、卖出、N 笔待传）→ 购物篮（刚扫的在价签里置顶高亮，其余两行式往下排；空篮是虚线框）
+/// → 结算条（一共几件、抹零 / 改总价、要收、收好钱了，记账）→ 相机区（取景框 + 手电筒 / 手输条码，常开，扫到不暂停，
+/// 同码 1.5 秒去重连续扫）。结算条夹在购物篮和取景框之间、不随购物篮滚动：系统最大辅助字号下总价和记账按钮也完整可见。
 /// 屏幕常亮（`isIdleTimerDisabled`）只在这一页打开，离开就关。
 struct SellView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var model: SellModel
     @State private var permission: CameraPermission
     /// 卖出页自己的扫码汇合点；提示音全 App 共用一个（`ScanFeedback.shared`，§14 S14-3 ⑪）
@@ -32,15 +33,22 @@ struct SellView: View {
     /// （不只靠键盘收起的通知），关掉后不点屏幕直接扣扳机照样进（§14 S14-4）
     private var covered: Bool { showManual || showDiscount || model.registerCode != nil }
 
+    /// 取景框收小（屏高 16%）：购物篮到第 3 行、或系统辅助字号下，让上面的清单多露几行（扫码页布局方案第 5 条）
+    private var compactFinder: Bool { model.basket.lines.count >= 3 || typeSize.isAccessibilitySize }
+
     var body: some View {
-        VStack(spacing: 0) {
-            ModeBar(title: "卖出", mode: .sell, pendingCount: model.pendingCount, onBack: { dismiss() })
-            CameraStrip(hub: hub, permission: permission, paused: covered, torchOn: torchOn, onTorch: toggleTorch,
-                        onManual: { showManual = true })
-            basketArea
-                .frame(maxHeight: .infinity)
-                .overlay(alignment: .top) { if let n = model.notice { noticeBanner(n) } }
-            CheckoutPanel(model: model, onDiscount: { showDiscount = true })
+        GeometryReader { geo in
+            let layout = ScanLayout(size: geo.size, insets: geo.safeAreaInsets, compact: compactFinder)
+            VStack(spacing: 0) {
+                ModeBar(title: "卖出", mode: .sell, pendingCount: model.pendingCount, onBack: { dismiss() })
+                basketArea
+                    .frame(maxHeight: .infinity)
+                    .overlay(alignment: .top) { if let n = model.notice { noticeBanner(n) } }
+                CheckoutPanel(model: model, onDiscount: { showDiscount = true })
+                CameraStrip(hub: hub, permission: permission, paused: covered, torchOn: torchOn, layout: layout,
+                            onTorch: toggleTorch, onManual: { showManual = true })
+            }
+            .animation(.easeOut(duration: 0.2), value: compactFinder)
         }
         .background(Tokens.Palette.paper.ignoresSafeArea())
         .animation(.easeOut(duration: 0.2), value: model.done)
@@ -79,6 +87,8 @@ struct SellView: View {
             model.registration = caps.has(.fullRegister) ? .full : (caps.has(.quickRegister) ? .quick : .none)
             let model = model
             hub.handler = { model.handle($0) }
+            hub.onSeveralCodes = { model.showOneAtATime() }
+            model.onRegistered = { [weak hub] in hub?.markRecorded($0) }
             model.accepting = !covered
         }
         .onChange(of: covered) { _, c in model.accepting = !c }
@@ -335,29 +345,45 @@ struct EmptyBasket: View {
     /// 黑卡盖在上面时为假：图标和文字不画（只留虚线框），读屏也不读
     var showsContent = true
 
+    /// 购物篮区在取景框上面、高度有限（扫码页布局方案）：放不下就依次去掉图标、说明，只留「扫第一样商品」
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "barcode.viewfinder")
-                .font(.system(size: 52, weight: .regular))
-                .foregroundStyle(Tokens.Palette.ink2)
-                .accessibilityHidden(true)
-            Text("扫第一样商品")
-                .font(TypeScale.title.weight(.bold))
-                .foregroundStyle(Tokens.Palette.ink)
-            Text("条码对准上面的框\n或者用扫码枪扫")
-                .font(TypeScale.body)
-                .foregroundStyle(Tokens.Palette.ink2)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+        ViewThatFits(in: .vertical) {
+            content(icon: true, detail: true)
+            content(icon: false, detail: true)
+            content(icon: false, detail: false)
         }
         .opacity(showsContent ? 1 : 0)
         .accessibilityHidden(!showsContent)
-        .padding(20)
+        .padding(.horizontal, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card)
             .strokeBorder(Tokens.Palette.mute, style: StrokeStyle(lineWidth: 2.5, dash: [8, 7])))
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("sell.empty")
+    }
+
+    private func content(icon: Bool, detail: Bool) -> some View {
+        VStack(spacing: 12) {
+            if icon {
+                Image(systemName: "barcode.viewfinder")
+                    .font(.system(size: 52, weight: .regular))
+                    .foregroundStyle(Tokens.Palette.ink2)
+                    .accessibilityHidden(true)
+            }
+            Text("扫第一样商品")
+                .font(TypeScale.title.weight(.bold))
+                .foregroundStyle(Tokens.Palette.ink)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            if detail {
+                Text("条码对准下面的框\n或者用扫码枪扫")
+                    .font(TypeScale.body)
+                    .foregroundStyle(Tokens.Palette.ink2)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 16)
     }
 }
 
@@ -406,7 +432,8 @@ struct DoneCard: View {
 
 // MARK: - 底部结算区
 
-/// 一共几件 / 原价、抹零 / 改总价、要收（或实收）、收好钱了，记账。总价和按钮是固定尺寸。
+/// 结算条：一共几件 / 原价、抹零 / 改总价、要收（或实收）、收好钱了，记账。总价和按钮是固定尺寸。
+/// 放在购物篮和相机区之间，不随购物篮滚动（扫码页布局方案第 5 条）。
 struct CheckoutPanel: View {
     let model: SellModel
     var onDiscount: () -> Void
@@ -438,14 +465,16 @@ struct CheckoutPanel: View {
                         .accessibilityIdentifier("sell.total")
                 }
             }
-            PrimaryButton("收好钱了，记账", systemImage: "checkmark", mode: .sell) { model.commit() }
+            // 结算条夹在购物篮和取景框之间（扫码页布局方案第 5 条），记账按钮用 64pt 那一档，给上面的清单多留一点
+            PrimaryButton("收好钱了，记账", systemImage: "checkmark", mode: .sell, size: .medium) { model.commit() }
                 .disabled(!model.canCommit)
                 .accessibilityIdentifier("sell.commit")
-                .padding(.top, 14)
+                .padding(.top, 10)
         }
         .padding(.horizontal, 20)
         .padding(.top, 6)
-        .background(Tokens.Palette.card.ignoresSafeArea(edges: .bottom))
+        .padding(.bottom, 10)
+        .background(Tokens.Palette.card)
         .overlay(alignment: .top) { Rectangle().fill(Tokens.Palette.line).frame(height: 1) }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sell.checkout")

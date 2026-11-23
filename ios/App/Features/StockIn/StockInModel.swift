@@ -24,6 +24,8 @@ final class StockInModel {
         case registered(String)
         /// 04b 没填数量（或填 0）：只登记了商品，库存还没记，接着在进货页填这一批（PR #31 Fable 必须改 2）
         case registeredNoStock(String)
+        /// 相机一帧里有好几个码：一次只认一件（负责人 11/23 定），什么都没认
+        case oneAtATime
 
         var text: String {
             switch self {
@@ -32,10 +34,11 @@ final class StockInModel {
             case .saved(let what): "记好了：\(what)"
             case .registered(let name): "登记好了：\(name)，刚填的库存已记上"
             case .registeredNoStock(let name): "登记好了：\(name)，库存还没记，接着填这一批"
+            case .oneAtATime: "一次扫一件：镜头里有好几个码，先把别的挪开"
             }
         }
         var isError: Bool {
-            switch self { case .unknownBarcode, .rejected: true; case .saved, .registered, .registeredNoStock: false }
+            switch self { case .unknownBarcode, .rejected, .oneAtATime: true; case .saved, .registered, .registeredNoStock: false }
         }
     }
 
@@ -54,12 +57,20 @@ final class StockInModel {
     private let todayProvider: () -> CalendarDate
     private var today: CalendarDate { todayProvider() }
 
-    private(set) var conversion: PackConversion?
+    private(set) var conversion: PackConversion? {
+        didSet { if oldValue != nil, conversion == nil { onCardClosed?() } }
+    }
+    /// 商品卡关掉（确认入库、重新扫）：页面转回收相机码，接 `ScanHub.inputResumed`（PR #40 Fable 补洞 c）
+    var onCardClosed: (() -> Void)?
+    /// 扫到的新码登记好（04b 已入库 / 挂整件码）：接 `ScanHub.markRecorded`（算本页已记过）
+    var onRegistered: ((String) -> Void)?
     private(set) var baseline: ProductPrivate?
     private(set) var stockBefore: Int64?
     /// 这一样在本机有没上传的库存变动（§14 S19-1）
     private(set) var hasPendingStock = false
     private(set) var qtyText = ""
+    /// 点键盘填数量时，第一个数字替换原来的数（步进器上的「1」不用先删）
+    private var replacesQty = false
     private(set) var cost = YuanInput()
     var active: Field? = .qty
     var expiryMode: ExpiryMode = .produced
@@ -208,6 +219,9 @@ final class StockInModel {
 
     func handle(_ scan: Scan) -> ScanOutcome {
         guard accepting else { return .ignored }
+        // 商品卡在、还没确认：相机来的码不收（取景框压暗，扫码页布局方案第 4 条）。相机一直对着货，
+        // 不挡的话同一箱拿开再对上、或旁边一箱入了画面，就把没记的输入换掉了。扫码枪、手输是有意的，照常换商品
+        if scan.source == .camera, conversion != nil { return .ignored }
         notice = nil
         do {
             guard let conv = try db.lookup(barcode: scan.code) else {
@@ -229,8 +243,10 @@ final class StockInModel {
     /// 登记页关掉：挂了整件码（05）就接着进这一箱；登记了新商品：04b 记了数量（> 0）出「库存已记上」，
     /// 没记数量就接着在进货页填这一批（这时不会重复入账）；返回什么都不做
     func finishRegistration(_ outcome: RegistrationOutcome?) {
+        let code = registerCode?.code
         registerCode = nil
         guard let outcome else { return }
+        if let code { onRegistered?(code) }
         switch outcome {
         case .linked(let conv): load(conv)
         case .registered(let conv, _):
@@ -251,10 +267,12 @@ final class StockInModel {
         let stock = try? db.displayStock(conv.product.id)
         stockBefore = stock?.qty
         hasPendingStock = (stock?.pendingDelta ?? 0) != 0
-        qtyText = ""
+        // 扫到后先出商品卡（步进器从 1 箱起，键盘不出来，相机区压暗留在下面）；点进价 / 键盘才出键盘
+        qtyText = "1"
+        replacesQty = false
         cost = YuanInput()
         confirmZeroCost = false
-        active = .qty
+        active = nil
         expiryUnknown = false
         expiryMode = .produced
         year = String(today.year)
@@ -269,9 +287,10 @@ final class StockInModel {
         stockBefore = nil
         hasPendingStock = false
         qtyText = ""
+        replacesQty = false
         cost = YuanInput()
         confirmZeroCost = false
-        active = .qty
+        active = nil
     }
 
     // MARK: - 键盘
@@ -281,7 +300,9 @@ final class StockInModel {
         confirmZeroCost = false
         switch f {
         case .cost: cost.key(k)
-        case .qty: qtyText = Self.digits(qtyText, k, max: 6)
+        case .qty:
+            if replacesQty { qtyText = ""; replacesQty = false }
+            qtyText = Self.digits(qtyText, k, max: 6)
         case .months: monthsText = Self.digits(monthsText, k, max: 4)
         case .year:
             year = Self.digits(year, k, max: 4, keepZero: true)
@@ -309,12 +330,23 @@ final class StockInModel {
     /// 点某一格开始填；点年月日时那一格从头填
     func focus(_ f: Field) {
         active = f
+        replacesQty = f == .qty && !qtyText.isEmpty
         if f == .month { month = "" }
         if f == .day { day = "" }
     }
 
-    /// 06c「填好了」：收起键盘
-    func doneEditing() { active = nil }
+    /// 06c「填好了」/「收起」：收起键盘，回到商品卡
+    func doneEditing() {
+        active = nil
+        replacesQty = false
+    }
+
+    /// 商品卡上的「－ 数量 ＋」（步进器的范围由界面限在 1…上限）
+    func setPackCount(_ n: Int) {
+        confirmZeroCost = false
+        replacesQty = false
+        qtyText = n > 0 ? String(n) : ""
+    }
 
     // MARK: - 记进货
 
@@ -354,6 +386,12 @@ final class StockInModel {
 
     // MARK: - 其他
 
+    /// 扫码层说相机一帧里有好几个码（`ScanHub.onSeveralCodes`）：不盖掉别的提示
+    func showOneAtATime() {
+        guard notice == nil || notice == .oneAtATime else { return }
+        show(.oneAtATime)
+    }
+
     private func show(_ n: Notice) {
         notice = n
         noticeSeq &+= 1
@@ -381,7 +419,7 @@ final class StockInModel {
 
     /// 测试夹具用：直接填
     func fill(qty: String? = nil, cost: String? = nil) {
-        if let qty { qtyText = qty.filter(\.isNumber) }
+        if let qty { qtyText = qty.filter(\.isNumber); replacesQty = false }
         if let cost { self.cost = YuanInput(cost) }
     }
 

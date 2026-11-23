@@ -57,6 +57,8 @@ struct CameraViewfinder: View {
     /// 扫码登录页（S21）用：相机认出的码原样交给页面，不经 `hub`。`ScanHub.isAcceptable` 只收数字和字母，
     /// 会把 `YHZB1:…` 里的 `:` 拒掉；登录码由页面交给 `PairingCode.parse` 判断
     var onRawCode: (@MainActor (String) -> Void)? = nil
+    /// 黄角样式：扫码登录页用稿子上的两个角；卖出 / 进货页用四个加粗的角（扫码页布局方案）
+    var corners: FinderCorners.Style = .standard
 
     @Environment(\.scenePhase) private var scenePhase
     @State private var camera: CameraBox?
@@ -71,9 +73,11 @@ struct CameraViewfinder: View {
             session = hasCamera ? CameraSession(includeQR: includeQR) : nil
             controller = CameraController(runner: session, permission: permission)
             if let onRawCode {
-                controller.onCode = { onRawCode($0) }
+                // 扫码登录页：一帧只取一个码（登录码是 QR，一次一个），不经扫码层
+                controller.onFrame = { if let code = ($0.first { $0.kind == .qr } ?? $0.first) { onRawCode(code.value) } }
             } else {
-                controller.onCode = { [weak hub] in hub?.receive($0, from: .camera) }
+                // 进货、卖出两页所有暂停→恢复路径（面板、手输页、登记页返回、切后台回来）走同一个防重放（PR #40 Codex 2 / Fable）
+                controller.attach(to: hub)
             }
         }
     }
@@ -91,9 +95,9 @@ struct CameraViewfinder: View {
             case .denied:
                 note("没打开相机，扫不了码")
             }
-            FinderCorners()
-                .stroke(Tokens.Palette.tag, style: StrokeStyle(lineWidth: 4, lineCap: .square))
-                .padding(6)
+            FinderCorners(style: corners)
+                .stroke(Tokens.Palette.tag, style: StrokeStyle(lineWidth: corners.lineWidth, lineCap: .square))
+                .padding(corners.inset)
                 .allowsHitTesting(false)   // 点按对焦：点在框角上也交给相机画面
         }
         .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -130,15 +134,30 @@ struct CameraViewfinder: View {
     }
 }
 
-/// 取景框左上、右下两个直角（03 稿）
+/// 取景框的黄色直角。`.standard`：左上、右下两个（03 / 14 稿，扫码登录页）；`.bold`：四个角、线更粗、角更长（扫码页布局方案）
 struct FinderCorners: Shape {
+    enum Style: Equatable {
+        case standard, bold
+        var lineWidth: CGFloat { self == .bold ? 6 : 4 }
+        var length: CGFloat { self == .bold ? 34 : 26 }
+        var inset: CGFloat { self == .bold ? 8 : 6 }
+    }
+
+    var style: Style = .standard
+
     func path(in r: CGRect) -> Path {
-        let l: CGFloat = 26
+        let l = style.length
         return Path { p in
             p.move(to: CGPoint(x: r.minX, y: r.minY + l)); p.addLine(to: CGPoint(x: r.minX, y: r.minY))
             p.addLine(to: CGPoint(x: r.minX + l, y: r.minY))
             p.move(to: CGPoint(x: r.maxX - l, y: r.maxY)); p.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
             p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - l))
+            if style == .bold {
+                p.move(to: CGPoint(x: r.maxX - l, y: r.minY)); p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
+                p.addLine(to: CGPoint(x: r.maxX, y: r.minY + l))
+                p.move(to: CGPoint(x: r.minX, y: r.maxY - l)); p.addLine(to: CGPoint(x: r.minX, y: r.maxY))
+                p.addLine(to: CGPoint(x: r.minX + l, y: r.maxY))
+            }
         }
     }
 }

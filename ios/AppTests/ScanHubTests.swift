@@ -106,7 +106,9 @@ final class ScanHubTests: XCTestCase {
         XCTAssertNil(hub.receive("6921168509256", from: .camera))
         now += 1.25
         XCTAssertNil(hub.receive("6921168509256", from: .camera), "距上次看见 1.25 秒（距接受已 1.75 秒）")
-        now += 1.5   // 距上次看见满 1.5 秒
+        now += 1.5   // 距上次看见满 1.5 秒：没记过的码够了，记过的码要 2.5 秒（防漏帧）
+        XCTAssertNil(hub.receive("6921168509256", from: .camera))
+        now += ScanHub.recordedWindow
         XCTAssertEqual(hub.receive("6921168509256", from: .camera), .known)
         XCTAssertEqual(scans.count, 2)
         XCTAssertEqual(recorder.played, [.known, .known], "被忽略的那次不出声")
@@ -226,5 +228,133 @@ final class ScanHubTests: XCTestCase {
         let hub = makeHub(known: ["6921168509256"])
         XCTAssertNil(hub.receive("6921168509256-", from: .camera))
         XCTAssertEqual(hub.receive("6921168509256", from: .camera), .known, "被挡掉的码不占去重的计时")
+    }
+
+    // MARK: PR #40 第三轮重写：有效时钟 + 资格 + 一次只认一件（相机整帧交来，`receiveFrame`）
+
+    private let a = "6921168509256", b = "6901028075831"
+
+    /// 相机每 0.1 秒交一帧（这一帧识别区里的所有码）
+    private func frames(_ hub: ScanHub, _ codes: [String], seconds: Double) {
+        for _ in 0..<Int((seconds * 10).rounded()) { hub.receiveFrame(codes); now += 0.1 }
+    }
+
+    /// 一帧里两个码：什么都不记、不用掉资格，提示「一次扫一件」（最多 2 秒一次）；挪开一个后剩下那个照常记
+    func testTwoCodesInOneFrameRecordNothingAndAskForOneAtATime() {
+        let hub = makeHub(known: [a, b])
+        var notices = 0
+        hub.onSeveralCodes = { notices += 1 }
+        frames(hub, [a, b], seconds: 3)
+        XCTAssertEqual(scans, [], "同框两码不记")
+        XCTAssertEqual(recorder.played, [], "也不出声")
+        XCTAssertEqual(notices, 2, "提示「一次扫一件」，2 秒一次")
+        frames(hub, [b], seconds: 1)
+        XCTAssertEqual(scans.map(\.code), [b], "A 挪开：B 一直有资格，记一次")
+        XCTAssertEqual(scans.count, 1, "B 一直在画面里只记一次")
+    }
+
+    /// 同帧里不合规的码（带横杠的批号 Code128 等）不算一个码，不挡旁边的商品码
+    func testUnacceptableCodeInTheFrameDoesNotCount() {
+        let hub = makeHub(known: [a])
+        frames(hub, ["LOT-2026-11", a], seconds: 0.5)
+        XCTAssertEqual(scans.map(\.code), [a])
+    }
+
+    /// 记过的 B 留在画面里、A 进来同框 2 秒、A 再拿走：B 不重记（同框时 B 一直算「看见」）；A 从没单独出现过，也不记
+    func testRecordedCodeStaysSeenWhileAnotherCodeSharesTheFrame() {
+        let hub = makeHub(known: [a, b])
+        frames(hub, [b], seconds: 1)
+        frames(hub, [a, b], seconds: 2)
+        frames(hub, [b], seconds: 2)
+        XCTAssertEqual(scans.map(\.code), [b])
+    }
+
+    /// 恢复后 A、B 同框、帧里谁先谁后轮着变（以前「谁靠中心交谁」的问题）：两件都不重记
+    func testAlternatingOrderInTheFrameAfterResumeRecordsNothingAgain() {
+        let hub = makeHub(known: [a, b])
+        frames(hub, [a], seconds: 1)
+        frames(hub, [b], seconds: 1)   // A 挪开 1 秒、B 单独：记 B
+        frames(hub, [a, b], seconds: 1)
+        hub.cameraPaused()
+        now += 300   // 停相机期间真实时间过去很久
+        hub.cameraResumed()
+        for i in 0..<40 { hub.receiveFrame(i % 20 < 10 ? [a, b] : [b, a]); now += 0.1 }
+        XCTAssertEqual(scans.map(\.code), [a, b])
+        frames(hub, [a], seconds: 1)
+        frames(hub, [b], seconds: 1)
+        XCTAssertEqual(scans.map(\.code), [a, b], "再单独露出来也不重记：一直在画面里")
+    }
+
+    /// 扫 A → 停相机（真实时间过去 10 分钟）→ 再开，首个回调晚 4 秒才到、A 还在：不重放；B 单独出现照记
+    func testResumeAfterALongPauseAndALateFirstCallbackDoesNotReplay() {
+        let hub = makeHub(known: [a, b])
+        frames(hub, [a], seconds: 1)
+        hub.cameraPaused()
+        now += 600
+        hub.cameraResumed()
+        now += 4   // 首个识别回调晚到：这段有效时钟不走
+        frames(hub, [a], seconds: 3)
+        XCTAssertEqual(scans.map(\.code), [a], "A 不重放")
+        frames(hub, [b], seconds: 1)
+        XCTAssertEqual(scans.map(\.code), [a, b])
+    }
+
+    /// A 拿开满阈值（有效时钟；记过的码 2.5 秒）再对上记一次；中间停过相机的那段不算
+    func testCodeAwayForAWindowOfEffectiveTimeCountsAgain() {
+        let hub = makeHub(known: [a, b])
+        frames(hub, [a], seconds: 1)
+        frames(hub, [b], seconds: 1)    // A 拿开 1 秒（有效）
+        hub.cameraPaused()
+        now += 60
+        hub.cameraResumed()
+        frames(hub, [b], seconds: 0.3)  // 恢复后有效时钟再走 0.3 秒：A 共离开 1.3 秒
+        frames(hub, [a], seconds: 0.5)
+        XCTAssertEqual(scans.map(\.code), [a, b], "有效时钟没满 1.5 秒：A 不算新的一次")
+        frames(hub, [b], seconds: 2.6)  // A 再拿开 2.6 秒（A 记过：阈值 2.5 秒）
+        frames(hub, [a], seconds: 0.5)
+        XCTAssertEqual(scans.map(\.code), [a, b, a], "拿开满阈值再对上：记一次")
+    }
+
+    /// 页面没收（进货商品卡在，`.ignored`）时出现的 B：卡片关掉（`inputResumed`）资格清空，B 还在画面里不自动收；
+    /// 拿开 1.5 秒再对上才收（Fable 补洞 c）；已记的码在画面里不再弹
+    func testInputResumedClearsEligibilityOfCodesStillInView() {
+        let hub = ScanHub(feedback: recorder, clock: { [unowned self] in now })
+        var holding = false
+        var taken: [String] = []
+        hub.handler = { scan in
+            if holding { return .ignored }
+            taken.append(scan.code)
+            holding = true
+            return .known
+        }
+        frames(hub, [a], seconds: 1)
+        XCTAssertEqual(taken, [a])
+        frames(hub, [b], seconds: 2)   // A 挪开、B 进来：卡片在，不收
+        holding = false; hub.inputResumed()   // 确认 A
+        frames(hub, [b], seconds: 2)
+        XCTAssertEqual(taken, [a], "B 一直在画面里：不自动收")
+        now += 1.6
+        frames(hub, [b], seconds: 0.5)
+        XCTAssertEqual(taken, [a, b], "拿开 1.5 秒再对上：收")
+        holding = false; hub.inputResumed()
+        frames(hub, [b], seconds: 3)
+        XCTAssertEqual(taken, [a, b], "已记的 B 在画面里不再弹")
+    }
+
+    /// 过滤：EAN / UPC 校验位不对的丢掉；ITF-14、Code128 只在同帧没有 EAN / UPC 时算；同一码值算一个
+    func testProductCodeFilter() {
+        let ean = CameraCode("6901234500011", kind: .ean13), bad = CameraCode("6901234500012", kind: .ean13)
+        let ean8 = CameraCode("96385074", kind: .ean8), upce = CameraCode("04252614", kind: .upce)
+        let itf = CameraCode("16901234500018", kind: .itf14), lot = CameraCode("LOT1123", kind: .code128)
+        XCTAssertEqual(ScanHub.productCodes(in: [ean, lot]), [ean.value], "批号不算")
+        XCTAssertEqual(ScanHub.productCodes(in: [ean, ean]), [ean.value], "同码两个框算一个")
+        XCTAssertEqual(ScanHub.productCodes(in: [bad]), [], "校验位不对丢掉")
+        XCTAssertEqual(ScanHub.productCodes(in: [ean8]), [ean8.value])
+        XCTAssertEqual(ScanHub.productCodes(in: [upce]), [upce.value])
+        XCTAssertEqual(ScanHub.productCodes(in: [CameraCode("04252615", kind: .upce)]), [])
+        XCTAssertEqual(ScanHub.productCodes(in: [itf]), [itf.value], "只有 ITF-14：算")
+        XCTAssertEqual(ScanHub.productCodes(in: [itf, ean]), [ean.value], "有 EAN 时 ITF-14 不算")
+        XCTAssertEqual(ScanHub.productCodes(in: [lot]), [lot.value], "只有 Code128：算")
+        XCTAssertEqual(Set(ScanHub.productCodes(in: [ean, ean8])), [ean.value, ean8.value])
     }
 }

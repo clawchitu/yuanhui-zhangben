@@ -25,6 +25,11 @@ struct CameraDeduper: Sendable {
         return !duplicate
     }
 
+    /// 忘掉某个码的计时（页面没收这个码时用：没处理过的码不该占着去重窗口）
+    mutating func forget(_ code: String) {
+        lastSeen[code] = nil
+    }
+
     /// 现在记着几个码（测试读：确认过期的会清掉）
     var trackedCount: Int { lastSeen.count }
 

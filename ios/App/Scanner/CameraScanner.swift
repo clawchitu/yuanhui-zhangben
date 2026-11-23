@@ -9,8 +9,10 @@ protocol CameraRunning: AnyObject {
     func start()
     /// 停止识别；调用之后已经排队的识别回调一律不再交出
     func stop()
-    /// 认出的码（主线程）
-    var onCode: ((String) -> Void)? { get set }
+    /// 一帧认出的所有码（主线程；识别区内的，可能多个，带码制）
+    var onFrame: (([CameraCode]) -> Void)? { get set }
+    /// 会话被系统打断 / 出错（true），恢复（false）（主线程）。页面没让它停，但相机实际停过
+    var onSuspended: ((Bool) -> Void)? { get set }
 }
 
 /// 识别结果输出端（正式是 `AVCaptureMetadataOutput`，测试换成记录器）。只在会话队列上用。
@@ -23,7 +25,7 @@ protocol MetadataOutputTarget: AnyObject {
 extension AVCaptureMetadataOutput: MetadataOutputTarget {}
 
 /// 相机识别条码：`AVCaptureMetadataOutput`（§1：EAN-13 / EAN-8 / UPC-E / ITF-14 / Code128；扫码登录另加 QR）。
-/// 会话的配置、启动、停止、识别范围都在自己的串行队列上做，按调用顺序执行；认出的码在主线程交给 `onCode`。
+/// 会话的配置、启动、停止、识别范围都在自己的串行队列上做，按调用顺序执行；每帧认出的码在主线程整帧交给 `onFrame`。
 ///
 /// 交码按「代」隔离（PR #17 Codex 第二轮 1、2）：主线程上每次 `start()` / `stop()` / `setRectOfInterest` 都换一代（`epoch`），
 /// 并立刻关掉交码；会话队列按顺序做完这一代的设置后，才给输出端装上一个带这一代代号的新回调（`Relay`），
@@ -55,7 +57,8 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     /// 只在主线程读写：当前这一代，和已经装好回调、允许交码的那一代
     @MainActor private(set) var epoch = 0
     @MainActor private var acceptedEpoch: Int?
-    @MainActor var onCode: ((String) -> Void)?
+    @MainActor var onFrame: (([CameraCode]) -> Void)?
+    @MainActor var onSuspended: ((Bool) -> Void)?
     private var observers: [NSObjectProtocol] = []
 
     /// 这台机器有没有后置相机（模拟器没有）
@@ -74,12 +77,8 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
         types = Self.productTypes + (includeQR ? [.qr] : [])
         drivesSession = true
         super.init()
+        observeInterruptions()
         let center = NotificationCenter.default
-        for name in [AVCaptureSession.runtimeErrorNotification, AVCaptureSession.interruptionEndedNotification] {
-            observers.append(center.addObserver(forName: name, object: session, queue: nil) { [weak self] _ in
-                self?.resumeIfWanted()
-            })
-        }
         // 点按对焦后画面一变（换了个商品）：回到取景框中心连续对焦
         observers.append(center.addObserver(forName: AVCaptureDevice.subjectAreaDidChangeNotification, object: nil,
                                             queue: nil) { [weak self] note in
@@ -94,6 +93,30 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
         super.init()
         output = testOutput
         configured = true
+        observeInterruptions()
+    }
+
+    /// 会话被打断（来电、别的 App 占用相机、系统压力）或出错：按「相机停过」处理（PR #40 Codex 重写版 3）——
+    /// 先告诉扫码层停了（有效时钟不走），打断结束 / 出错后重启时再告诉它开了（冻结到首个识别回调、清空资格）
+    private func observeInterruptions() {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: AVCaptureSession.wasInterruptedNotification, object: session,
+                                            queue: nil) { [weak self] _ in self?.suspendIfWanted() })
+        observers.append(center.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: session,
+                                            queue: nil) { [weak self] _ in
+            self?.suspendIfWanted()
+            self?.resumeIfWanted()
+        })
+        observers.append(center.addObserver(forName: AVCaptureSession.interruptionEndedNotification, object: session,
+                                            queue: nil) { [weak self] _ in self?.resumeIfWanted() })
+    }
+
+    /// 会话队列上排：还该开着的话，回主线程告诉扫码层「停过」
+    nonisolated private func suspendIfWanted() {
+        queue.async { [self] in
+            guard wantsRunning else { return }
+            DispatchQueue.main.async { [self] in MainActor.assumeIsolated { onSuspended?(true) } }
+        }
     }
 
     deinit {
@@ -130,9 +153,12 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     /// 重启有上限：1 秒内最多一次（相机坏了或一直被别的 App 占着时不连续重启转圈，PR #17 Fable 第二轮）
     nonisolated private func resumeIfWanted() {
         queue.async { [self] in
-            guard wantsRunning, configured, drivesSession, !session.isRunning,
-                  restartLimiter.allow(at: ProcessInfo.processInfo.systemUptime) else { return }
-            session.startRunning()
+            guard wantsRunning, configured else { return }
+            if drivesSession, !session.isRunning {
+                guard restartLimiter.allow(at: ProcessInfo.processInfo.systemUptime) else { return }
+                session.startRunning()
+            }
+            DispatchQueue.main.async { [self] in MainActor.assumeIsolated { onSuspended?(false) } }
         }
     }
 
@@ -223,13 +249,10 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     }
 
     /// 主线程：只交当前这一代、并且已经开了交码的码。
-    /// 同一帧有多个码时每个码交出前都重新核对代号：交前一个码时 `onCode` 可能同步停用 / 重开 / 换范围（换代），
-    /// 换代之后同批剩下的码全部丢掉（PR #17 Codex 第三轮）
-    @MainActor fileprivate func deliver(_ codes: [String], epoch e: Int) {
-        for code in codes {
-            guard e == epoch, acceptedEpoch == e else { return }
-            onCode?(code)
-        }
+    /// 一帧整帧交出（PR #40 第三轮：一次只认一件要看到同帧所有码，由 `ScanHub.receiveFrame` 判定）
+    @MainActor fileprivate func deliver(_ codes: [CameraCode], epoch e: Int) {
+        guard e == epoch, acceptedEpoch == e else { return }
+        onFrame?(codes)
     }
 
     nonisolated private func configure() {
@@ -268,13 +291,33 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
 
         nonisolated func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject],
                                         from connection: AVCaptureConnection) {
-            let codes = objects.compactMap { ($0 as? AVMetadataMachineReadableCodeObject)?.stringValue }
+            let codes = objects.compactMap { o -> CameraCode? in
+                guard let c = o as? AVMetadataMachineReadableCodeObject, let v = c.stringValue else { return nil }
+                return CameraCode(v, kind: Self.kind(c.type))
+            }
             MainActor.assumeIsolated { deliver(codes) }
         }
 
-        /// 主线程：把这一代认出的码交给会话（测试直接调它模拟排队的回调）
-        @MainActor func deliver(_ codes: [String]) {
+        nonisolated static func kind(_ t: AVMetadataObject.ObjectType) -> CameraCode.Kind {
+            switch t {
+            case .ean13: .ean13
+            case .ean8: .ean8
+            case .upce: .upce
+            case .itf14: .itf14
+            case .code128: .code128
+            case .qr: .qr
+            default: .other
+            }
+        }
+
+        /// 主线程：把这一代认出的一帧交给会话（测试直接调它模拟排队的回调）
+        @MainActor func deliver(_ codes: [CameraCode]) {
             owner?.deliver(codes, epoch: epoch)
+        }
+
+        /// 测试用：码制不明的一帧（按 `.other` 交）
+        @MainActor func deliver(_ codes: [String]) {
+            deliver(codes.map { CameraCode($0, kind: .other) })
         }
     }
 
@@ -303,8 +346,12 @@ struct RestartLimiter: Sendable {
 final class CameraController {
     let permission: CameraPermission
     private let runner: CameraRunning?
-    /// 认出的码（通常接 `ScanHub.receive(_:from: .camera)`）
-    var onCode: ((String) -> Void)?
+    /// 一帧认出的码（通常接 `ScanHub.receiveFrame`）
+    var onFrame: (([CameraCode]) -> Void)?
+    /// 相机（重新）开起来时（暂停后恢复、回前台、页面重新出现）：接 `ScanHub.cameraResumed`，不重放上一次处理过的码
+    var onResume: (() -> Void)?
+    /// 相机要停时（被盖住、收起、退后台、离开页面）：接 `ScanHub.cameraPaused`，记下这会儿镜头里的码
+    var onPause: (() -> Void)?
     private(set) var running = false
     private var visible = false
     private var sceneActive = false
@@ -314,7 +361,12 @@ final class CameraController {
     init(runner: CameraRunning?, permission: CameraPermission) {
         self.runner = runner
         self.permission = permission
-        runner?.onCode = { [weak self] code in self?.receive(code) }
+        runner?.onFrame = { [weak self] codes in self?.receive(codes) }
+        // 会话自己被打断 / 出错再恢复：和页面让相机停、开一样告诉扫码层
+        runner?.onSuspended = { [weak self] suspended in
+            guard let self, running else { return }
+            if suspended { onPause?() } else { onResume?() }
+        }
     }
 
     func update(visible: Bool, sceneActive: Bool, paused: Bool = false) {
@@ -331,12 +383,20 @@ final class CameraController {
         let want = visible && sceneActive && !paused && permission.access == .authorized && runner != nil
         guard want != running else { return }
         running = want
-        if want { runner?.start() } else { runner?.stop() }
+        if want { onResume?(); runner?.start() } else { onPause?(); runner?.stop() }
     }
 
-    private func receive(_ code: String) {
+    /// 接到卖出 / 进货页的扫码层：每帧认出的码交 `hub.receiveFrame`，每次停相机调 `hub.cameraPaused()`、（重新）开相机调 `hub.cameraResumed()`
+    /// （PR #40 Codex 复审 2、Fable 必须修：两页所有暂停→恢复路径走同一个防重放）
+    func attach(to hub: ScanHub) {
+        onFrame = { [weak hub] in hub?.receiveFrame($0) }
+        onResume = { [weak hub] in hub?.cameraResumed() }
+        onPause = { [weak hub] in hub?.cameraPaused() }
+    }
+
+    private func receive(_ codes: [CameraCode]) {
         guard running else { return }
-        onCode?(code)
+        onFrame?(codes)
     }
 }
 

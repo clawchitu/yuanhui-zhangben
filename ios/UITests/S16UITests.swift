@@ -1,4 +1,5 @@
 import Vision
+import UIKit
 import XCTest
 
 /// S16 卖出页的界面验收。码由 Debug 的 FakeScanner 喂进扫码层（默认当作扫码枪，走真实的按键解析；
@@ -222,15 +223,38 @@ final class S16UITests: XCTestCase {
         XCTAssertTrue(i.isNull || i.width < 0.5 || i.height < 0.5, "\(what) 重叠：\(a.frame) / \(b.frame)", file: file, line: line)
     }
 
-    /// 把购物篮里的某个元素整个滚进可视区（购物篮的顶到结算区的顶）
-    private func scrollIntoBasket(_ app: XCUIApplication, _ e: XCUIElement) -> Bool {
+    enum ScrollGoal { case whole, topEdge, bottomEdge }
+
+    /// 把购物篮里的某个元素滚进可视区（购物篮的顶到结算区的顶）：整个（`.whole`），
+    /// 或元素比可视区还高时只滚到上沿 / 下沿露出来（`.topEdge` / `.bottomEdge`）
+    private func scrollIntoBasket(_ app: XCUIApplication, _ e: XCUIElement, _ goal: ScrollGoal = .whole) -> Bool {
         let basket = el(app, "sell.basket"), checkout = el(app, "sell.checkout")
-        for _ in 0..<8 {
+        for _ in 0..<10 {
             let top = basket.frame.minY, bottom = checkout.frame.minY
-            if e.frame.minY >= top - 0.5 && e.frame.maxY <= bottom + 0.5 { return true }
-            let up = e.frame.maxY > bottom
-            let from = basket.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.8 : 0.2))
-            from.press(forDuration: 0.05, thenDragTo: basket.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.3 : 0.7)))
+            let up: Bool, need: CGFloat
+            switch goal {
+            case .whole:
+                if e.frame.minY >= top - 0.5 && e.frame.maxY <= bottom + 0.5 { return true }
+                up = e.frame.maxY > bottom
+                need = up ? e.frame.maxY - bottom : top - e.frame.minY
+            case .topEdge:
+                if e.frame.minY >= top - 0.5 && e.frame.minY <= top + 20 { return true }
+                up = e.frame.minY > top
+                need = abs(e.frame.minY - top)
+            case .bottomEdge:
+                if e.frame.maxY <= bottom + 0.5 && e.frame.maxY >= bottom - 20 { return true }
+                up = e.frame.maxY > bottom
+                need = abs(e.frame.maxY - bottom)
+            }
+            // 在露出来的那一截里拖（新布局下清单区矮，按购物篮整个 frame 的比例取点会落到结算条上，拖不动）
+            let origin = app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+            func point(_ r: CGFloat) -> XCUICoordinate {
+                origin.withOffset(CGVector(dx: basket.frame.midX, dy: top + (bottom - top) * r))
+            }
+            // 拖的距离按还差多少算（最多可视高的 60%），免得来回越过头；手指先走的十来 pt 算防抖不滚，要补上
+            let d = min(need + 22, (bottom - top) * 0.6) / (bottom - top)
+            point(0.5 + (up ? d : -d) / 2).press(forDuration: 0.05, thenDragTo: point(0.5 - (up ? d : -d) / 2),
+                                                 withVelocity: .slow, thenHoldForDuration: 0.3)
         }
         return false
     }
@@ -251,6 +275,25 @@ final class S16UITests: XCTestCase {
         return lines.joined().components(separatedBy: .whitespacesAndNewlines).joined()
     }
 
+    /// 屏幕上某个区域画出来的字（元素只露出一截时用：截全屏再裁）
+    private static func renderedText(_ app: XCUIApplication, in rect: CGRect) throws -> String {
+        let shot = XCUIScreen.main.screenshot()
+        let full = try XCTUnwrap(shot.image.cgImage)
+        let scale = CGFloat(full.width) / app.windows.firstMatch.frame.width
+        let px = CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale).integral
+        let cg = try XCTUnwrap(full.cropping(to: px))
+        let attachment = XCTAttachment(image: UIImage(cgImage: cg))
+        attachment.lifetime = .deleteOnSuccess
+        XCTContext.runActivity(named: "识别 \(rect)") { $0.add(attachment) }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["zh-Hans", "en-US"]
+        request.usesLanguageCorrection = false
+        try VNImageRequestHandler(cgImage: cg).perform([request])
+        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        return lines.joined().components(separatedBy: .whitespacesAndNewlines).joined()
+    }
+
     /// 长名里有代表性的几段：开头、中间、结尾都要画出来（截成两行、出「…」都会少）
     static let longNameParts = ["贵州茅台酒", "飞天", "礼盒装", "附赠两只小酒杯", "生肖纪念版"]
 
@@ -262,9 +305,26 @@ final class S16UITests: XCTestCase {
             waitItems(app, 4)
             let name = app.staticTexts[Self.longName]
             XCTAssertTrue(name.exists, "全名在")
-            XCTAssertTrue(scrollIntoBasket(app, name), "长名能整个滚进购物篮可视区 \(name.frame)")
-            XCTAssertLessThanOrEqual(name.frame.maxY, el(app, "sell.checkout").frame.minY + 0.5, "长名不被结算区盖住")
-            let text = try Self.renderedText(name)
+            let visible = el(app, "sell.checkout").frame.minY - el(app, "sell.basket").frame.minY
+            let text: String
+            if name.frame.height <= visible {
+                XCTAssertTrue(scrollIntoBasket(app, name),
+                              "长名能整个滚进购物篮可视区 \(name.frame) / 清单 \(el(app, "sell.basket").frame) / 结算 \(el(app, "sell.checkout").frame)")
+                XCTAssertLessThanOrEqual(name.frame.maxY, el(app, "sell.checkout").frame.minY + 0.5, "长名不被结算区盖住")
+                text = try Self.renderedText(name)
+            } else {
+                // 扫码页布局改版后清单区矮：两行、五位数合计（结算条上下排）时可视区约 100pt，价签里换成三行的长名比它高，
+                // 一屏看不全；滚两次（上沿露出、下沿露出）都看得到、画出来的字拼起来是全名
+                func visiblePart() throws -> String {
+                    let r = name.frame.intersection(CGRect(x: 0, y: el(app, "sell.basket").frame.minY, width: 10_000,
+                                                           height: el(app, "sell.checkout").frame.minY - el(app, "sell.basket").frame.minY))
+                    return try Self.renderedText(app, in: r)
+                }
+                XCTAssertTrue(scrollIntoBasket(app, name, .topEdge), "长名上沿滚得到 \(name.frame)")
+                let head = try visiblePart()
+                XCTAssertTrue(scrollIntoBasket(app, name, .bottomEdge), "长名下沿滚得到 \(name.frame)")
+                text = head + (try visiblePart())
+            }
             for part in Self.longNameParts {
                 XCTAssertTrue(text.contains(part), "画出来的长名缺「\(part)」：\(text)")
             }
@@ -296,20 +356,43 @@ final class S16UITests: XCTestCase {
         assertInsideWindow(app, total, margin: 16, "总价")
     }
 
-    /// 03：iPhone 13、大字模式、稿子上的三样商品，三行完整可见，不被结算区盖住（S16-10）
-    func testDesignBasketShowsAllThreeLines() {
+    /// 03（扫码页布局改版后）：大字模式、稿子上的三样商品。清单区变矮，三行不再同屏：
+    /// 结算条固定在清单和取景框之间、始终完整可见；清单至少完整露出两行（价签 + 一行），其余滚动可见（S16-10）
+    func testDesignBasketCheckoutFixedListScrolls() {
         let app = launch(["-uiScan", [Self.beer, Self.beer, Self.beer, Self.beer, Self.erguotou, Self.noodle].joined(separator: ",")])
         waitItems(app, 6)
-        let checkout = el(app, "sell.checkout"), basket = el(app, "sell.basket")
-        let rows = [el(app, "sell.tag")] + app.descendants(matching: .any).matching(identifier: "sell.line").allElementsBoundByIndex
-        XCTAssertEqual(rows.count, 3)
-        for r in rows {
-            XCTAssertGreaterThanOrEqual(r.frame.minY, basket.frame.minY - 0.5, "\(r.identifier) 顶部可见 \(r.frame)")
-            XCTAssertLessThanOrEqual(r.frame.maxY, checkout.frame.minY + 0.5, "\(r.identifier) 没被结算区盖住 \(r.frame)")
+        let checkout = el(app, "sell.checkout"), basket = el(app, "sell.basket"), camera = el(app, "sell.camera")
+        let w = app.windows.firstMatch.frame
+        // 第 3 行起取景框收到 16%（带 0.2 秒动画）：等结算条位置稳定再量
+        var last = CGRect.null
+        wait("结算条位置稳定") {
+            let f = checkout.frame
+            defer { last = f }
+            return f == last
         }
-        for q in ["sell.qty.\(Self.beer)", "sell.qty.\(Self.erguotou)"] {
-            XCTAssertTrue(el(app, q).isHittable, "\(q) 能点")
+        func assertCheckoutFixed(_ ctx: String) {
+            XCTAssertGreaterThanOrEqual(checkout.frame.minY, basket.frame.maxY - 0.5, "\(ctx)：结算条在清单下面 \(checkout.frame)")
+            XCTAssertLessThanOrEqual(checkout.frame.maxY, camera.frame.minY + 0.5, "\(ctx)：结算条在取景框上面 \(checkout.frame)")
+            XCTAssertLessThanOrEqual(checkout.frame.maxY, w.maxY, ctx)
+            XCTAssertTrue(commitButton(app).isHittable, "\(ctx)：记账按钮能点")
+            XCTAssertTrue(app.buttons["sell.discount"].isHittable, "\(ctx)：抹零按钮能点")
         }
+        let rows = { [self.el(app, "sell.tag")] + app.descendants(matching: .any).matching(identifier: "sell.line").allElementsBoundByIndex }
+        XCTAssertEqual(rows().count, 3)
+        func visible(_ r: XCUIElement) -> Bool {
+            r.frame.minY >= basket.frame.minY - 0.5 && r.frame.maxY <= basket.frame.maxY + 0.5
+        }
+        assertCheckoutFixed("开始")
+        let shown = rows().filter(visible)
+        XCTAssertGreaterThanOrEqual(shown.count, 2, "清单至少完整露出两行：\(rows().map(\.frame)) / 清单区 \(basket.frame)")
+        XCTAssertTrue(visible(el(app, "sell.tag")), "最新一件（价签）置顶可见")
+        XCTAssertTrue(el(app, "sell.qty.focus").isHittable, "价签的数量能点")
+        // 滚到底：最后一行完整可见，结算条位置不动
+        let before = checkout.frame
+        basket.swipeUp()
+        wait("最后一行滚得到 \(rows().last!.frame) / \(basket.frame)") { visible(rows().last!) }
+        XCTAssertEqual(checkout.frame.minY, before.minY, accuracy: 0.5, "结算条固定，不随清单滚动")
+        assertCheckoutFixed("滚到底")
         let lines = app.descendants(matching: .any).matching(identifier: "sell.line").allElementsBoundByIndex
         for l in lines { XCTAssertLessThanOrEqual(l.frame.height, 100, "两行式每行贴稿约 95pt，实际 \(l.frame.height)") }
     }

@@ -30,6 +30,8 @@ final class SellModel {
         case saveFailed(String)
         /// 抹零后篮子变了，抹的零作废、回到按原价收（§14 S16-1：不悄悄变）
         case paidCleared
+        /// 相机一帧里有好几个码：一次只认一件（负责人 11/23 定），什么都没记
+        case oneAtATime
 
         var text: String {
             switch self {
@@ -38,6 +40,7 @@ final class SellModel {
             case .saveFailed(let why): "没记上，再按一次试试（\(why)）"
             case .paidCleared: "东西变了，刚才抹的零取消了，要抹请再抹一次"
             case .quickSaved: "已记下，回头让家里人补全"
+            case .oneAtATime: "一次扫一件：镜头里有好几个码，先把别的挪开"
             }
         }
 
@@ -70,6 +73,8 @@ final class SellModel {
     /// 记账次数（测试、调试探针用）
     private(set) var commitCount = 0
     private var committing = false
+    /// 扫到的新码登记好、放进了篮子：接 `ScanHub.markRecorded`（算本页已记过）
+    var onRegistered: ((String) -> Void)?
     /// 待传笔数变了（首页顶栏跟着变）
     var onPendingChange: ((Int) -> Void)?
 
@@ -158,8 +163,10 @@ final class SellModel {
     /// 登记页关掉：存好了就把它放进购物篮（04a「存好，接着卖」、05 存好后按整箱算）；返回的什么都不加。
     /// 收银员临时登记存好后出一句「已记下，回头让家里人补全」（04c）
     func finishRegistration(_ outcome: RegistrationOutcome?) {
+        let code = registerCode?.code
         registerCode = nil
         guard let outcome else { return }
+        if let code { onRegistered?(code) }
         done = nil
         notice = nil
         let added = add(outcome.conversion)
@@ -191,6 +198,12 @@ final class SellModel {
         guard basket.paidOverrideFen != nil else { return }
         try? basket.setPaid(nil)
         show(.paidCleared)
+    }
+
+    /// 扫码层说相机一帧里有好几个码（`ScanHub.onSeveralCodes`）：不盖掉别的提示
+    func showOneAtATime() {
+        guard notice == nil || notice == .oneAtATime else { return }
+        show(.oneAtATime)
     }
 
     private func show(_ n: Notice) {

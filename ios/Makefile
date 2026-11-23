@@ -4,7 +4,7 @@ shots:
 shots-s15:
 	scripts/shots-s15.sh ../docs/screenshots/s15
 
-.PHONY: shots shots-s15 shots-s14 shots-s16 shots-s17 shots-s18 shots-s19 shots-s20 shots-s21
+.PHONY: shots shots-s15 shots-s14 shots-s16 shots-s17 shots-s18 shots-s19 shots-s20 shots-s21 shots-scan-layout
 
 shots-s14:
 	scripts/shots-s14.sh ../docs/screenshots/s14
@@ -26,3 +26,6 @@ shots-s20:
 
 shots-s21:
 	scripts/shots-s21.sh ../docs/screenshots/s21
+
+shots-scan-layout:
+	scripts/shots-scan-layout.sh ../docs/screenshots/scan-layout
