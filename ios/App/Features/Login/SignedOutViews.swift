@@ -74,6 +74,7 @@ struct KickedView: View {
                 .accessibilityIdentifier("kicked.continue")
         }
         .background(Tokens.Palette.paper.ignoresSafeArea())
+        .accessibilityElement(children: .contain)   // 页面的 id 不盖住里面按钮的 id
         .accessibilityIdentifier(model.cashier ? "page.kickedCashier" : "page.kicked")
     }
 }
@@ -93,6 +94,7 @@ struct LogoutView: View {
                 .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
         }
         .background(Tokens.Palette.paper.ignoresSafeArea())
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("page.logout")
     }
 

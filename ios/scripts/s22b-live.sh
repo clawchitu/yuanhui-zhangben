@@ -12,6 +12,8 @@ DD="${DD:-/tmp/yh-s22b-dd}"
 PGBIN="${PGBIN:-/opt/homebrew/opt/postgresql@16/bin}"
 SIG=/tmp/yh-s22b-signal
 rm -rf "$SIG"; mkdir -p "$SIG"
+# 从干净的安装开始（只动这台模拟器上的本 App）
+xcrun simctl uninstall "$udid" cn.yuanhuishop.zhangben 2>/dev/null || true
 only=()
 if [[ -n "$tests" ]]; then
   IFS=',' read -ra names <<< "$tests"

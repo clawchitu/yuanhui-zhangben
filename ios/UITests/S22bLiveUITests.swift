@@ -83,6 +83,7 @@ final class S22bLiveUITests: XCTestCase {
     private func stockInOffline(_ code: String, qty: String, cost: String, extra: [String] = []) {
         let app = launch(["-uiOffline", "-uiRoute", "stockIn", "-uiScan", code] + extra)
         XCTAssertTrue(el(app, "stockIn.qty").waitForExistence(timeout: 20))
+        el(app, "stockIn.qty").tap()   // 单件码是步进器 + 键盘按钮：先打开键盘
         keys(app, qty)
         el(app, "stockIn.cost").tap()
         keys(app, cost)
