@@ -293,4 +293,78 @@ final class SyncIdentityTests: XCTestCase, @unchecked Sendable {
         try engine.sync()   // 下次同步补做
         XCTAssertFalse(try db.needsCompaction())
     }
+
+    // MARK: - PR #41 必须修 2：换 epoch 要覆盖退役会话保留的 op
+
+    /// 旧会话（同一家店）传完、logout 也调了：令牌留到保留的 op 清掉；当前会话握手换 epoch 时，旧会话保留的 op 一起重标，
+    /// 由恢复队列用**旧令牌**重传
+    func testEpochResetCoversRetiredSessionOfSameStore() throws {
+        let db = try makeDB()
+        let old = try sell(db)
+        let tokens = MemoryTokenStore(); try tokens.save("token-A", ref: "tA"); try tokens.save("token-B", ref: "tB")
+        try SyncEngine(db: db, appBuild: 1) { req in (200, try self.response(req, epoch: self.epochA)) }.sync()
+        try db.endSession(logoutPending: true)
+        let logouts = Box(0)
+        let sent = Box<[(String, [String])]>([])
+        let up = RecoveryUploader(db: db, tokens: tokens, appBuild: 1) { call in
+            switch call {
+            case .logout: logouts.value += 1; return (204, Data())
+            case .sync(let t, let req): sent.value.append((t, self.opIds(req))); return (200, try self.response(req, epoch: self.epochB))
+            }
+        }
+        try up.run()
+        XCTAssertEqual(logouts.value, 1, "传完调 logout")
+        XCTAssertEqual(try tokens.token(ref: "tA"), "token-A", "保留期内的 op 还在：旧令牌留着（换 epoch 要用）")
+        // 新会话，同一家店（epoch 相同）
+        try db.beginSession(try session(.family, device: 2, store: storeB, token: "tB"))
+        try db.setMeta(.serverEpoch, epochA.uuidString)
+        try db.resetForEpoch(epochB)
+        XCTAssertEqual(try db.recoveryPendingCount(), 1, "旧会话保留的那笔重新待传")
+        try up.run()
+        XCTAssertEqual(sent.value.map(\.0), ["token-A"], "用旧会话自己的令牌")
+        XCTAssertEqual(sent.value.first?.1, [old.uuidString.lowercased()])
+        XCTAssertEqual(logouts.value, 1, "已经注销过，不再调")
+        XCTAssertEqual(try db.retiredSession(deviceId: uuid(1))?.epoch, epochB)
+    }
+
+    /// 旧会话是别的店（epoch 不同）：启动时探一下它那家店，409 → 保留的 op 重标、用旧令牌重传
+    func testProbeFindsRetiredStoreEpochChange() throws {
+        let db = try makeDB()
+        let old = try sell(db)
+        try SyncEngine(db: db, appBuild: 1) { req in (200, try self.response(req, epoch: self.epochA)) }.sync()
+        try db.endSession(revoked: true)
+        try db.beginSession(try session(.family, device: 2, store: storeB, token: "tB"))
+        let tokens = MemoryTokenStore(); try tokens.save("token-A", ref: "tA")
+        let serverEpoch = Box(epochA), sent = Box<[[String]]>([])
+        let up = RecoveryUploader(db: db, tokens: tokens, appBuild: 1) { call in
+            guard case .sync(_, let req) = call else { return (204, Data()) }
+            if (self.body(req)["epoch"] as? String) != serverEpoch.value.uuidString.lowercased() {
+                return (409, try JSONSerialization.data(withJSONObject: ["code": "epoch_mismatch", "epoch": serverEpoch.value.uuidString.lowercased()]))
+            }
+            sent.value.append(self.opIds(req))
+            return (200, try self.response(req, epoch: serverEpoch.value, revoked: true))
+        }
+        serverEpoch.value = epochB   // 旧会话那家店从备份恢复、换了 epoch
+        try up.run()
+        XCTAssertEqual(sent.value, [], "不探就不知道")
+        try up.run(probeEpochs: true)
+        XCTAssertEqual(sent.value.last, [old.uuidString.lowercased()], "保留的 op 用旧令牌重传")
+        XCTAssertEqual(try db.recoveryPendingCount(), 0)
+    }
+
+    /// 旧令牌在保留的 op 过了 14 天清掉之后才删
+    func testRetiredTokenDeletedAfterRetentionPurge() throws {
+        let db = try makeDB()
+        try sell(db)
+        try SyncEngine(db: db, appBuild: 1) { req in (200, try self.response(req, epoch: self.epochA)) }.sync()
+        try db.endSession(revoked: true)
+        let tokens = MemoryTokenStore(); try tokens.save("token-A", ref: "tA")
+        let up = RecoveryUploader(db: db, tokens: tokens, appBuild: 1) { _ in (204, Data()) }
+        try up.run()
+        XCTAssertNotNil(try tokens.token(ref: "tA"))
+        try db.purgeConfirmed(now: Date().addingTimeInterval(15 * 86_400))
+        try up.run()
+        XCTAssertNil(try tokens.token(ref: "tA"))
+        XCTAssertNil(try db.retiredSession(deviceId: uuid(1)))
+    }
 }

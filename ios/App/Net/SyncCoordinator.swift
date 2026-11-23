@@ -37,6 +37,8 @@ final class SyncCoordinator {
     var onSignedOut: (() -> Void)?
     /// 恢复队列（以前的会话没传完的 op）：每趟同步之前先传一遍
     var recovery: RecoveryRunner?
+    /// 演示店重置后删掉当前令牌
+    var onDiscard: (() -> Void)?
     /// 完成的趟数（测试看）
     private(set) var rounds = 0
 
@@ -90,6 +92,7 @@ final class SyncCoordinator {
         let c = SyncCoordinator(db: db, build: services.build, transport: transport)
         c.simulatedOffline = simulatedOffline
         c.recovery = RecoveryRunner.live(db: db, services: services, args: args)
+        c.onDiscard = { tokens.delete(ref: tokenRef) }
         #if DEBUG
         if let n = UIFixture.value(for: "-uiMaxBatchOps", in: args).flatMap(Int.init) { c.maxBatchOps = n }
         #endif
@@ -169,8 +172,12 @@ final class SyncCoordinator {
         rounds += 1
         switch result {
         case .success: lastError = nil
+        case .failure(SyncError.epochMismatch(let e)):
+            // 握手两次仍不一致：不是退出，下一趟再试（PR #41 Fable 可选 2）
+            lastError = "epoch 握手没对上：\(e)"
         case .failure(let e as SyncError):
             signedOut = e
+            if case .revoked(true) = e { onDiscard?() }   // 演示店重置：outbox 已丢，令牌也删（PR #41 Fable 可选 6）
             stop()
             // 被踢：同一个旧令牌接着把剩下的补传（卖出带补传标记入账、别的待确认），然后才通知外面
             if case .revoked = e { _ = await recovery?.run() }
@@ -195,7 +202,8 @@ final class SyncCoordinator {
     func refreshStatus() {
         guard let st = try? db.syncStatus() else { return }
         status = st
-        if st.catalogDone { catalogDone = true }
+        // 换 epoch 重建投影时商品清空了：退回 29 等商品拉完，别在空库上开卖（PR #41 Fable 可选 3）
+        catalogDone = st.catalogDone
     }
 
     /// 首次同步进度：分子 = 本机商品数（强杀重开后接着数），分母 = 服务器给的总数

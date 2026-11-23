@@ -97,4 +97,16 @@ describe("held-ops（§4.5）", () => {
     expect((await app.inject({ method: "GET", url: "/v1/held-ops", headers: bearer(cashier.token) })).statusCode).toBe(403);
     expect((await app.inject({ method: "POST", url: `/v1/held-ops/${s.id}/resolve`, headers: bearer(cashier.token), payload: { action: "accept" } })).statusCode).toBe(403);
   });
+
+  it("不带 base_ver 的期初隐含版本 0：库存动过后 can_accept = false，记上 409", async () => {
+    const { app, boss, phone, send, pid, kick } = await setup();
+    const o = op("opening", { entry_id: randomUUID(), product_id: pid, counted_qty: 3, unit_cost_fen: 100 }, { at: T_BEFORE });
+    await kick();
+    expect((await send(phone.token, o))[0]!.status).toBe("held");
+    await send(boss.token, stockIn(pid, 1));
+    const list = (await app.inject({ method: "GET", url: "/v1/held-ops", headers: bearer(boss.token) })).json().held;
+    expect(list.find((h: { id: string }) => h.id === o.id).can_accept).toBe(false);
+    const r = await app.inject({ method: "POST", url: `/v1/held-ops/${o.id}/resolve`, headers: bearer(boss.token), payload: { action: "accept" } });
+    expect(r.statusCode).toBe(409);
+  });
 });

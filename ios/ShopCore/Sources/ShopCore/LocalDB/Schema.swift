@@ -232,7 +232,7 @@ enum LocalSchema {
     static let projectionTables = ["device_label", "entry", "sale_batch", "lot", "barcode_pending", "barcode", "product_private", "product"]
     /// meta 里属于投影的键
     static let projectionMetaKeys = [MetaKey.catalogCursor, .ledgerCursor, .serverEpoch, .lastSyncAt, .catalogDone, .serverTimeAtSync,
-                                     .deletePendingUntil, .rejectedSeenAt]
+                                     .deletePendingUntil]
 }
 
 /// `meta` 表的键（§3.4：游标、server_epoch；角色、店名、设备名在 `session` 表里）
@@ -256,6 +256,6 @@ public enum MetaKey: String, Sendable {
     /// S22b：恢复队列被服务器拒收、还没让人看过的笔数（收银员会话下旧会话的 op 拿到结果就删，读不回 outbox，
     /// 只能按当次响应记数，§8 S22b）。首页「N 笔没记上」点「知道了」清零。不属于投影
     case recoveryRejectedUnseen = "recovery.rejected_unseen"
-    /// S22b：当前会话的被拒 op 看到哪儿了（`confirmed_at`，首页「知道了」时记下）。属于投影，换会话清掉
+    /// S22b：被拒 op 看到哪儿了（`confirmed_at`，首页「知道了」时记下）。不属于投影：换 epoch 后已点过「知道了」的不再冒出来
     case rejectedSeenAt = "sync.rejected_seen_at"
 }

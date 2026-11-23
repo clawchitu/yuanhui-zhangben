@@ -34,6 +34,8 @@ final class S22bTests: XCTestCase {
         var log: [(token: String, pull: Bool, ops: Int)] = []
         var revoked = false
         var offline = false
+        /// 账号注销期间：一个都不应用、results 为空
+        var deletePending = false
         var logouts: [String] = []
         func sync(token: String, body: Data) throws -> (Int, Data) {
             lock.lock(); defer { lock.unlock() }
@@ -41,12 +43,13 @@ final class S22bTests: XCTestCase {
             let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any] ?? [:]
             let ops = obj["ops"] as? [[String: Any]] ?? []
             log.append((token, obj["pull"] as? Bool ?? true, ops.count))
-            let r: [String: Any] = [
-                "results": ops.map { ["id": $0["id"]!, "status": "applied"] },
+            var r: [String: Any] = [
+                "results": deletePending ? [] : ops.map { ["id": $0["id"]!, "status": "applied"] },
                 "changes": ["products": [], "barcodes": [], "removed": [], "entries": [], "batches": [], "lots": []],
                 "cursors": ["catalog": 1, "ledger": 1], "has_more": ["catalog": false, "ledger": false],
                 "total_products": 0, "server_time": "2026-11-23T02:00:00.000Z", "epoch": obj["epoch"] ?? "",
                 "min_build": 0, "device": ["role": "family", "label": "手机", "revoked": revoked], "store": ["name": "店"]]
+            if deletePending { r["delete_pending_until"] = "2026-11-30T02:00:00.000Z" }
             return (200, try JSONSerialization.data(withJSONObject: r))
         }
     }
@@ -140,6 +143,43 @@ final class S22bTests: XCTestCase {
         XCTAssertEqual(try db.recoveryPendingCount(), 2)
         XCTAssertEqual(try db.retiredSession(deviceId: m.session.deviceId)?.logoutPending, true)
         XCTAssertEqual(try db.productCount(), 0, "投影清空")
+    }
+
+    /// PR #41 必须修 1：退出登录排空时才发现被踢（且账号在注销期间，这批一笔都没应用）：按被踢走，不调 logout，
+    /// 旧令牌不删，没传的 3 笔全部留在恢复队列，之后还能用旧令牌补传
+    func testLogoutDrainFindsRevokedKeepsTokenAndOps() async throws {
+        let db = try db(.family)
+        try sell(db); try sell(db); try sell(db)
+        let server = Server(); server.revoked = true; server.deletePending = true
+        let tokens = MemoryTokenStore(); try tokens.save("token-now", ref: "tNow")
+        let m = AppModel(db: db, session: try XCTUnwrap(try db.currentSession()), figures: HomeFigures(), defaults: defaults)
+        m.sync = coordinator(db, server, tokens: tokens)
+        let out = await m.logout()
+        XCTAssertEqual(out, .kicked)
+        XCTAssertEqual(try db.signOutReason(), .kickedFamily, "按被踢走（25b）")
+        XCTAssertEqual(try db.recoveryPendingCount(), 3, "一笔不丢")
+        XCTAssertEqual(try tokens.token(ref: "tNow"), "token-now", "还有没拿到结果的 op，旧令牌不删")
+        XCTAssertTrue(server.logouts.isEmpty, "被踢不调 logout")
+        // 撤回注销后：恢复队列用旧令牌补传
+        server.deletePending = false
+        _ = await m.sync?.recovery?.run()
+        XCTAssertEqual(try db.recoveryPendingCount(), 0)
+        XCTAssertEqual(server.log.last?.token, "token-now")
+    }
+
+    /// 排空时被踢、待传超过一批（201 笔）：先推上去的 200 笔有结果，第 201 笔留给恢复队列用旧令牌补传，旧令牌不提前删
+    func testLogoutDrainRevokedMidwayOver200() async throws {
+        let db = try db(.family)
+        for _ in 0..<201 { try sell(db) }
+        let server = Server(); server.revoked = true
+        let tokens = MemoryTokenStore(); try tokens.save("token-now", ref: "tNow")
+        let m = AppModel(db: db, session: try XCTUnwrap(try db.currentSession()), figures: HomeFigures(), defaults: defaults)
+        m.sync = coordinator(db, server, tokens: tokens)
+        let out = await m.logout()
+        XCTAssertEqual(out, .kicked)
+        XCTAssertEqual(server.log.map(\.ops), [200, 1], "第二批由恢复队列用同一个旧令牌补")
+        XCTAssertEqual(try db.allOutbox().filter { $0.status == .pending }.count, 0)
+        XCTAssertNotNil(try tokens.token(ref: "tNow"), "保留期内的 op 还在，令牌留着")
     }
 
     func testRejectedReminderAndAck() throws {

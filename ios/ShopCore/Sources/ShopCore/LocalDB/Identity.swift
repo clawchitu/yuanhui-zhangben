@@ -107,6 +107,52 @@ extension LocalDB {
         return body
     }
 
+    /// 某个会话（设备 + 店）还有几笔没拿到结果（退出登录提示「还有 N 笔」，不受一批 200 的限制；PR #41 评审必须修 1）
+    public func pendingCount(deviceId: UUID, storeId: UUID) throws -> Int {
+        try writer.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM outbox WHERE status = 'pending' AND device_id = ? AND store_id = ?",
+                             arguments: [deviceId.uuidString, storeId.uuidString]) ?? 0
+        }
+    }
+
+    /// 还留着 op（待传或 14 天保留期内已确认的）的退役会话：令牌要留到这些 op 都清掉（换 epoch 后还要用它重传，§4.6）
+    public func retiredSessionsWithRetainedOps() throws -> [RetiredSession] {
+        try writer.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM session s WHERE s.is_current = 0
+                AND EXISTS (SELECT 1 FROM outbox o WHERE o.device_id = s.device_id AND o.store_id = s.store_id
+                            AND o.status IN ('applied', 'held'))
+                """).map { r in
+                RetiredSession(session: try Self.sessionFrom(r), epoch: (r["epoch"] as String?).flatMap(UUID.init(uuidString:)),
+                               logoutPending: r["logout_pending"], revoked: r["revoked"])
+            }
+        }
+    }
+
+    /// 退役会话那家店换了 epoch（§4.6）：记下新 epoch，把它保留的已确认 op（applied、held）重新标成待传，
+    /// 由恢复队列用**它自己的旧令牌**重传（PR #41 评审必须修 2）。返回重新标成待传的笔数
+    @discardableResult
+    public func resetRetiredForEpoch(deviceId: UUID, _ epoch: UUID) throws -> Int {
+        try writer.write { db in
+            try db.execute(sql: "UPDATE session SET epoch = ? WHERE device_id = ? AND is_current = 0",
+                           arguments: [epoch.uuidString.lowercased(), deviceId.uuidString])
+            try db.execute(sql: """
+                UPDATE outbox SET status = 'pending', reject_code = NULL, result_json = NULL, confirmed_at = NULL
+                WHERE status IN ('applied', 'held') AND device_id = ?
+                  AND device_id IN (SELECT device_id FROM session WHERE is_current = 0)
+                """, arguments: [deviceId.uuidString])
+            return db.changesCount
+        }
+    }
+
+    /// 主动退出时推迟的 logout 已经调过了（之后不再调；令牌照样留到 op 清掉）
+    public func markRetiredLoggedOut(deviceId: UUID) throws {
+        try writer.write { db in
+            try db.execute(sql: "UPDATE session SET logout_pending = 0, revoked = 1 WHERE device_id = ? AND is_current = 0",
+                           arguments: [deviceId.uuidString])
+        }
+    }
+
     // MARK: - 没记上的提示（§8 S22b「被拒的 op 在首页提示且不再重试」）
 
     /// 恢复队列被拒的笔数按**当次响应**累加（收银员会话下旧会话的 op 拿到结果就删，事后查不到）
@@ -154,7 +200,18 @@ extension LocalDB {
     public func resetForEpoch(_ epoch: UUID) throws -> Int {
         let n = try writer.write { db -> Int in
             let s = try Self.requireSession(db)
+            let oldEpoch = try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [MetaKey.serverEpoch.rawValue])
             try Self.clearProjection(db)
+            // 同一家店（旧 epoch 相同）的退役会话保留的 op 也重新标成待传、记下新 epoch，用它们自己的令牌重传（PR #41 必须修 2）
+            if let oldEpoch {
+                try db.execute(sql: """
+                    UPDATE outbox SET status = 'pending', reject_code = NULL, result_json = NULL, confirmed_at = NULL
+                    WHERE status IN ('applied', 'held')
+                      AND device_id IN (SELECT device_id FROM session WHERE is_current = 0 AND lower(epoch) = lower(?))
+                    """, arguments: [oldEpoch])
+                try db.execute(sql: "UPDATE session SET epoch = ? WHERE is_current = 0 AND lower(epoch) = lower(?)",
+                               arguments: [epoch.uuidString.lowercased(), oldEpoch])
+            }
             try db.execute(sql: "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                            arguments: [MetaKey.serverEpoch.rawValue, epoch.uuidString.lowercased()])
             try db.execute(sql: """

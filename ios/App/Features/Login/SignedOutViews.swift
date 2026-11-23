@@ -128,7 +128,7 @@ struct LogoutView: View {
     private func run() async {
         phase = .working
         switch await model.logout() {
-        case .done: finish()
+        case .done, .kicked: finish()   // 被踢：AppRoot 按退出原因进 25b / 25f
         case .pending(let n): phase = .pending(n)
         }
     }

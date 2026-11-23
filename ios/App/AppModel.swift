@@ -270,20 +270,34 @@ final class AppModel {
         case done
         /// 没传完（没网）：这几笔进恢复队列，联网后自动补传，传完才注销旧令牌
         case pending(Int)
+        /// 排空时发现这台手机已经被踢：按被踢走（25b / 25f），没传完的留在恢复队列、旧令牌不删
+        case kicked
     }
 
     /// 退出登录（§4.5）：先把 outbox 传完，再调 `logout`；传不完（没网）就推迟 `logout`，未传的进恢复队列。
     /// 两种都结束本地会话（清投影）。开写事务、压缩都在后台线程。
+    ///
+    /// PR #41 必须修 1：笔数按**这个会话**（设备 + 店）数，不按「当前会话」（排空中被踢，会话已退役，「当前」就是空的）；
+    /// 只要这个会话还有没拿到结果的 op，旧令牌一律不删；排空收到被踢就按被踢流程走，不调 logout。
     func logout() async -> LogoutOutcome {
         sync?.stop()
         await sync?.idle()
-        let db = db, ref = session.tokenRef
+        let db = db, ref = session.tokenRef, deviceId = session.deviceId, storeId = session.storeId
+        var revoked = false
         if let sync {
             sync.onSignedOut = nil
             let engine = SyncEngine(db: db, appBuild: services?.build ?? 0, transport: sync.transportForDrain)
-            _ = await Task.detached(priority: .userInitiated) { try? engine.sync() }.value
+            let r = await Task.detached(priority: .userInitiated) { () -> Error? in
+                do { try engine.sync(); return nil } catch { return error }
+            }.value
+            if case .revoked? = r as? SyncError { revoked = true }
         }
-        let pending = (try? db.pendingOps().count) ?? 0
+        if revoked {
+            // 会话已由引擎退役（原因 kicked_*，演示店重置则已丢弃）；剩下的用同一个旧令牌由恢复队列补传
+            if let recovery = sync?.recovery { _ = await recovery.run() }
+            return .kicked
+        }
+        let pending = (try? db.pendingCount(deviceId: deviceId, storeId: storeId)) ?? 1
         var loggedOut = false
         if pending == 0, let services, let token = try? services.tokens.token(ref: ref) {
             #if DEBUG
@@ -295,11 +309,11 @@ final class AppModel {
                 loggedOut = true
             }
         }
-        let deviceId = session.deviceId
         let tokens = services?.tokens
         _ = await Task.detached(priority: .userInitiated) { () -> Void in
             try? db.endSession(logoutPending: !loggedOut)
-            if loggedOut {
+            // 删令牌的前提：这个会话一笔没拿到结果的都没有（再查一次，不靠上面的数）
+            if loggedOut, (try? db.pendingCount(deviceId: deviceId, storeId: storeId)) == 0 {
                 tokens?.delete(ref: ref)
                 try? db.forgetSession(deviceId: deviceId)
             }

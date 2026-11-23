@@ -15,10 +15,13 @@ const idParam = { type: "object", required: ["id"], properties: { id: { type: "s
 
 /** 版本还对得上吗（不对只能丢弃）。没有版本字段的 op 总是可以记上 */
 async function canAccept(tx: { trx: Kysely<Database>; storeId: string }, type: string, payload: Record<string, unknown>): Promise<boolean> {
-  if (typeof payload.base_ver === "number" && typeof payload.product_id === "string") {
+  // 不带 base_ver 的期初（新商品第二步）隐含版本 0：商品库存动过就只能不要（PR #41 Codex 可选 2）
+  const implicitZero = type === "opening" && payload.base_ver === undefined;
+  if ((typeof payload.base_ver === "number" || implicitZero) && typeof payload.product_id === "string") {
     const p = await tx.trx.selectFrom("products").select("stock_ver").where("store_id", "=", tx.storeId)
       .where("id", "=", payload.product_id).executeTakeFirst();
-    return !!p && Number(p.stock_ver) === payload.base_ver;
+    if (!p) return implicitZero;
+    return Number(p.stock_ver) === (implicitZero ? 0 : payload.base_ver);
   }
   if ((type === "expiry_dispose" || type === "lot_snooze") && typeof payload.lot_id === "string") {
     const l = await tx.trx.selectFrom("stock_lots").select("handle_ver").where("store_id", "=", tx.storeId)

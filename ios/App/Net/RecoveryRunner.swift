@@ -9,6 +9,8 @@ final class RecoveryRunner: @unchecked Sendable {
     /// 整个进程同一时间只跑一趟（登录页上的启动补传和登录后同步之前的补传可能撞上）：后来的等前一趟跑完再跑，
     /// 保证兑码后第一次拉取之前恢复队列确实传过一遍
     private static let lock = NSLock()
+    /// 本进程探过旧会话的 epoch 了（只在持锁时读写）
+    nonisolated(unsafe) private static var probed = false
     static let logger = Logger(subsystem: "cn.yuanhuishop.zhangben", category: "recovery")
 
     init(uploader: RecoveryUploader) { self.uploader = uploader }
@@ -40,8 +42,12 @@ final class RecoveryRunner: @unchecked Sendable {
         precondition(!Thread.isMainThread, "恢复队列不在主线程传")
         Self.lock.lock()
         defer { Self.lock.unlock() }
+        // 每次启动第一趟顺带探一下旧会话那家店换没换 epoch（§4.6，PR #41 必须修 2），之后不再多发
+        let probe = !Self.probed
         do {
-            return try uploader.run()
+            let r = try uploader.run(probeEpochs: probe)
+            Self.probed = true
+            return r
         } catch {
             Self.logger.notice("恢复队列这趟没传完：\(String(describing: error), privacy: .public)")
             return nil

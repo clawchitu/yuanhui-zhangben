@@ -46,10 +46,16 @@ public final class RecoveryUploader: Sendable {
     }
 
     /// 传一遍。连不上（`send` 抛错）就停下抛出，已经拿到的结果已提交；调用方不因此拦任何东西。
+    /// `probeEpochs`：先给每个还留着已确认 op 的旧会话发一个空请求看它那家店换没换 epoch，换了就把保留的 op 重新标成待传
+    /// （§4.6；当前会话的握手只覆盖同一家店的旧会话）。调用方按需打开（每次启动一次），免得每趟同步都多发请求。
     @discardableResult
-    public func run(maxRounds: Int = 50) throws -> RecoveryReport {
+    public func run(maxRounds: Int = 50, probeEpochs: Bool = false) throws -> RecoveryReport {
         var report = RecoveryReport()
         defer { report.remaining = (try? db.recoveryPendingCount()) ?? 0 }
+        // 补做没做成的压缩（只跑恢复上传、没有当前会话时也要做，§3.4）；14 天到期的已确认 op 清掉（§4.6）
+        do { try db.compactIfNeeded() } catch LocalDBError.compactionBusy {}
+        try db.purgeConfirmed()
+        if probeEpochs { try probe() }
         for g in try db.recoveryQueue() {
             try upload(g, report: &report, maxRounds: maxRounds)
         }
@@ -71,7 +77,8 @@ public final class RecoveryUploader: Sendable {
                       let e = (obj["epoch"] as? String).flatMap(UUID.init(uuidString:)) else { return }
                 handshakes += 1
                 epoch = e
-                try db.setRetiredEpoch(deviceId: g.deviceId, e)
+                // 换了 epoch：它保留的已确认 op 也一起重传（服务器按 id 幂等）
+                try db.resetRetiredForEpoch(deviceId: g.deviceId, e)
                 continue
             }
             guard code == 200 else { return }  // 401（旧令牌不认了）、5xx：这组先停
@@ -100,18 +107,34 @@ public final class RecoveryUploader: Sendable {
         }
     }
 
-    /// 恢复队列清空的旧会话：推迟的 `logout` 现在调，然后删旧令牌、删会话行（§4.5「恢复队列清空后才删除对应的旧令牌」）
+    /// 还留着已确认 op 的旧会话：发一个空请求（只推不拉）看它那家店的 epoch，不一致就重标保留的 op
+    func probe() throws {
+        for r in try db.retiredSessionsWithRetainedOps() {
+            guard let token = try tokens.token(ref: r.session.tokenRef) else { continue }
+            let empty = PushBatch(storeId: r.session.storeId, items: [])
+            let (code, data) = try send(.sync(token: token, body: LocalDB.recoveryRequestBody(empty, epoch: r.epoch, appBuild: appBuild)))
+            guard code == 409, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let e = (obj["epoch"] as? String).flatMap(UUID.init(uuidString:)) else { continue }
+            try db.resetRetiredForEpoch(deviceId: r.session.deviceId, e)
+        }
+    }
+
+    /// 恢复队列清空的旧会话：推迟的 `logout` 现在调（§4.5「传完才注销」）。旧令牌和会话行留到它的 op 全部清掉
+    /// （14 天保留期，换 epoch 后要用它重传，PR #41 必须修 2）才删
     func finishDrained(_ report: inout RecoveryReport) throws {
         for s in try db.retiredSessionsWithoutPendingOps() {
             let info = try db.retiredSession(deviceId: s.deviceId)
             if info?.logoutPending == true, info?.revoked != true, let token = try tokens.token(ref: s.tokenRef) {
                 let (code, _) = try send(.logout(token: token))
-                // 204 = 注销了；401 = 令牌已经不认了。别的（5xx）下次再试，令牌先留着
+                // 204 = 注销了；401 = 令牌已经不认了。别的（5xx）下次再试
                 guard code == 204 || code == 200 || code == 401 else { continue }
+                try db.markRetiredLoggedOut(deviceId: s.deviceId)
+                report.finished.append(s.deviceId)
             }
+            guard try db.retiredSessionsWithRetainedOps().contains(where: { $0.session.deviceId == s.deviceId }) == false else { continue }
             tokens.delete(ref: s.tokenRef)
             try db.forgetSession(deviceId: s.deviceId)
-            report.finished.append(s.deviceId)
+            if !report.finished.contains(s.deviceId) { report.finished.append(s.deviceId) }
         }
     }
 }
