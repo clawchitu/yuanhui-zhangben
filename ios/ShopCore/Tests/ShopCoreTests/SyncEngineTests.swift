@@ -5,7 +5,7 @@ import XCTest
 
 /// S22a：按字节拆批、一个响应一个事务（中途注入故障整批回滚）、被拒后临时库存纠正、注销期间停推、
 /// 批次头冲突更新不级联删明细、本机临时冲销行按 op_id 换成服务器行。
-final class SyncEngineTests: XCTestCase {
+final class SyncEngineTests: XCTestCase, @unchecked Sendable {
     let me = uuid(0x5A1), epoch = uuid(0xE0)
     struct Boom: Error {}
 
