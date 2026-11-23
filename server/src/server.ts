@@ -53,6 +53,7 @@ const scheduler = new Scheduler({
     archive: archiveStoreFromConfig(config, app.deps.objectStore),
     imageCacheDir: config.imageCacheDir,
     log: app.log,
+    candidates: app.candidates,
     monitor: mon
       ? new ServerMonitor({
           db: db.kysely,

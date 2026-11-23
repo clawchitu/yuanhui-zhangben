@@ -9,6 +9,8 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
       demo_login_enabled: c.demoLoginEnabled,
       privacy_url: c.privacyUrl,
       support_url: c.supportUrl,
+      // T11 / S22d：false 时手机不显示也不请求商品图、清本地图片缓存，选图和拍照入口不出现（总开关开且对象存储配了才是 true）
+      product_images_enabled: app.deps.imagesOn,
       // S21：只在配了 API_BASE 时返回（loadConfig 已按白名单校验过）
       ...(c.apiBase ? { api_base: c.apiBase } : {}),
     };

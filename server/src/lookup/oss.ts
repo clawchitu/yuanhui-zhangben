@@ -8,6 +8,8 @@
 //   backups/<UTC 时间>-<随机 16 位>.dump.enc / .manifest.enc（加密的 pg_dump 和清单，35 天生命周期只作用于 backups/）、
 //   heartbeat/backup.json（心跳，不加密、不含业务数据）。
 // 另外两个整前缀只许列举（§14 T14）：deletions/（restore 重放删除记录）、backups/（找最新的备份、看生命周期有没有生效）。
+// S22d：商品图候选 images/_catalog/<条码 sha256 前 32 位>/<候选 id>.jpg（全局、不分店，与 barcode_catalog 同寿）。
+//   仍在 images/ 下（RAM 权限不用改）；整前缀 images/_catalog/ 只给每周的孤儿清扫列举。店前缀 images/<店>/ 是 UUID，碰不到它。
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
@@ -35,6 +37,11 @@ export interface ObjectStore {
   listUploads(prefix: string): Promise<PendingUpload[]>;
   /** 中止一个分片上传、丢掉它已传的片；本来就没有也算成功 */
   abortUpload(key: string, uploadId: string): Promise<void>;
+  /**
+   * 列举并带上最后修改时间（S22d 候选孤儿清扫：只删落地超过 1 小时的）。prefix 规则同 list。
+   * 可选：没实现的（备份用的 SplitBackupStore 等）不参加清扫
+   */
+  listWithTimes?(prefix: string): Promise<Array<{ key: string; modifiedAt: Date }>>;
 }
 
 /** 一个还没完成的分片上传 */
@@ -55,7 +62,8 @@ const EXPORT_RE = new RegExp(`^exports/${UUID}/[0-9]{13}-[0-9a-f]{16}\\.zip$`);
 const DELETION_RE = new RegExp(`^deletions/${UUID}\\.json$`);
 const BACKUP_RE = /^backups\/[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}\.(dump|manifest)\.enc$/;
 const HEARTBEAT_KEY = "heartbeat/backup.json";
-const PREFIX_RE = new RegExp(`^(?:(images|exports)/${UUID}/|deletions/|backups/)$`);
+const CANDIDATE_RE = /^images\/_catalog\/[0-9a-f]{32}\/[0-9a-f]{16}\.jpg$/;
+const PREFIX_RE = new RegExp(`^(?:(images|exports)/${UUID}/|deletions/|backups/|images/_catalog/)$`);
 const UUID_RE = new RegExp(`^${UUID}$`);
 
 /** 注销导出包的键：exports/<店>/<申请时间毫秒>-<随机 16 位>.zip（随机部分让键猜不出来） */
@@ -70,6 +78,20 @@ export function deletionKey(storeId: string): string {
   const k = `deletions/${storeId.toLowerCase()}.json`;
   assertKey(k);
   return k;
+}
+
+/** 商品图候选的整前缀（每周孤儿清扫列举用） */
+export const CANDIDATES_PREFIX = "images/_catalog/";
+
+/** 商品图候选的键：images/_catalog/<sha256(条码) 前 32 位>/<候选 id>.jpg；候选 id 是缩图 sha256 前 16 位 */
+export function candidateKey(barcodeSha256Hex: string, cid: string): string {
+  const k = `${CANDIDATES_PREFIX}${barcodeSha256Hex.slice(0, 32)}/${cid}.jpg`;
+  if (!CANDIDATE_RE.test(k)) throw new Error("对象键格式不对");
+  return k;
+}
+
+export function isCandidateKey(k: string): boolean {
+  return CANDIDATE_RE.test(k);
 }
 
 /** 列举全部删除记录（restore 重放用，§14 T14）、全部备份 */
@@ -100,7 +122,7 @@ export function storePrefix(kind: "images" | "exports", storeId: string): string
 
 /** 任何一种合法的对象键 */
 export function isObjectKey(k: string): boolean {
-  return KEY_RE.test(k) || EXPORT_RE.test(k) || DELETION_RE.test(k) || BACKUP_RE.test(k) || k === HEARTBEAT_KEY;
+  return KEY_RE.test(k) || CANDIDATE_RE.test(k) || EXPORT_RE.test(k) || DELETION_RE.test(k) || BACKUP_RE.test(k) || k === HEARTBEAT_KEY;
 }
 
 export function assertKey(k: string): void {
@@ -108,7 +130,7 @@ export function assertKey(k: string): void {
 }
 
 export function assertStorePrefix(p: string): void {
-  if (!PREFIX_RE.test(p)) throw new Error("前缀格式不对：只能是 images/<店>/、exports/<店>/、deletions/ 或 backups/");
+  if (!PREFIX_RE.test(p)) throw new Error("前缀格式不对：只能是 images/<店>/、exports/<店>/、deletions/、backups/ 或 images/_catalog/");
 }
 
 /** 商品图的键：images/<店>/<商品>/<image_ver>-<内容哈希前 16 位>.jpg */
@@ -127,10 +149,15 @@ export function assertImageKey(k: string): void {
 }
 
 export class MemoryObjectStore implements ObjectStore {
-  readonly objects = new Map<string, { body: Buffer; contentType: string }>();
+  /** at：落地时间（测试里可以直接改，模拟「落地超过 1 小时」） */
+  readonly objects = new Map<string, { body: Buffer; contentType: string; at?: Date }>();
   async put(key: string, body: Buffer, contentType: string) {
     assertKey(key);
-    this.objects.set(key, { body: Buffer.from(body), contentType });
+    this.objects.set(key, { body: Buffer.from(body), contentType, at: new Date() });
+  }
+  async listWithTimes(prefix: string) {
+    assertStorePrefix(prefix);
+    return [...this.objects].filter(([k]) => k.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, o]) => ({ key, modifiedAt: o.at ?? new Date(0) }));
   }
   /** 内存实现只给测试用：读进来存着 */
   async putFile(key: string, file: string, contentType: string) {
@@ -229,6 +256,17 @@ export class LocalDirObjectStore implements ObjectStore {
   async delete(key: string) {
     await rm(safeJoin(this.root, key), { force: true });
   }
+  async listWithTimes(prefix: string) {
+    const out: Array<{ key: string; modifiedAt: Date }> = [];
+    for (const key of await this.list(prefix)) {
+      try {
+        out.push({ key, modifiedAt: (await stat(safeJoin(this.root, key))).mtime });
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+    }
+    return out;
+  }
   /** 本机目录没有分片上传（putFile 失败时自己删掉临时文件） */
   async listUploads(prefix: string) {
     assertStorePrefix(prefix);
@@ -263,7 +301,7 @@ interface AliClient {
     o: object,
   ): Promise<{ uploads?: Array<{ name: string; uploadId: string }>; nextKeyMarker?: string; nextUploadIdMarker?: string; isTruncated?: boolean }>;
   get(name: string): Promise<{ content: Buffer }>;
-  list(q: { prefix: string; marker?: string; "max-keys": number }, o: object): Promise<{ objects?: Array<{ name: string }>; nextMarker?: string | null; isTruncated?: boolean }>;
+  list(q: { prefix: string; marker?: string; "max-keys": number }, o: object): Promise<{ objects?: Array<{ name: string; lastModified?: string }>; nextMarker?: string | null; isTruncated?: boolean }>;
   delete(name: string): Promise<unknown>;
   request?: unknown;
 }
@@ -375,13 +413,21 @@ export class AliOssObjectStore implements ObjectStore {
   }
   /** 按前缀分页列举（每页 1000 个，跟着 nextMarker 走到底）。S10a 接真实 OSS 时实测一次（§14 T9 ⑤） */
   async list(prefix: string) {
+    return (await this.listWithTimes(prefix)).map((o) => o.key);
+  }
+  /** 同 list，带上 lastModified（认不出时间的当作刚落地：宁可晚删） */
+  async listWithTimes(prefix: string) {
     assertStorePrefix(prefix);
     const c = await this.client;
-    const out: string[] = [];
+    const out: Array<{ key: string; modifiedAt: Date }> = [];
     let marker: string | undefined;
     for (;;) {
       const r = await c.list({ prefix, "max-keys": 1000, ...(marker ? { marker } : {}) }, {});
-      for (const o of r.objects ?? []) if (o.name.startsWith(prefix) && isObjectKey(o.name)) out.push(o.name);
+      for (const o of r.objects ?? []) {
+        if (!o.name.startsWith(prefix) || !isObjectKey(o.name)) continue;
+        const t = o.lastModified ? new Date(o.lastModified) : new Date();
+        out.push({ key: o.name, modifiedAt: Number.isNaN(t.getTime()) ? new Date() : t });
+      }
       if (!r.isTruncated || !r.nextMarker) break;
       marker = r.nextMarker;
     }

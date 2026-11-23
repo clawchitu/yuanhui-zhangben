@@ -186,8 +186,8 @@ function hitOf(row: { name: string | null; spec: string | null; brand: string | 
   };
 }
 
-/** 写进缓存的图片列表：第一张必须是 imageUrl（图片任务只下 image_url） */
-function urlsOf(hit: CatalogHit | null): string[] {
+/** 写进缓存的图片列表：第一张必须是 imageUrl（图片任务只下 image_url）；S22d 候选按这个顺序取前 6 张 */
+export function urlsOf(hit: CatalogHit | null): string[] {
   if (!hit?.imageUrl) return [];
   const rest = (hit.imageUrls ?? []).filter((u) => u !== hit.imageUrl);
   return [hit.imageUrl, ...rest];

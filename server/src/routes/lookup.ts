@@ -4,16 +4,24 @@
 //   收银员只拿到 found、name、spec、has_image（§6.1）；家用 / 审核另有 brand。
 //   第三方图片地址不下发给任何人（App 只从自家服务器取图，§0），所以 image_url 不出现。
 //   没查到分两种：明确没查到 {found:false}；外部这次没问到 {found:false, retry_later:true}（手机不记，下次再查）。
-//   has_image = 图片总开关开着且条码库里有图（演示店永远 false：不用第三方图）。
+//   S22d：查到且图片开着、不是演示店时，把条码库的前 6 张图片地址插成候选、唤醒 worker 异步转存（不等下载）。
+//   家用 / 审核另有 image_candidates {state: none|pending|ready, ids}；收银员没有这个键（scope 不变）。
+//   has_image = image_candidates.state != none（演示店、开关关着永远 false）。
+// - 候选（S22d）：GET .../images 只读库、不调快鸟，供轮询（每设备每分钟 60 次）；GET .../images/:cid 出缩图，强缓存一年。
+//   开关关着都 404；演示店候选恒为 none、读图 404。收银员由 guard 拒。
 // - 商品图：总开关关着一律 404（手机显示首字）；带的 v 等于当前 image_ver 时强缓存一年，否则不缓存。
 import type { FastifyInstance } from "fastify";
 import { authOf } from "../auth/plugin.ts";
 import { SlidingWindowLimiter } from "../auth/ratelimit.ts";
-import { LookupQuotaExceeded } from "../lookup/catalog.ts";
+import { LookupQuotaExceeded, urlsOf } from "../lookup/catalog.ts";
+import { candidateView, CID_RE, ensureCandidates, type CandidateView } from "../lookup/candidates.ts";
 import { ImageCache } from "../lookup/images.ts";
 import { cacheFillGuard } from "../jobs/account-purge.ts";
-import { isImageKey } from "../lookup/oss.ts";
+import { isCandidateKey, isImageKey } from "../lookup/oss.ts";
 import { sendError } from "./errors.ts";
+
+const NONE: CandidateView = { state: "none", ids: [] };
+const BARCODE_PARAM = { type: "string", minLength: 1, maxLength: 64, pattern: "^[0-9A-Za-z._-]+$" } as const;
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
@@ -21,6 +29,11 @@ export async function lookupRoutes(app: FastifyInstance): Promise<void> {
   const { db, config } = app.deps;
   const catalog = app.catalog;
   const perDevice = new SlidingWindowLimiter(app.deps.rateLimits.barcodeLookup);
+  const pollPerDevice = new SlidingWindowLimiter(app.deps.rateLimits.barcodeImages);
+  const imagesOn = app.deps.imagesOn;
+  const cand = app.candidates.deps;
+  // 候选缩图不属于任何店：另一个缓存实例，不做按店的回填复查
+  const candidateImages = new ImageCache(config.imageCacheDir, app.deps.objectStore);
   // 回填后复查店还在不在（注销清除之后不在本机缓存里留图，PR #20 Codex 2）
   const images = new ImageCache(config.imageCacheDir, app.deps.objectStore, cacheFillGuard(app.deps.db.kysely, app.log));
 
@@ -32,7 +45,7 @@ export async function lookupRoutes(app: FastifyInstance): Promise<void> {
           type: "object",
           required: ["barcode"],
           // 契约 Barcode 是 1–64 个字符；条码只会是可见 ASCII，别的直接 400，不进缓存、不发给外部
-          properties: { barcode: { type: "string", minLength: 1, maxLength: 64, pattern: "^[0-9A-Za-z._-]+$" } },
+          properties: { barcode: BARCODE_PARAM },
         },
       },
     },
@@ -49,12 +62,66 @@ export async function lookupRoutes(app: FastifyInstance): Promise<void> {
       }
       // 外部没问到（超时、出错、没配 AppCode）：告诉手机别记住，下次扫再查（PR #39 Fable 可选 1）
       if (!r.found || !r.hit) return r.origin === "unavailable" ? { found: false, retry_later: true } : { found: false };
-      const hasImage = config.productImagesEnabled && !auth.store.isDemo && !!r.hit.imageUrl;
+      let view = NONE;
+      if (imagesOn && !auth.store.isDemo) {
+        // 候选出错不影响查码结果（S22d ⑥-2）
+        try {
+          if ((await ensureCandidates(cand, req.params.barcode, urlsOf(r.hit))) > 0) app.candidates.wake();
+          view = await candidateView(cand, req.params.barcode);
+        } catch (e) {
+          req.log.warn({ barcode: req.params.barcode, err: (e as Error).message }, "商品图候选登记失败");
+        }
+      }
       const body: Record<string, unknown> = { found: true, name: r.hit.name };
       if (r.hit.spec) body.spec = r.hit.spec;
-      body.has_image = hasImage;
-      if (auth.identity !== "cashier" && r.hit.brand) body.brand = r.hit.brand;
+      body.has_image = view.state !== "none";
+      if (auth.identity !== "cashier") {
+        if (r.hit.brand) body.brand = r.hit.brand;
+        body.image_candidates = view;
+      }
       return body;
+    },
+  );
+
+  app.get<{ Params: { barcode: string } }>(
+    "/v1/barcode-lookup/:barcode/images",
+    { schema: { params: { type: "object", required: ["barcode"], properties: { barcode: BARCODE_PARAM } } } },
+    async (req, reply) => {
+      const auth = authOf(req);
+      const wait = pollPerDevice.hit(auth.device.id, req.receivedAt.getTime());
+      if (wait > 0) return sendError(reply, 429, "rate_limited", { retry_after_s: wait });
+      if (!imagesOn) return sendError(reply, 404, "not_found");
+      if (auth.store.isDemo) return NONE;
+      return candidateView(cand, req.params.barcode);
+    },
+  );
+
+  app.get<{ Params: { barcode: string; cid: string } }>(
+    "/v1/barcode-lookup/:barcode/images/:cid",
+    {
+      schema: {
+        params: { type: "object", required: ["barcode", "cid"], properties: { barcode: BARCODE_PARAM, cid: { type: "string", pattern: CID_RE.source } } },
+      },
+    },
+    async (req, reply) => {
+      const auth = authOf(req);
+      if (!imagesOn || auth.store.isDemo) return sendError(reply, 404, "not_found");
+      const row = await db.kysely
+        .selectFrom("catalog_image_candidates")
+        .select("object_key")
+        .where("barcode", "=", req.params.barcode)
+        .where("cid", "=", req.params.cid)
+        .where("state", "=", "ready")
+        .executeTakeFirst();
+      if (!row?.object_key || !isCandidateKey(row.object_key)) return sendError(reply, 404, "not_found");
+      const body = await candidateImages.get(row.object_key);
+      if (!body) return sendError(reply, 404, "not_found");
+      reply
+        .header("content-type", "image/jpeg")
+        .header("x-content-type-options", "nosniff")
+        .header("content-security-policy", "default-src 'none'")
+        .header("cache-control", "private, max-age=31536000, immutable");
+      return reply.send(body);
     },
   );
 
@@ -68,7 +135,7 @@ export async function lookupRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       const auth = authOf(req);
-      if (!config.productImagesEnabled) return sendError(reply, 404, "not_found");
+      if (!imagesOn) return sendError(reply, 404, "not_found");
       const p = await db.kysely
         .selectFrom("products")
         .select(["image_key", "image_ver"])

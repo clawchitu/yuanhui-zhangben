@@ -5,12 +5,13 @@
 // - 一个任务的下一次 = 这次开始时间 + 间隔；跑得比间隔还久也不会叠着跑（tick 本身不重入：上一轮没跑完，新的一轮直接跳过）。
 // - 任务抛错只记日志，不影响别的任务和下一次。
 // - stop() 停掉定时器并等正在跑的那一轮跑完（收到 SIGTERM 时不把事务掐在半截）。
-// 任务（defaultTasks）：商品图（S08 挪过来，开关和对象存储都有才登记）、演示店每日重置、注销导出包、注销到期清除、监控（S10c，配了才登记）。
+// 任务（defaultTasks）：商品图（S08 挪过来，开关和对象存储都有才登记；S22d 起先跑候选转存，另有每周的候选孤儿清扫）、演示店每日重置、注销导出包、注销到期清除、监控（S10c，配了才登记）。
 // 到期清除每小时跑一次：S03-4 要求至少每天一次，把「满 7 天」到真正删除的空档压在 24 小时内，这里压到 1 小时内。
 import type { Kysely } from "kysely";
 import type { Database } from "../db.ts";
 import type { ObjectStore } from "../lookup/oss.ts";
 import { enqueueImageJobs, runImageJobs } from "./image-fetch.ts";
+import { runCandidateJobs, sweepCandidateObjects, type CandidateWorker } from "../lookup/candidates.ts";
 import { runDemoResets } from "../demo/reset.ts";
 import { runAccountPurges, runExportJobs, type PurgeLog } from "./account-purge.ts";
 
@@ -120,6 +121,8 @@ export const TASK_INTERVALS = {
   accountExports: 60_000,
   accountPurge: 60 * 60_000,
   monitor: 60_000,
+  /** S22d：每周清一次 images/_catalog/ 下没有对应行、落地超过 1 小时的对象 */
+  candidateSweep: 7 * 24 * 3600_000,
 } as const;
 
 export interface DefaultTaskDeps {
@@ -132,6 +135,8 @@ export interface DefaultTaskDeps {
   log?: PurgeLog & { info(obj: object, msg: string): void };
   /** 监控检查任务（S10c，monitor/server-monitor.ts）；没配 MONITOR_DIR 时不登记 */
   monitor?: { run(now: Date): Promise<void> } | null;
+  /** 商品图候选的进程内 worker（app.candidates，S22d）：images 任务先补跑到期的候选（兜底重试），再跑图片任务；传了才登记每周清扫 */
+  candidates?: CandidateWorker | null;
 }
 
 export function defaultTasks(d: DefaultTaskDeps): Task[] {
@@ -142,10 +147,15 @@ export function defaultTasks(d: DefaultTaskDeps): Task[] {
       name: "images",
       everyMs: TASK_INTERVALS.images,
       run: async () => {
+        // 候选先跑：图片任务（只在 image_ver=0 时落第一张）优先复制已转存好的候选
+        if (d.candidates) await d.candidates.drain();
+        else await runCandidateJobs(img);
         await enqueueImageJobs(img);
         await runImageJobs(img);
       },
     });
+    const cand = d.candidates;
+    if (cand) tasks.push({ name: "image-candidates-sweep", everyMs: TASK_INTERVALS.candidateSweep, run: () => sweepCandidateObjects(cand.deps) });
   }
   tasks.push({ name: "demo-reset", everyMs: TASK_INTERVALS.demoReset, run: (now) => runDemoResets(d.db, now) });
   const acct = { db: d.db, images: d.images, archive: d.archive, imageCacheDir: d.imageCacheDir, clock: d.clock, log: d.log };

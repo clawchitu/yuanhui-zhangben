@@ -18,6 +18,8 @@ import { lookupRoutes } from "./routes/lookup.ts";
 import { sourceFromConfig, type BarcodeSource } from "./lookup/kuainiao.ts";
 import { objectStoreFromConfig, type ObjectStore } from "./lookup/oss.ts";
 import { CatalogService } from "./lookup/catalog.ts";
+import { CandidateWorker } from "./lookup/candidates.ts";
+import { productImageRoutes } from "./routes/product-images.ts";
 import { proxyTrust } from "./auth/proxy.ts";
 import { SyncSeen } from "./monitor/server-monitor.ts";
 
@@ -51,6 +53,8 @@ export interface AppDeps {
   barcodeSource?: BarcodeSource | null;
   /** 对象存储（默认按配置；none 是 null）。测试里传内存实现 */
   objectStore?: ObjectStore | null;
+  /** 商品图候选下载（默认 lookup/images.ts 的 fetchImage + 默认安全策略）。测试里换成带放行策略或假实现的版本 */
+  fetchImage?: (url: string) => Promise<Buffer>;
   /** 生产用：每行日志照常写 stdout，同时交给它（监控从日志里取告警、数 5xx，S10c）。测试里不用 logStream 时也可以传 */
   logTap?: (line: string) => void;
 }
@@ -63,6 +67,8 @@ export interface ResolvedDeps extends AppDeps {
   syncPageSize: number;
   barcodeSource: BarcodeSource | null;
   objectStore: ObjectStore | null;
+  /** 商品图功能真正开着：总开关开、对象存储也配了（S22d：查码候选、选图、拍照、读图、/v1/config 都看它） */
+  imagesOn: boolean;
 }
 
 declare module "fastify" {
@@ -70,6 +76,8 @@ declare module "fastify" {
     deps: ResolvedDeps;
     /** 条码查询服务（测试里看额度用） */
     catalog: CatalogService;
+    /** 商品图候选的进程内 worker（并发 1，S22d）；调度器 images 任务也用它 */
+    candidates: CandidateWorker;
     /** 每家店最近一次同步成功（S10c 营业时间无同步告警） */
     syncSeen: SyncSeen;
   }
@@ -85,7 +93,9 @@ export function buildApp(input: AppDeps): FastifyInstance {
     syncPageSize: input.syncPageSize ?? DEFAULT_PAGE_SIZE,
     barcodeSource: input.barcodeSource !== undefined ? input.barcodeSource : sourceFromConfig(input.config),
     objectStore: input.objectStore !== undefined ? input.objectStore : objectStoreFromConfig(input.config),
+    imagesOn: false,
   };
+  deps.imagesOn = deps.config.productImagesEnabled && deps.objectStore !== null;
   if (!Number.isInteger(deps.syncPageSize) || deps.syncPageSize < 1) throw new Error("syncPageSize 必须是正整数");
   const app = Fastify({
     // 前面有 Caddy 反代时打开，只信一跳、只信 Caddy 的地址（§14 S03-6、S10a，见 auth/proxy.ts）：
@@ -118,6 +128,18 @@ export function buildApp(input: AppDeps): FastifyInstance {
     }),
   );
 
+  app.decorate(
+    "candidates",
+    new CandidateWorker({
+      db: deps.db.kysely,
+      store: deps.objectStore,
+      enabled: deps.imagesOn,
+      clock: deps.clock,
+      ...(deps.fetchImage ? { fetchImage: deps.fetchImage } : {}),
+      log: { warn: (o, m) => app.log.warn(o, m), info: (o, m) => app.log.info(o, m) },
+    }),
+  );
+
   // 统一错误格式：契约 components/schemas/Error，{ code, message? }
   app.setNotFoundHandler((_req, reply) => {
     reply.code(404).send({ code: "not_found" });
@@ -146,6 +168,7 @@ export function buildApp(input: AppDeps): FastifyInstance {
   app.register(syncRoutes);
   app.register(reportRoutes);
   app.register(lookupRoutes);
+  app.register(productImageRoutes);
   return app;
 }
 

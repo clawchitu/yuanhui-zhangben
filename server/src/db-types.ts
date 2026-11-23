@@ -120,6 +120,20 @@ export interface BarcodeCatalogTable {
   fetched_at: TsDefault;
 }
 
+/** 0005（S22d）：商品图候选，全局、不分店 */
+export interface CatalogImageCandidatesTable {
+  barcode: string;
+  idx: number;
+  source_url: string;
+  state: ColumnType<"pending" | "ready" | "failed", "pending" | "ready" | "failed" | undefined, "pending" | "ready" | "failed">;
+  cid: string | null;
+  object_key: string | null;
+  attempts: Generated<number>;
+  next_try_at: TsDefault;
+  last_error: string | null;
+  fetched_at: Ts | null;
+}
+
 export type OpType =
   | "sale_batch"
   | "void"
@@ -298,6 +312,7 @@ export interface Database {
   product_barcodes: ProductBarcodesTable;
   product_aliases: ProductAliasesTable;
   barcode_catalog: BarcodeCatalogTable;
+  catalog_image_candidates: CatalogImageCandidatesTable;
   ops: OpsTable;
   sale_batches: SaleBatchesTable;
   entries: EntriesTable;

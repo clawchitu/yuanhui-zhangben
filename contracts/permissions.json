@@ -265,6 +265,90 @@
       "source": "§6.1"
     },
     {
+      "id": "GET /v1/barcode-lookup/{barcode}/images",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/barcode-lookup/{barcode}/images",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny",
+        "note": "收银员只能 quick 登记，不改商品；它登记的商品由兜底任务落第一张图，家用补全时再选或拍（§14 S22d-2）"
+      },
+      "review": {
+        "decision": "allow",
+        "note": "演示店候选恒为 none"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1、§14 S22d"
+    },
+    {
+      "id": "GET /v1/barcode-lookup/{barcode}/images/{cid}",
+      "kind": "http",
+      "method": "GET",
+      "path": "/v1/barcode-lookup/{barcode}/images/{cid}",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny",
+        "note": "收银员只能 quick 登记，不改商品；它登记的商品由兜底任务落第一张图，家用补全时再选或拍（§14 S22d-2）"
+      },
+      "review": {
+        "decision": "allow",
+        "note": "演示店没有候选，一律 404"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1、§14 S22d"
+    },
+    {
+      "id": "POST /v1/images/{product_id}/select",
+      "kind": "http",
+      "method": "POST",
+      "path": "/v1/images/{product_id}/select",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny",
+        "note": "收银员只能 quick 登记，不改商品；它登记的商品由兜底任务落第一张图，家用补全时再选或拍（§14 S22d-2）"
+      },
+      "review": {
+        "decision": "allow",
+        "note": "演示店不放用户图、不用第三方图：接口回 403（§14 S22d-3）"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1、§14 S22d"
+    },
+    {
+      "id": "PUT /v1/images/{product_id}",
+      "kind": "http",
+      "method": "PUT",
+      "path": "/v1/images/{product_id}",
+      "family": {
+        "decision": "allow"
+      },
+      "cashier": {
+        "decision": "deny",
+        "note": "收银员只能 quick 登记，不改商品；它登记的商品由兜底任务落第一张图，家用补全时再选或拍（§14 S22d-2）"
+      },
+      "review": {
+        "decision": "allow",
+        "note": "演示店不放用户图：接口回 403（§14 S22d-3）"
+      },
+      "revoked": {
+        "decision": "deny"
+      },
+      "source": "§6.1、§14 S22d"
+    },
+    {
       "id": "GET /v1/reports/today",
       "kind": "http",
       "method": "GET",
