@@ -1409,7 +1409,7 @@ S09 的 PR（#20）提了 16 条，Fable 审核裁定如下（按评论原文；
 | ~~T20~~ | ~~`deploy.sh` 跑迁移前检查最近一次备份心跳，营业时间内超过 2 小时没更新就拒绝，带一个明确的跳过开关~~ **已完成（PR #23）** | PR #22 Codex 4、Fable | S10b |
 | ~~T21~~ | ~~备份单独用一个 RAM 账号：`backups/` 只写不删，删除靠生命周期；35 天生命周期只作用于 `backups/` 前缀，`exports/`、`deletions/` 怎么过期单独定；确认两个桶没开版本控制~~ **已完成（PR #23）** | PR #22 Fable（S10a-6） | S10b |
 | T22 | S11b 探针把方案 B（包内 CA 锚点固定）一并实测，写明需要的 Info.plist 键值，不等 A 出问题再测 | PR #22 Fable（S10a-3） | S11b |
-| T23 | 换 epoch 后真手机补回：带保留 op 的测试手机恢复后拿到 `epoch_mismatch`、全量拉取、补回备份之后的流水（原 B7） | PR #23 Fable | S22b |
+| ~~T23~~ | 换 epoch 后真手机补回：带保留 op 的测试手机恢复后拿到 `epoch_mismatch`、全量拉取、补回备份之后的流水（原 B7） | PR #23 Fable | S22b（S22b 做完：`S22bLiveUITests.test8EpochChange` 本机 pg_dump → 再卖一笔 → pg_restore + 换 epoch → 手机握手、全量拉取、补回备份之后那笔，服务器不重复） |
 | T24 | 第一份备份满 36 天后看 `backup.ts status`：`lifecycle_stale` 为 false、最旧一份不超过 36 天；`exports/` 里没有超过 30 天的对象 | PR #23 Fable | 部署后第 36 天，最迟 S32 |
 | T25 | 隐私政策和注销页写明：注销后永久保留一条不含业务数据的删除记录（店的随机编号和时间）；导出包最长保留 30 天 | PR #23 Fable（S10b-4） | §10 |
 | T26 | 告警接上：`backup_failed`、`backup_lifecycle_stale`、`consecutive_failures ≥ 2`、备份被跳过（锁）、`gate-skips.log` 有新行、`restore_failed` | PR #23 Fable | S10c |

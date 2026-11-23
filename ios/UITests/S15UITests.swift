@@ -344,6 +344,8 @@ final class Walker {
     static let typedName = "遍历填的名"
     /// 只用来导航的「返回」：不当作待测入口（每次回原页都在按它）
     static let navigationOnly: Set<String> = ["返回"]
+    /// 点了就离开当前会话、回不来的入口（S22b 退出登录的确认）：遍历不点，它的排空流程由 S22bTests / S22bLiveUITests 测
+    static let terminal: Set<String> = ["logout.confirm"]
     /// 允许置灰的入口（页面 · 标识）：卖出页空篮时的「收好钱了，记账」和「抹零 / 改总价」（S16 验收：空篮置灰）
     /// 空篮时记账、改价灰；手输条码页没选中候选时「加进去」灰（§5.5，S17）
     static let allowedDisabled: Set<String> = ["page.sell · sell.commit", "page.sell · sell.discount", "page.manualCode · manual.pick"]
@@ -490,7 +492,7 @@ final class Walker {
             }
             scrollToTop()
         }
-        return keys.filter { !Self.navigationOnly.contains($0.label) }
+        return keys.filter { !Self.navigationOnly.contains($0.label) && !Self.terminal.contains($0.identifier) }
     }
 
     private func find(_ k: Key, in root: XCUIElement? = nil) -> XCUIElement {
