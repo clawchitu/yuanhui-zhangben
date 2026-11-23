@@ -163,7 +163,7 @@ extension LocalDB {
     }
 
     /// 显示用库存：基线（`product_private.stock_qty`，只由拉取更新）+ 当前店在本机的全部未确认 op 的增减
-    /// （包括同店以前的会话留在恢复队列里的；别的店的不算）。
+    /// （包括同店以前的会话留在恢复队列里的；别的店的不算）。挂在已经 remap 成这个商品的旧 id 上的增减也算进来（S22a）。
     /// 收银员手机没有基线，返回 nil（界面本来也不显示库存）。
     public func displayStock(_ productId: UUID) throws -> DisplayStock? {
         try writer.read { db in
@@ -174,7 +174,9 @@ extension LocalDB {
             let pending = try Int64.fetchOne(db, sql: """
                 SELECT COALESCE(SUM(e.qty_delta), 0) FROM outbox_effect e
                 JOIN outbox o ON o.store_id = e.store_id AND o.id = e.op_id
-                WHERE e.store_id = ? AND e.product_id = ? AND o.status = 'pending'
+                WHERE e.store_id = ?1 AND o.status = 'pending'
+                  AND (e.product_id = ?2
+                       OR e.product_id IN (SELECT old_id FROM product_remap WHERE store_id = ?1 AND new_id = ?2))
                 """, arguments: [s.storeId.uuidString, productId.uuidString]) ?? 0
             return DisplayStock(baselineQty: base, pendingDelta: pending)
         }

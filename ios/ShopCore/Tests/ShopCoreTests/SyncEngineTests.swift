@@ -124,6 +124,47 @@ final class SyncEngineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try db.writer.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM entry WHERE seq = 7") }, 1)
     }
 
+    /// PR #36 已知偏差：remap 只改了本机商品 / 条码 / 流水，outbox 里待传 op 仍挂旧商品 id。
+    /// 服务器按 product_aliases 认旧 id（server/src/sync/aliases.ts，每种带 product_id 的 op 都先解析别名），不会记错商品或拒收；
+    /// 本机显示库存把旧 id 上的待传增减并到赢家（product_remap），remap 到确认之间不少扣。待传 op 的字节原样重发。
+    func testRemapKeepsPendingDeltaOnWinnerAndResendsOriginalBytes() throws {
+        let db = try makeDB()
+        let conv = try db.registerProduct(try NewProduct(barcode: "6924743919211", name: "乐事薯片 原味 70g", priceFen: Fen(750)))
+        let old = conv.product.id
+        var b = Basket()
+        try b.add(conv); try b.add(conv)
+        try db.recordSale(b, batchId: UUID(), at: Date())
+        let pending = try db.pendingOps()
+        let saleBytes = try XCTUnwrap(pending.first { $0.type == .saleBatch }).opJSON
+        // 服务器上这个条码早被另一台登记了：赢家 W，库存基线 10。只回登记那一条的结果（卖出那批还没到）
+        let winner = UUID()
+        let priv: [String: Any] = ["stock_qty": 10, "stock_value_fen": 0, "last_cost_fen": NSNull(), "cost_known": false,
+                                   "stock_ver": 1, "low_at": NSNull(), "expiry_warn_days": 7, "shelf_life_months": NSNull(),
+                                   "last_count_at": NSNull()]
+        let w: [String: Any] = ["id": winner.uuidString.lowercased(), "name": "乐事薯片", "base_unit": "包", "price_fen": 800,
+                                "needs_review": false, "track_expiry": false, "image_ver": 0, "archived": false, "rev": 2, "private": priv]
+        var obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: try response(ops: [], products: [w])) as? [String: Any])
+        obj["results"] = [["id": pending[0].id.uuidString.lowercased(), "status": "applied",
+                           "remap": [old.uuidString.lowercased(): winner.uuidString.lowercased()]]]
+        let r = try SyncResponse.decode(try JSONSerialization.data(withJSONObject: obj))
+        try db.applySyncResponse(r, sent: nil)
+        XCTAssertEqual(try db.lookup(barcode: "6924743919211")?.product.id, winner, "本机条码改到赢家")
+        XCTAssertEqual(try db.displayStock(winner), DisplayStock(baselineQty: 10, pendingDelta: -2), "旧 id 上待传的两件算在赢家上")
+        let still = try XCTUnwrap(try db.pendingOps().first { $0.type == .saleBatch })
+        XCTAssertEqual(still.opJSON, saleBytes, "待传 op 原样重发（服务器按别名改写到赢家并回 remap）")
+        // 连锁 remap：赢家后来又成了别名，旧 id 的增减跟着走
+        let w2 = UUID()
+        var w2p = w; w2p["id"] = w2.uuidString.lowercased()
+        var obj2 = try XCTUnwrap(try JSONSerialization.jsonObject(with: try response(ops: [], products: [w2p])) as? [String: Any])
+        obj2["results"] = [["id": UUID().uuidString.lowercased(), "status": "applied",
+                            "remap": [winner.uuidString.lowercased(): w2.uuidString.lowercased()]]]
+        try db.applySyncResponse(try SyncResponse.decode(try JSONSerialization.data(withJSONObject: obj2)), sent: nil)
+        XCTAssertEqual(try db.displayStock(w2)?.pendingDelta, -2)
+        // 卖出确认后增减消失，以服务器基线为准
+        try db.applySyncResponse(try SyncResponse.decode(try response(ops: [["id": still.id.uuidString.lowercased()]])), sent: nil)
+        XCTAssertEqual(try db.displayStock(w2)?.pendingDelta, 0)
+    }
+
     func testOverdueAfterOneDay() throws {
         let db = try makeDB()
         _ = try sell(db)

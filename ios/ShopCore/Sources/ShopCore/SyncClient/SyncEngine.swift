@@ -158,7 +158,9 @@ public struct SyncStatus: Equatable, Sendable {
     /// 「超过一天没传」（§4.2：outbox 里有超过 24 小时的 → 首页提醒条 25a）
     public func overdue(now: Date) -> Bool {
         guard let o = oldestPendingAt else { return false }
-        return now.timeIntervalSince(o) > 24 * 3600
+        // 用日历加一天比较（ShopCore 不出现浮点，NoFloatTests）
+        guard let limit = Calendar(identifier: .gregorian).date(byAdding: .day, value: 1, to: o) else { return false }
+        return now > limit
     }
 }
 
@@ -244,19 +246,35 @@ extension LocalDB {
                     WHERE store_id = ? AND id = ? AND status = 'pending'
                     """, arguments: [st.rawValue, res.code, raw, ts, store.uuidString, res.id.uuidString])
             }
-            // 2. remap：投影里对旧商品 id 的引用改成赢家（outbox 的字节不可改，服务器按别名认）
+            // 2. remap：投影里对旧商品 id 的引用改成赢家；outbox 的字节和增减不可改（服务器按 product_aliases 认旧 id），
+            //    本机记进 product_remap，显示库存时把旧 id 上的待传增减并到赢家
             for res in r.results {
                 for (o, n) in res.remap ?? [:] {
                     guard let ou = UUID(uuidString: o), let nu = UUID(uuidString: n) else { continue }
                     let old = ou.uuidString, new = nu.uuidString
+                    // 记下别名（连锁的旧别名一并指到新赢家），待传 op 的增减按它并到赢家（product_remap）
+                    try db.execute(sql: "UPDATE product_remap SET new_id = ? WHERE store_id = ? AND new_id = ?",
+                                   arguments: [new, store.uuidString, old])
+                    try db.execute(sql: """
+                        INSERT INTO product_remap (store_id, old_id, new_id) VALUES (?, ?, ?)
+                        ON CONFLICT(store_id, old_id) DO UPDATE SET new_id = excluded.new_id
+                        """, arguments: [store.uuidString, old, new])
+                    // 赢家可能还没拉到本机（本响应的 changes 在后面才写，或商品流还没拉到它）：先把旧商品行改名成赢家，
+                    // 再改各处引用；外键检查推迟到提交时（否则改条码时赢家行还不存在就违反外键）
+                    try db.execute(sql: "PRAGMA defer_foreign_keys = ON")
+                    let winner = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM product WHERE id = ?)", arguments: [new]) ?? false
+                    if !winner {
+                        try db.execute(sql: "UPDATE OR IGNORE product SET id = ? WHERE id = ?", arguments: [new, old])
+                        if s.holdsPrivateData {
+                            try db.execute(sql: "UPDATE OR IGNORE product_private SET product_id = ? WHERE product_id = ?", arguments: [new, old])
+                        }
+                    }
                     try db.execute(sql: "UPDATE OR REPLACE barcode SET product_id = ? WHERE product_id = ?", arguments: [new, old])
                     try db.execute(sql: "UPDATE entry SET product_id = ? WHERE product_id = ?", arguments: [new, old])
                     if s.holdsPrivateData {
                         try db.execute(sql: "UPDATE lot SET product_id = ? WHERE product_id = ?", arguments: [new, old])
                     }
-                    let winner = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM product WHERE id = ?)", arguments: [new]) ?? false
-                    if winner { try db.execute(sql: "DELETE FROM product WHERE id = ?", arguments: [old]) }
-                    else { try db.execute(sql: "UPDATE OR IGNORE product SET id = ? WHERE id = ?", arguments: [new, old]) }
+                    try db.execute(sql: "DELETE FROM product WHERE id = ?", arguments: [old])
                 }
             }
             // 3. 变更

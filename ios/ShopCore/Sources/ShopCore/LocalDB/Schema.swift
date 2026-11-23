@@ -178,6 +178,19 @@ enum LocalSchema {
                 CREATE TABLE device_label (device_id TEXT PRIMARY KEY, label TEXT NOT NULL);
                 """)
         }
+        // S22a：本机记下的商品别名（§4.2 remap）。outbox 和 outbox_effect 的内容不可改（op 原样重发，服务器按别名认），
+        // 待传 op 的增减仍挂在旧商品 id 上；显示库存时把旧 id 的增减并到赢家上，否则 remap 到确认之间赢家少算这几笔。
+        m.registerMigration("v3-sync") { db in
+            try db.execute(sql: """
+                CREATE TABLE product_remap (
+                  store_id TEXT NOT NULL,
+                  old_id   TEXT NOT NULL,
+                  new_id   TEXT NOT NULL,
+                  PRIMARY KEY (store_id, old_id)
+                );
+                CREATE INDEX product_remap_new ON product_remap(store_id, new_id);
+                """)
+        }
         return m
     }
 

@@ -88,6 +88,38 @@ describe("Codex P2：卖出名称快照", () => {
     await app.close();
   });
 
+  it("S22a：手机拿到 remap 后，outbox 里还挂旧 id 的进货、卖出、盘点原样补传 → 库存全记在赢家上、不拒收；重发仍得同一个 remap", async () => {
+    const { shop, app, boss, send, sendAs } = await setup();
+    const other = await login(app, shop.username);
+    const code = newBarcode();
+    const a = upsertFull({ barcode: code, name: "赢家" });
+    const b = upsertFull({ barcode: code, name: "后到" });
+    await send(a);
+    const winner = a.payload.product_id as string;
+    const alias = b.payload.product_id as string;
+    expect(await sendAs(other.token, b)).toEqual([{ id: b.id, status: "applied", remap: { [alias]: winner } }]);
+    const si = op("stock_in", { entry_id: randomUUID(), product_id: alias, barcode: code, pack_qty: 1, pack_count: 5, unit_cost_fen: 100 }, { at: AT });
+    const s = saleOp([{ ...saleLine(alias), barcode: code, pack_count: 2 }]);
+    const remap = { [alias]: winner };
+    expect(await sendAs(other.token, si, s)).toEqual([
+      { id: si.id, status: "applied", remap },
+      { id: s.id, status: "applied", remap },
+    ]);
+    const stockOf = async (id: string) =>
+      (await tdb.kysely.selectFrom("products").select("stock_qty").where("store_id", "=", shop.storeId).where("id", "=", id).executeTakeFirst())?.stock_qty;
+    expect(Number(await stockOf(winner))).toBe(3);
+    expect(await stockOf(alias)).toBeUndefined();
+    expect((await entriesOf(shop.storeId, alias)).length).toBe(0);
+    // 响应丢了，同一批重发：结果原样（带 remap 和 replayed），库存不再变
+    expect(await sendAs(other.token, si, s)).toEqual([
+      { id: si.id, status: "applied", remap, replayed: true },
+      { id: s.id, status: "applied", remap, replayed: true },
+    ]);
+    expect(Number(await stockOf(winner))).toBe(3);
+    void boss;
+    await app.close();
+  });
+
   it("离线旧名卖出、商品已改名后补传 → 流水存旧名；撤销的冲销行保留原快照", async () => {
     const { shop, app, send, newProduct } = await setup();
     const pid = await newProduct("旧名称");
