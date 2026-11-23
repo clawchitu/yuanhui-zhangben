@@ -305,6 +305,8 @@ final class CameraController {
     private let runner: CameraRunning?
     /// 认出的码（通常接 `ScanHub.receive(_:from: .camera)`）
     var onCode: ((String) -> Void)?
+    /// 相机（重新）开起来时（暂停后恢复、回前台、页面重新出现）：接 `ScanHub.cameraResumed`，不重放上一次处理过的码
+    var onResume: (() -> Void)?
     private(set) var running = false
     private var visible = false
     private var sceneActive = false
@@ -331,7 +333,7 @@ final class CameraController {
         let want = visible && sceneActive && !paused && permission.access == .authorized && runner != nil
         guard want != running else { return }
         running = want
-        if want { runner?.start() } else { runner?.stop() }
+        if want { onResume?(); runner?.start() } else { runner?.stop() }
     }
 
     private func receive(_ code: String) {

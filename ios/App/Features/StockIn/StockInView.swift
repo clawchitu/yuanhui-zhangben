@@ -103,8 +103,6 @@ struct StockInView: View {
             model.accepting = !covered
         }
         .onChange(of: covered) { _, c in model.accepting = !c }
-        // 相机停过再开：上一次处理过的码还在镜头里的话不重放（PR #40 Codex 必须修 2）
-        .onChange(of: covered || cameraCollapsed) { _, paused in if !paused { hub.cameraResumed() } }
         .onDisappear { if torchOn { _ = Torch.set(false); torchOn = false } }
         .task { await feedFixture() }
         .task(id: model.noticeSeq) { await autoDismissNotice() }

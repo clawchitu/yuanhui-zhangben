@@ -271,14 +271,31 @@ final class ScanHubTests: XCTestCase {
         XCTAssertEqual(scans.map(\.code), [a, b, a])
     }
 
-    /// 2（续）：再开相机后一直没看见 A（已经拿走了）：过了宽限就不挡，下次对上 A 照常算
-    func testResumeHoldExpiresWhenTheCodeNeverShowsUp() {
-        let hub = makeHub()
-        let a = "6921168509256"
+    /// 2（复审）：相机首个回调晚到（> 2.5 秒）也不重放 A；看到别的码才解除，A 同在画面里也不重复算
+    func testResumeHoldDoesNotExpireByTimeAndReleasesOnAnotherCode() {
+        let hub = makeHub(known: ["6921168509256", "6901028075831"])
+        let a = "6921168509256", b = "6901028075831"
         XCTAssertEqual(hub.receive(a, from: .camera), .known)
         now += 5
         hub.cameraResumed()
-        now += CameraDeduper.defaultWindow + ScanHub.resumeGrace + 0.1
+        now += 4   // 首个识别结果 4 秒后才到
+        XCTAssertNil(hub.receive(a, from: .camera), "首回调晚到：A 仍不重放")
+        now += 0.1
+        XCTAssertEqual(hub.receive(b, from: .camera), .known, "下一件照常收")
+        now += 0.1
+        XCTAssertNil(hub.receive(a, from: .camera), "B 来了解除保护后，A 还在画面里照旧去重")
+        XCTAssertEqual(scans.map(\.code), [a, b])
+    }
+
+    /// 2（续）：再开相机后 A 一直没出现：拿开很久后第一次对上 A 先挡一下，离开满 1.5 秒再对上照常算
+    func testResumeHoldReleasesAfterTheCodeLeavesTheView() {
+        let hub = makeHub()
+        let a = "6921168509256"
+        XCTAssertEqual(hub.receive(a, from: .camera), .known)
+        hub.cameraResumed()
+        now += 10
+        XCTAssertNil(hub.receive(a, from: .camera))
+        now += CameraDeduper.defaultWindow + 0.1
         XCTAssertEqual(hub.receive(a, from: .camera), .known)
     }
 }
