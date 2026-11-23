@@ -1,6 +1,7 @@
 // GET /v1/barcode-lookup/:barcode（§7、§6.1、S08）：缓存、7 天重查、2 秒超时 2.5 秒内返回、失败不缓存、并发去重、
 // 每店每天额度、每设备每分钟限速、收银员裁剪、演示店不调外部、图片开关、AppCode 不进日志。真实 Postgres、真实 HTTP 请求。
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp, type AppDeps } from "../src/app.ts";
@@ -204,19 +205,78 @@ describe("AppCode 不进日志、业务错误不进缓存（PR #19 审核）", (
     expect(lines.join("\n")).not.toContain(APPCODE);
   });
 
-  it("真实客户端 + 合法成功形态：当商品写缓存，第二次不再调外部", async () => {
-    let calls = 0;
-    const f = (async () => {
-      calls++;
-      return Response.json({ code: "0", msg: "查询成功", data: { goodsName: "白名单矿泉水", spec: "550ml", trademark: "示例牌" } });
+  // 真实录制件（test/fixtures/kuainiao/recorded-*.json，PR #39）。Barcode 换成这次查的码（客户端核对两者相等）
+  const recorded = (code: string) => JSON.parse(readFileSync(new URL(`./fixtures/kuainiao/recorded-${code}.json`, import.meta.url), "utf8"));
+  const replay = (code: string) => {
+    const calls: string[] = [];
+    const f = (async (u: URL | string) => {
+      const q = new URL(String(u)).searchParams.get("Code")!;
+      calls.push(q);
+      const body = recorded(code);
+      return Response.json(body.Barcode ? { ...body, Barcode: q } : body);
     }) as typeof fetch;
-    const app = mk({ source: new KuainiaoClient({ appCode: "x", endpoint: "https://h.example/getBarcode", fetch: f }) });
+    return { calls, source: new KuainiaoClient({ appCode: "x", endpoint: "https://h.example/getBarcode", fetch: f }) };
+  };
+
+  it("真实客户端 + 真实「查到」（农夫山泉 4 张图）：写缓存（image_url = 第一张，image_urls 全部），第二次不再调外部；图片地址不下发", async () => {
+    const { calls, source } = replay("6921168509256");
+    const app = mk({ source, config: { productImagesEnabled: true } });
     const a = await shop(app);
     const code = newBarcode();
-    expect((await get(app, a.token, code)).json()).toMatchObject({ found: true, name: "白名单矿泉水", spec: "550ml" });
-    expect((await get(app, a.token, code)).json()).toMatchObject({ found: true, name: "白名单矿泉水" });
-    expect(calls).toBe(1);
-    expect(await tdb.kysely.selectFrom("barcode_catalog").selectAll().where("barcode", "=", code).executeTakeFirst()).toMatchObject({ found: true });
+    const r1 = await get(app, a.token, code);
+    expect(r1.json()).toEqual({ found: true, name: "农夫山泉 饮用天然水550ml", spec: "550ml", has_image: true, brand: "农夫山泉" });
+    await expectContract("BarcodeLookup", r1.json());
+    expect(r1.body).not.toContain("api-yun.cn");
+    expect((await get(app, a.token, code)).json()).toEqual(r1.json());
+    expect(calls).toEqual([code]);
+    const row = await tdb.kysely.selectFrom("barcode_catalog").selectAll().where("barcode", "=", code).executeTakeFirstOrThrow();
+    const base = "http://www.api-yun.cn/getPic/getPics/6921168509256/1795414922";
+    expect(row).toMatchObject({ found: true, name: "农夫山泉 饮用天然水550ml", spec: "550ml", brand: "农夫山泉", image_url: `${base}/cbebf251/0` });
+    expect(row.image_urls).toEqual([`${base}/cbebf251/0`, `${base}/7a70d8ef/1`, `${base}/2f30fe09/2`, `${base}/e3308091/3`]);
+    await app.close();
+  });
+
+  it("真实「查到」没有图（康师傅 Image: []）：image_url 空、image_urls 空数组、has_image false", async () => {
+    const { source } = replay("6920152400777");
+    const app = mk({ source, config: { productImagesEnabled: true } });
+    const a = await shop(app);
+    const code = newBarcode();
+    expect((await get(app, a.token, code)).json()).toMatchObject({ found: true, name: "康师傅红烧牛肉面碗装", has_image: false });
+    const row = await tdb.kysely.selectFrom("barcode_catalog").selectAll().where("barcode", "=", code).executeTakeFirstOrThrow();
+    expect(row).toMatchObject({ image_url: null, image_urls: [] });
+    await app.close();
+  });
+
+  it("真实「没查到」（status 400 + 暂无）：负缓存，7 天内不再调外部", async () => {
+    const clock = new TestClock();
+    const { calls, source } = replay("6970000000001");
+    const app = mk({ source, clock });
+    const a = await shop(app);
+    const code = newBarcode();
+    expect((await get(app, a.token, code)).json()).toEqual({ found: false });
+    expect(await tdb.kysely.selectFrom("barcode_catalog").selectAll().where("barcode", "=", code).executeTakeFirst()).toMatchObject({ found: false, image_urls: [] });
+    clock.advance(NOT_FOUND_TTL_MS - 60_000);
+    expect((await get(app, a.token, code)).json()).toEqual({ found: false });
+    expect(calls).toEqual([code]);
+    clock.advance(120_000);
+    await get(app, a.token, code);
+    expect(calls).toEqual([code, code]);
+    await app.close();
+  });
+
+  it("0004 之前写的行（image_urls 空数组、image_url 有值）照常读出：hit 带 imageUrl，has_image 不变", async () => {
+    const code = newBarcode();
+    await tdb.kysely
+      .insertInto("barcode_catalog")
+      .values({ barcode: code, found: true, name: "旧行", image_url: "https://img.example-cdn.com/old.jpg", source: "kuainiao", raw: null })
+      .execute();
+    const src = new FakeSource();
+    const app = mk({ source: src, config: { productImagesEnabled: true } });
+    const a = await shop(app);
+    expect((await get(app, a.token, code)).json()).toEqual({ found: true, name: "旧行", has_image: true });
+    expect(src.calls).toEqual([]);
+    const r = await app.catalog.lookup({ id: a.storeId, isDemo: false }, code, { warn() {} });
+    expect(r.hit).toEqual({ name: "旧行", imageUrl: "https://img.example-cdn.com/old.jpg", imageUrls: ["https://img.example-cdn.com/old.jpg"] });
     await app.close();
   });
 
@@ -225,7 +285,12 @@ describe("AppCode 不进日志、业务错误不进缓存（PR #19 审核）", (
       { code: "500", msg: "系统繁忙" },
       { code: 403, name: "QuotaExhausted" },
       { code: "1", msg: "未查询到该条码信息", data: null },
-      // 嵌套业务错误（PR #19 第二轮审核）与未知形态
+      // 以真实格式为底的业务错误（PR #39）：只有 status 400 + 「暂无」才是没查到
+      { status: "500", message: "系统繁忙", ItemName: null },
+      { status: "400", message: "次数已用完", ItemName: null, Image: null },
+      { status: "200", message: "查询失败", ItemName: "x" },
+      { status: "200", message: "查询成功！", ItemName: null },
+      // S08 手写形态（与真实格式对不上），嵌套业务错误（PR #19 第二轮审核）与未知形态
       { code: 0, data: { success: false, name: "QuotaExhausted" } },
       { code: 0, data: { status: 500, goodsName: "系统繁忙" } },
       { code: 0, data: { errCode: 403, goodsName: "x" } },

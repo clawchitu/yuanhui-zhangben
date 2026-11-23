@@ -113,6 +113,19 @@ describe("图片任务", () => {
     await app.close();
   });
 
+  it("条码库里有多张图（image_urls，PR #39）：只下第一张（= image_url）", async () => {
+    const app = mkApp();
+    const p = await productWithImage(app, { imageUrl: null });
+    const urls = [1, 2, 3].map((i) => `http://img.example-cdn.com/${p.barcode}/${i}.jpg`);
+    await writeCache(tdb.kysely, p.barcode, "kuainiao", { name: "x", imageUrl: urls[0], imageUrls: urls }, {}, new Date());
+    const d = deps({ store: new MemoryObjectStore() });
+    await runFor(d);
+    expect(d.fetched.filter((u) => u.includes(p.barcode))).toEqual([urls[0]]);
+    expect((await job(p.storeId, p.productId))?.source_url).toBe(urls[0]);
+    expect((await product(p.storeId, p.productId)).image_ver).toBe(1);
+    await app.close();
+  });
+
   it("下载失败不影响商品：商品照常在、image_ver 仍是 0；隔一段时间重试，满 3 次不再试", async () => {
     const app = mkApp();
     const p = await productWithImage(app);

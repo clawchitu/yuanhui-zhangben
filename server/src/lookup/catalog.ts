@@ -174,13 +174,23 @@ async function readCache(db: Kysely<Database>, barcode: string, now: Date): Prom
   return null; // 查不到的过了 7 天：重查
 }
 
-function hitOf(row: { name: string | null; spec: string | null; brand: string | null; image_url: string | null }): CatalogHit {
+function hitOf(row: { name: string | null; spec: string | null; brand: string | null; image_url: string | null; image_urls: string[] | null }): CatalogHit {
+  // 0004 之前写的行 image_urls 是空数组：退回 image_url 一张
+  const urls = row.image_urls?.length ? row.image_urls : row.image_url ? [row.image_url] : [];
+  const first = row.image_url ?? urls[0];
   return {
     name: row.name!,
     ...(row.spec ? { spec: row.spec } : {}),
     ...(row.brand ? { brand: row.brand } : {}),
-    ...(row.image_url ? { imageUrl: row.image_url } : {}),
+    ...(first ? { imageUrl: first, imageUrls: urls } : {}),
   };
+}
+
+/** 写进缓存的图片列表：第一张必须是 imageUrl（图片任务只下 image_url） */
+function urlsOf(hit: CatalogHit | null): string[] {
+  if (!hit?.imageUrl) return [];
+  const rest = (hit.imageUrls ?? []).filter((u) => u !== hit.imageUrl);
+  return [hit.imageUrl, ...rest];
 }
 
 /** 写缓存。已经是「查到」的行不会被「没查到」覆盖（两个进程前后脚查时） */
@@ -199,6 +209,7 @@ export async function writeCache(
     spec: hit?.spec ?? null,
     brand: hit?.brand ?? null,
     image_url: hit?.imageUrl ?? null,
+    image_urls: urlsOf(hit),
     source,
     raw: raw === undefined ? null : JSON.stringify(raw),
     fetched_at: fetchedAt,
@@ -215,6 +226,7 @@ export async function writeCache(
           spec: sql`excluded.spec`,
           brand: sql`excluded.brand`,
           image_url: sql`excluded.image_url`,
+          image_urls: sql`excluded.image_urls`,
           source: sql`excluded.source`,
           raw: sql`excluded.raw`,
           fetched_at: sql`excluded.fetched_at`,
