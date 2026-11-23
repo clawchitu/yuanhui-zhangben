@@ -140,6 +140,11 @@ export function buildApp(input: AppDeps): FastifyInstance {
     }),
   );
 
+  // 关服务时等在跑的候选转存做完（不把它掐在半截、也不在库关掉之后再查库）
+  app.addHook("onClose", async () => {
+    await app.candidates.idle();
+  });
+
   // 统一错误格式：契约 components/schemas/Error，{ code, message? }
   app.setNotFoundHandler((_req, reply) => {
     reply.code(404).send({ code: "not_found" });

@@ -81,7 +81,11 @@ export async function productImageRoutes(app: FastifyInstance): Promise<void> {
           return { old: now.image_key };
         });
       } catch (e) {
-        if (await storeGone(kysely, storeId).catch(() => false)) await dropLateObject(kysely, storeId, () => store.delete(key), log);
+        // 拿店铺锁时店已经没了（锁那边报店不存在）等：店被清除就删掉刚传的，按商品不存在回 404
+        if (await storeGone(kysely, storeId).catch(() => false)) {
+          await dropLateObject(kysely, storeId, () => store.delete(key), log);
+          return { kind: "not_found" };
+        }
         throw e;
       }
       if (out === "gone") {

@@ -8,6 +8,8 @@ import { buildApp, type AppDeps } from "../src/app.ts";
 import { KuainiaoClient, type BarcodeSource, type SourceResult } from "../src/lookup/kuainiao.ts";
 import { NOT_FOUND_TTL_MS } from "../src/lookup/catalog.ts";
 import type { Config } from "../src/config.ts";
+import { MemoryObjectStore, type ObjectStore } from "../src/lookup/oss.ts";
+import { ImageRejected } from "../src/lookup/images.ts";
 import { createTestDb, testConfig, type TestDb } from "./helpers/db.ts";
 import { TestClock, bearer, login, makeLoginShop, pair } from "./helpers/auth.ts";
 import { expectContract, newBarcode } from "./helpers/sync.ts";
@@ -32,7 +34,24 @@ beforeAll(async () => {
 });
 afterAll(() => tdb.drop());
 
-function mk(o: { source?: BarcodeSource | null; config?: Partial<Config>; clock?: TestClock; rateLimits?: AppDeps["rateLimits"]; logStream?: AppDeps["logStream"] } = {}) {
+/**
+ * 候选转存（S22d）的下载默认一律失败、可重试（network）：候选停在 pending，断言不随 worker 的进度变。
+ * 要看转存结果的用例自己传 fetchImage。对象存储默认是内存实现（图片开关开着时 imagesOn 才是 true）
+ */
+const failingFetch = async () => {
+  throw new ImageRejected("network", "测试里不下载");
+};
+function mk(
+  o: {
+    source?: BarcodeSource | null;
+    config?: Partial<Config>;
+    clock?: TestClock;
+    rateLimits?: AppDeps["rateLimits"];
+    logStream?: AppDeps["logStream"];
+    store?: ObjectStore | null;
+    fetchImage?: (url: string) => Promise<Buffer>;
+  } = {},
+) {
   return buildApp({
     config: testConfig(o.config),
     db: tdb,
@@ -40,10 +59,14 @@ function mk(o: { source?: BarcodeSource | null; config?: Partial<Config>; clock?
     logStream: o.logStream,
     clock: o.clock?.now,
     barcodeSource: o.source === undefined ? new FakeSource() : o.source,
-    objectStore: null,
+    objectStore: o.store === undefined ? new MemoryObjectStore() : o.store,
+    fetchImage: o.fetchImage ?? failingFetch,
     rateLimits: o.rateLimits,
   });
 }
+
+const NONE = { state: "none", ids: [] };
+const PENDING = { state: "pending", ids: [] };
 
 async function shop(app: FastifyInstance, o: { demo?: boolean } = {}) {
   const s = await makeLoginShop(tdb, o);
@@ -66,7 +89,7 @@ describe("缓存", () => {
     const code = newBarcode();
     const r1 = await get(app, a.token, code);
     expect(r1.statusCode).toBe(200);
-    expect(r1.json()).toEqual({ found: true, name: `商品${code}`, spec: "500ml", has_image: false, brand: "某牌" });
+    expect(r1.json()).toEqual({ found: true, name: `商品${code}`, spec: "500ml", has_image: false, brand: "某牌", image_candidates: NONE });
     await expectContract("BarcodeLookup", r1.json());
     const row = await tdb.kysely.selectFrom("barcode_catalog").selectAll().where("barcode", "=", code).executeTakeFirstOrThrow();
     expect(row).toMatchObject({ found: true, name: `商品${code}`, image_url: `https://img.example-cdn.com/${code}.jpg`, source: "kuainiao" });
@@ -93,7 +116,7 @@ describe("缓存", () => {
     expect(src.calls).toHaveLength(1);
     clock.advance(120_000);
     src.behave = async (b) => ({ kind: "found", hit: { name: `后来有了${b}` }, raw: {} });
-    expect((await get(app, a.token, code)).json()).toEqual({ found: true, name: `后来有了${code}`, has_image: false });
+    expect((await get(app, a.token, code)).json()).toEqual({ found: true, name: `后来有了${code}`, has_image: false, image_candidates: NONE });
     expect(src.calls).toHaveLength(2);
     // 查到之后永久有效
     clock.advance(365 * 86_400_000);
@@ -229,7 +252,7 @@ describe("AppCode 不进日志、业务错误不进缓存（PR #19 审核）", (
     const a = await shop(app);
     const code = newBarcode();
     const r1 = await get(app, a.token, code);
-    expect(r1.json()).toEqual({ found: true, name: "农夫山泉 饮用天然水550ml", spec: "550ml", has_image: true, brand: "农夫山泉" });
+    expect(r1.json()).toEqual({ found: true, name: "农夫山泉 饮用天然水550ml", spec: "550ml", has_image: true, brand: "农夫山泉", image_candidates: PENDING });
     await expectContract("BarcodeLookup", r1.json());
     expect(r1.body).not.toContain("api-yun.cn");
     expect((await get(app, a.token, code)).json()).toEqual(r1.json());
@@ -280,7 +303,7 @@ describe("AppCode 不进日志、业务错误不进缓存（PR #19 审核）", (
     const src = new FakeSource();
     const app = mk({ source: src, config: { productImagesEnabled: true } });
     const a = await shop(app);
-    expect((await get(app, a.token, code)).json()).toEqual({ found: true, name: "旧行", has_image: true });
+    expect((await get(app, a.token, code)).json()).toEqual({ found: true, name: "旧行", has_image: true, image_candidates: PENDING });
     expect(src.calls).toEqual([]);
     const r = await app.catalog.lookup({ id: a.storeId, isDemo: false }, code, { warn() {} });
     expect(r.hit).toEqual({ name: "旧行", imageUrl: "https://img.example-cdn.com/old.jpg", imageUrls: ["https://img.example-cdn.com/old.jpg"] });
@@ -423,10 +446,32 @@ describe("权限与裁剪", () => {
     expect(c.statusCode).toBe(200);
     expect(c.json()).toEqual({ found: true, name: `商品${code}`, spec: "500ml", has_image: true });
     const f = await get(app, a.token, code);
-    expect(f.json()).toEqual({ found: true, name: `商品${code}`, spec: "500ml", has_image: true, brand: "某牌" });
+    expect(f.json()).toEqual({ found: true, name: `商品${code}`, spec: "500ml", has_image: true, brand: "某牌", image_candidates: PENDING });
     for (const r of [c, f]) {
       await expectContract("BarcodeLookup", r.json());
       expect(r.body).not.toContain("img.example-cdn.com");
+    }
+    await app.close();
+  });
+
+  it("S22d（S08-1 回归）：候选转存好之后，家用、收银员的响应里都搜不到第三方主机名；收银员没有 image_candidates，has_image 同口径", async () => {
+    const sharp = (await import("sharp")).default;
+    const pic = await sharp({ create: { width: 300, height: 300, channels: 3, background: "#363" } }).png().toBuffer();
+    const app = mk({ config: { productImagesEnabled: true }, fetchImage: async () => pic });
+    const a = await shop(app);
+    const cashier = await pair(app, a.token, "cashier", "小周");
+    const code = newBarcode();
+    await get(app, a.token, code);
+    await app.candidates.drain();
+    const f = await get(app, a.token, code);
+    const c = await get(app, cashier.token, code);
+    expect(f.json().image_candidates.state).toBe("ready");
+    expect(f.json().image_candidates.ids).toHaveLength(1);
+    expect(c.json()).toEqual({ found: true, name: `商品${code}`, spec: "500ml", has_image: true });
+    for (const r of [f, c]) {
+      await expectContract("BarcodeLookup", r.json());
+      expect(r.body).not.toContain("example-cdn");
+      expect(r.body).not.toMatch(/https?:/);
     }
     await app.close();
   });
@@ -457,7 +502,7 @@ describe("权限与裁剪", () => {
     const app = mk({ source: src, config: { productImagesEnabled: true } });
     const d = await shop(app, { demo: true });
     const r = await get(app, d.token, "2000000000015");
-    expect(r.json()).toEqual({ found: true, name: "演示可乐", spec: "330ml", has_image: false, brand: "演示" });
+    expect(r.json()).toEqual({ found: true, name: "演示可乐", spec: "330ml", has_image: false, brand: "演示", image_candidates: NONE });
     // 真实缓存里有的条码，演示店也不返回
     const code = newBarcode();
     const fam = await shop(app);

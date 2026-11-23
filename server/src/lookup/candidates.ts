@@ -198,6 +198,11 @@ export class CandidateWorker {
   get deps(): CandidateDeps {
     return this.d;
   }
+  /** 等正在跑的这一轮跑完（关服务时用，不再开新的一轮） */
+  async idle(): Promise<void> {
+    this.again = false;
+    if (this.running) await this.running;
+  }
   /** 唤醒：正在跑就让它跑完这轮再跑一轮；出错只记日志 */
   wake(): void {
     void this.drain();

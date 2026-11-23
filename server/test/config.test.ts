@@ -98,6 +98,7 @@ describe("GET /v1/config", () => {
       demo_login_enabled: true,
       privacy_url: "https://yuanhuishop.cn/privacy",
       support_url: "https://yuanhuishop.cn/support",
+      product_images_enabled: false,
     });
     const v = validatorFor((await loadOpenApi()).components.schemas.Config);
     expect(v(res.json()), JSON.stringify(v.errors)).toBe(true);
@@ -125,11 +126,29 @@ describe("GET /v1/config", () => {
 
   it("契约 Config.api_base 可选、只接受 https URI", async () => {
     const v = validatorFor((await loadOpenApi()).components.schemas.Config);
-    const base = { min_build: 0, demo_login_enabled: false, privacy_url: "https://yuanhuishop.cn/privacy", support_url: "https://yuanhuishop.cn/support" };
+    const base = { min_build: 0, demo_login_enabled: false, privacy_url: "https://yuanhuishop.cn/privacy", support_url: "https://yuanhuishop.cn/support", product_images_enabled: false };
     expect(v(base)).toBe(true);
     expect(v({ ...base, api_base: "https://api.yuanhuishop.cn" })).toBe(true);
     expect(v({ ...base, api_base: "http://47.117.184.253" })).toBe(false);
     expect(v({ ...base, api_base: "" })).toBe(false);
+  });
+
+  it("product_images_enabled（T11、S22d）：总开关开且配了对象存储才是 true；关着、或开着但没配对象存储都是 false；契约里必填", async () => {
+    const { MemoryObjectStore } = await import("../src/lookup/oss.ts");
+    const v = validatorFor((await loadOpenApi()).components.schemas.Config);
+    for (const [enabled, store, want] of [
+      [true, new MemoryObjectStore(), true],
+      [false, new MemoryObjectStore(), false],
+      [true, null, false],
+    ] as const) {
+      const app = buildApp({ config: testConfig({ productImagesEnabled: enabled }), db: t, logger: false, objectStore: store });
+      const res = await app.inject({ method: "GET", url: "/v1/config" });
+      await app.close();
+      expect(res.json().product_images_enabled, `${enabled} ${!!store}`).toBe(want);
+      expect(v(res.json()), JSON.stringify(v.errors)).toBe(true);
+    }
+    const { product_images_enabled: _, ...without } = { min_build: 0, demo_login_enabled: false, privacy_url: "https://yuanhuishop.cn/privacy", support_url: "https://yuanhuishop.cn/support", product_images_enabled: true };
+    expect(v(without)).toBe(false);
   });
 
   it("默认 demo_login_enabled=false", async () => {
