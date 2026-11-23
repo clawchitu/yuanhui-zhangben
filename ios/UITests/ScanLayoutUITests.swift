@@ -34,7 +34,7 @@ final class ScanLayoutUITests: XCTestCase {
         XCTFail("等不到：\(what)", file: file, line: line)
     }
 
-    /// 取景框在屏幕下半：宽约 86%、高约 22–24%（收小时 16%）、中心在 62–65%（收小时下沿不动）；两个按钮在框下、等宽、≥ 64pt、横排
+    /// 取景框在屏幕下半：宽约 86%、高约 22–24%（收小时 16%）、中心在 62–65%（收小时下沿不动）；两个按钮紧贴框下 16pt、等宽、≥ 64pt、横排
     private func assertCameraArea(_ app: XCUIApplication, compact: Bool = false, _ ctx: String,
                                   file: StaticString = #filePath, line: UInt = #line) {
         let w = app.windows.firstMatch.frame
@@ -49,12 +49,12 @@ final class ScanLayoutUITests: XCTestCase {
             XCTAssertTrue((0.62...0.65).contains(finder.midY / w.height), "\(ctx) 取景框中心 \(finder.midY / w.height)",
                           file: file, line: line)
         }
-        XCTAssertGreaterThanOrEqual(torch.minY, finder.maxY + 11, "\(ctx) 手电筒在框下", file: file, line: line)
+        XCTAssertEqual(torch.minY - finder.maxY, 16, accuracy: 1.5, "\(ctx) 手电筒紧贴框下 16pt", file: file, line: line)
         XCTAssertEqual(torch.minY, manual.minY, accuracy: 0.5, "\(ctx) 两个按钮横排", file: file, line: line)
         XCTAssertEqual(torch.width, manual.width, accuracy: 0.5, "\(ctx) 两个按钮等宽", file: file, line: line)
         XCTAssertGreaterThanOrEqual(torch.height, 64, file: file, line: line)
         XCTAssertTrue((0.39...0.43).contains(torch.width / w.width), "\(ctx) 按钮宽 \(torch.width)", file: file, line: line)
-        XCTAssertLessThanOrEqual(manual.maxY, w.maxY - 34 - 15, "\(ctx) 按钮在底部安全区上面 16pt", file: file, line: line)
+        XCTAssertLessThanOrEqual(manual.maxY, w.maxY - 34 - 15, "\(ctx) 按钮离底部安全区至少 16pt", file: file, line: line)
         XCTAssertTrue(app.buttons["sell.torch"].isHittable && app.buttons["scanner.manual"].isHittable, ctx, file: file, line: line)
     }
 

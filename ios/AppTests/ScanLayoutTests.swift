@@ -39,16 +39,19 @@ final class ScanLayoutTests: XCTestCase {
         }
     }
 
-    /// 第 2 条：两个等宽大按钮在取景框正下方，各约 40% 屏宽、高 ≥ 64pt，底边离安全区 16pt（相机区里按钮靠底）
+    /// 第 2 条：两个等宽大按钮紧贴取景框下方（间距 16pt），各约 40% 屏宽、高 ≥ 64pt；按钮底离底部安全区至少 16pt，
+    /// 框和按钮之间不留大块空白（剩的地方在按钮下面）
     func testButtonsUnderTheFinder() {
         for (name, screen, top, bottom) in Self.phones {
             let l = layout(screen, top: top, bottom: bottom)
             XCTAssertGreaterThanOrEqual(ScanLayout.buttonHeight, 64)
+            XCTAssertEqual(ScanLayout.buttonGap, 16)
             XCTAssertTrue((0.39...0.43).contains(l.buttonWidth / screen.width), "\(name) 按钮宽 \(l.buttonWidth)")
             XCTAssertEqual(l.buttonWidth * 2 + ScanLayout.buttonSpacing, l.finder.width, accuracy: 0.5, "两个按钮左右和取景框齐")
             let f = finderFrame(l, screen, bottom: bottom)
-            let buttonsTop = screen.height - bottom - ScanLayout.bottomPadding - ScanLayout.buttonHeight
-            XCTAssertGreaterThanOrEqual(buttonsTop - f.maxY, ScanLayout.buttonGap - 0.5, "\(name) 按钮在取景框下面")
+            let buttonsBottom = f.maxY + ScanLayout.buttonGap + ScanLayout.buttonHeight
+            XCTAssertLessThanOrEqual(buttonsBottom, screen.height - bottom - ScanLayout.bottomPadding + 0.5,
+                                     "\(name) 按钮底离安全区至少 16pt（\(screen.height - bottom - buttonsBottom)）")
         }
     }
 

@@ -29,7 +29,8 @@ enum Torch {
 /// 扫码页（卖出 / 进货）的取景框尺寸和相机区高度（扫码页布局方案，负责人 + Fable 定）：
 ///
 /// - 取景框宽 = 屏宽 86%（左右各 7%），高 = 屏高 23%（约 2:1）；垂直中心在屏高 64%
-/// - 手电筒、手输条码在取景框正下方横排两个等宽大按钮（左右边和取景框齐，高 64pt），离底部安全区 16pt
+/// - 手电筒、手输条码紧贴取景框下方（间距 16pt）横排两个等宽大按钮（左右边和取景框齐，高 64pt）；
+///   按钮下面剩的地方留在底部安全区上方（不再让按钮贴底，免得框和按钮之间空出一大块）
 /// - 卖出页购物篮到第 3 行、或系统辅助字号下，取景框收到屏高 16%：下沿不动，上沿下移，让出地方给上面的清单
 ///
 /// 比例按整个屏幕算（含状态栏和底部安全区），换算到页面安全区内的坐标。屏幕矮时相机区不小于放下取景框和按钮的高度。
@@ -40,12 +41,12 @@ struct ScanLayout: Equatable {
     static let finderCenterRatio: CGFloat = 0.64
     /// 相机区顶到取景框上沿
     static let topPadding: CGFloat = 12
-    /// 取景框下沿到按钮的最小间距
-    static let buttonGap: CGFloat = 12
+    /// 取景框下沿到按钮（固定，按钮紧贴框下）
+    static let buttonGap: CGFloat = 16
     static let buttonHeight: CGFloat = 64
     /// 两个按钮之间
     static let buttonSpacing: CGFloat = 12
-    /// 按钮底到底部安全区
+    /// 按钮底到底部安全区的最小留白（屏幕矮时相机区至少留这么多）
     static let bottomPadding: CGFloat = 16
 
     let finder: CGSize
@@ -124,13 +125,14 @@ struct CameraStrip: View {
     private var scanning: some View {
         VStack(spacing: 0) {
             viewfinder
-            Spacer(minLength: ScanLayout.buttonGap)
+            // 收小时取景框上沿下移、下沿不动：按钮位置也不动
+            Spacer().frame(height: ScanLayout.buttonGap)
             HStack(spacing: ScanLayout.buttonSpacing) {
                 stripButton(torchOn ? "关手电筒" : "手电筒", systemImage: torchOn ? "flashlight.on.fill" : "flashlight.off.fill",
                             id: "sell.torch", highlighted: torchOn, action: onTorch)
                 stripButton("手输条码", systemImage: "keyboard", id: "scanner.manual", highlighted: false, action: onManual)
             }
-            .padding(.bottom, ScanLayout.bottomPadding)
+            Spacer(minLength: ScanLayout.bottomPadding)
         }
         .padding(.top, ScanLayout.topPadding)
         .frame(height: layout.bandHeight)
