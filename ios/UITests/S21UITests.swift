@@ -62,9 +62,16 @@ final class S21UITests: XCTestCase {
     }
 
     private func assertSignedIn(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-        let ok = app.descendants(matching: .any)["page.onboarding"].waitForExistence(timeout: 10)
-        if !ok { print("没进 16，界面：\n\(app.debugDescription)") }
-        XCTAssertTrue(ok, "登录后应进 16", file: file, line: line)
+        // S22a 起登录后先进 29 首次同步（桩服务器没有 /v1/sync，会停在 29），商品拉完才进 16
+        let any = app.descendants(matching: .any)
+        let deadline = Date().addingTimeInterval(10)
+        var ok = false
+        while !ok, Date() < deadline {
+            ok = any["page.onboarding"].exists || any["page.firstSync"].exists
+            if !ok { RunLoop.current.run(until: Date().addingTimeInterval(0.2)) }
+        }
+        if !ok { print("没进 29 / 16，界面：\n\(app.debugDescription)") }
+        XCTAssertTrue(ok, "登录后应进 29 或 16", file: file, line: line)
         XCTAssertFalse(app.descendants(matching: .any)["page.login"].exists, file: file, line: line)
     }
 
