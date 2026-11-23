@@ -191,11 +191,25 @@ enum LocalSchema {
                 CREATE INDEX product_remap_new ON product_remap(store_id, new_id);
                 """)
         }
+        // PR #36 评审必须修 1：商品流按 rev 分页，条码可能先于它的商品到达。商品还没到的条码先放这里（不带外键），
+        // 商品到了再挂进 `barcode`；`catalogDone` 之前不让卖，这些条码也扫不到。
+        m.registerMigration("v4-sync-pending-barcode") { db in
+            try db.execute(sql: """
+                CREATE TABLE barcode_pending (
+                  barcode        TEXT PRIMARY KEY,
+                  product_id     TEXT NOT NULL,
+                  pack_qty       INTEGER NOT NULL CHECK (pack_qty >= 1),
+                  unit_name      TEXT NOT NULL,
+                  pack_price_fen INTEGER
+                );
+                CREATE INDEX barcode_pending_product ON barcode_pending(product_id);
+                """)
+        }
         return m
     }
 
     /// 投影表（清空顺序照外键）
-    static let projectionTables = ["device_label", "entry", "sale_batch", "lot", "barcode", "product_private", "product"]
+    static let projectionTables = ["device_label", "entry", "sale_batch", "lot", "barcode_pending", "barcode", "product_private", "product"]
     /// meta 里属于投影的键
     static let projectionMetaKeys = [MetaKey.catalogCursor, .ledgerCursor, .serverEpoch, .lastSyncAt, .catalogDone, .serverTimeAtSync,
                                      .deletePendingUntil]

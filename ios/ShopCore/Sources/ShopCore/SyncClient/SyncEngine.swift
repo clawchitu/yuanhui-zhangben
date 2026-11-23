@@ -274,6 +274,7 @@ extension LocalDB {
                         }
                     }
                     try db.execute(sql: "UPDATE OR REPLACE barcode SET product_id = ? WHERE product_id = ?", arguments: [new, old])
+                    try db.execute(sql: "UPDATE barcode_pending SET product_id = ? WHERE product_id = ?", arguments: [new, old])
                     try db.execute(sql: "UPDATE entry SET product_id = ? WHERE product_id = ?", arguments: [new, old])
                     if s.holdsPrivateData {
                         try db.execute(sql: "UPDATE lot SET product_id = ? WHERE product_id = ?", arguments: [new, old])
@@ -326,16 +327,24 @@ extension LocalDB {
                                      v.lowAt, v.expiryWarnDays, v.shelfLifeMonths])
             }
         }
+        // 条码：商品已在本机就直接挂；还没到（商品流按 rev 分页，条码可能先到，PR #36 评审必须修 1）先放 barcode_pending，
+        // 本函数末尾把商品已到的挂上。同一个码改指别的商品时，旧的那份一并去掉
         for b in c.barcodes {
+            let args: StatementArguments = [b.barcode, b.productId.uuidString, b.packQty, b.unitName, b.packQty > 1 ? b.packPriceFen : nil]
+            let have = try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM product WHERE id = ?)", arguments: [b.productId.uuidString]) ?? false
+            let (into, other) = have ? ("barcode", "barcode_pending") : ("barcode_pending", "barcode")
+            try db.execute(sql: "DELETE FROM \(other) WHERE barcode = ?", arguments: [b.barcode])
             try db.execute(sql: """
-                INSERT INTO barcode (barcode, product_id, pack_qty, unit_name, pack_price_fen) VALUES (?, ?, ?, ?, ?)
+                INSERT INTO \(into) (barcode, product_id, pack_qty, unit_name, pack_price_fen) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(barcode) DO UPDATE SET product_id = excluded.product_id, pack_qty = excluded.pack_qty,
                   unit_name = excluded.unit_name, pack_price_fen = excluded.pack_price_fen
-                """, arguments: [b.barcode, b.productId.uuidString, b.packQty, b.unitName, b.packQty > 1 ? b.packPriceFen : nil])
+                """, arguments: args)
         }
         for x in c.removed {
             switch x.kind {
-            case "barcode": try db.execute(sql: "DELETE FROM barcode WHERE barcode = ?", arguments: [x.rowId])
+            case "barcode":
+                try db.execute(sql: "DELETE FROM barcode WHERE barcode = ?", arguments: [x.rowId])
+                try db.execute(sql: "DELETE FROM barcode_pending WHERE barcode = ?", arguments: [x.rowId])
             case "product_alias": try db.execute(sql: "DELETE FROM product WHERE id = ?", arguments: [x.rowId.uppercased()])
             case "entry": try db.execute(sql: "DELETE FROM entry WHERE id = ?", arguments: [x.rowId.uppercased()])
             case "batch": try db.execute(sql: "DELETE FROM sale_batch WHERE id = ?", arguments: [x.rowId.uppercased()])
@@ -343,6 +352,15 @@ extension LocalDB {
             default: continue
             }
         }
+        // 先到的条码：商品已经到了的（本页或更早）挂进 barcode
+        try db.execute(sql: """
+            INSERT INTO barcode (barcode, product_id, pack_qty, unit_name, pack_price_fen)
+            SELECT barcode, product_id, pack_qty, unit_name, pack_price_fen FROM barcode_pending
+            WHERE product_id IN (SELECT id FROM product) AND true
+            ON CONFLICT(barcode) DO UPDATE SET product_id = excluded.product_id, pack_qty = excluded.pack_qty,
+              unit_name = excluded.unit_name, pack_price_fen = excluded.pack_price_fen
+            """)
+        try db.execute(sql: "DELETE FROM barcode_pending WHERE product_id IN (SELECT id FROM product)")
         // 批次头先于流水：冲突更新，不级联删已有明细；本机记的保留 op_id
         for b in c.batches {
             try db.execute(sql: """

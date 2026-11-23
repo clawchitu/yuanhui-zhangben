@@ -30,13 +30,14 @@ final class SyncEngineTests: XCTestCase, @unchecked Sendable {
     /// 假服务器的响应：每个推上来的 op 给同一个结果
     func response(ops: [[String: Any]], status: String = "applied", code: String? = nil, cursor: Int = 10,
                   products: [[String: Any]] = [], batches: [[String: Any]] = [], entries: [[String: Any]] = [],
-                  deletePending: String? = nil, moreCatalog: Bool = false) throws -> Data {
+                  deletePending: String? = nil, moreCatalog: Bool = false, barcodes: [[String: Any]] = [],
+                  moreLedger: Bool = false) throws -> Data {
         var results: [[String: Any]] = []
         for o in ops { var r: [String: Any] = ["id": o["id"]!, "status": status]; if let code { r["code"] = code }; results.append(r) }
         var obj: [String: Any] = [
             "results": deletePending == nil ? results : [],
-            "changes": ["products": products, "barcodes": [], "removed": [], "entries": entries, "batches": batches, "lots": []],
-            "cursors": ["catalog": cursor, "ledger": cursor], "has_more": ["catalog": moreCatalog, "ledger": false],
+            "changes": ["products": products, "barcodes": barcodes, "removed": [], "entries": entries, "batches": batches, "lots": []],
+            "cursors": ["catalog": cursor, "ledger": cursor], "has_more": ["catalog": moreCatalog, "ledger": moreLedger],
             "total_products": 312, "server_time": "2026-11-22T10:00:00.000Z", "epoch": epoch.uuidString.lowercased(), "min_build": 0,
             "device": ["role": "family", "label": "柜台手机", "revoked": false], "store": ["name": "元辉烟酒店"]]
         if let deletePending { obj["delete_pending_until"] = deletePending }
@@ -45,6 +46,44 @@ final class SyncEngineTests: XCTestCase, @unchecked Sendable {
 
     func ops(_ body: Data) -> [[String: Any]] {
         ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any])?["ops"] as? [[String: Any]] ?? []
+    }
+
+    func productJSON(_ id: UUID, stock: Int64? = nil, name: String = "测试商品") -> [String: Any] {
+        var p: [String: Any] = ["id": id.uuidString.lowercased(), "name": name, "base_unit": "瓶", "price_fen": 500,
+                                "needs_review": false, "track_expiry": false, "image_ver": 0, "archived": false, "rev": 3]
+        if let stock {
+            p["private"] = ["stock_qty": stock, "stock_value_fen": 0, "last_cost_fen": NSNull(), "cost_known": false,
+                            "stock_ver": 9, "low_at": NSNull(), "expiry_warn_days": 7, "shelf_life_months": NSNull()] as [String: Any]
+        }
+        return p
+    }
+
+    /// PR #36 评审必须修 1：商品流按 rev 分页，卖过货的商品 rev 大、它的条码 rev 小，条码可能先于商品到达。
+    /// 第一页 520 个条码（商品都不在本机）、第二页才是这 520 样商品：两页都要能提交、游标前进，商品到了条码就能扫。
+    func testBarcodesBeforeTheirProductsAcrossPages() throws {
+        let db = try makeDB()
+        let ids = (0..<520).map { _ in UUID() }
+        let codes = ids.enumerated().map { (i, id) -> [String: Any] in
+            ["barcode": String(format: "69990%08d", i), "product_id": id.uuidString.lowercased(), "pack_qty": 1,
+             "unit_name": "瓶", "pack_price_fen": NSNull(), "rev": i + 1]
+        }
+        let page = Box(0), codesBox = Box(codes)
+        let engine = SyncEngine(db: db, appBuild: 1) { body in
+            page.value += 1
+            if page.value == 1 { return (200, try self.response(ops: self.ops(body), cursor: 520, moreCatalog: true, barcodes: codesBox.value)) }
+            return (200, try self.response(ops: self.ops(body), cursor: 1040, products: ids.map { self.productJSON($0) }))
+        }
+        let r1 = try SyncResponse.decode(try response(ops: [], cursor: 520, moreCatalog: true, barcodes: codes))
+        try db.applySyncResponse(r1, sent: nil)
+        XCTAssertEqual(try db.meta(.catalogCursor), "520", "条码先到的一页也能提交，游标前进")
+        XCTAssertNil(try db.lookup(barcode: "6999000000000"), "商品没到之前扫不到")
+        XCTAssertNil(try db.meta(.catalogDone))
+        page.value = 1
+        try engine.sync()
+        XCTAssertEqual(try db.meta(.catalogDone), "1")
+        XCTAssertEqual(try db.meta(.catalogCursor), "1040")
+        XCTAssertEqual(try XCTUnwrap(try db.lookup(barcode: "6999000000519")).product.id, ids[519], "商品到了条码就挂上")
+        XCTAssertEqual(try db.count("barcode_pending"), 0)
     }
 
     func testBatchesSplitByBytes() throws {
