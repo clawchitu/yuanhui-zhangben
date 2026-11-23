@@ -1,0 +1,36 @@
+{
+  "status": "200",
+  "message": "查询成功！",
+  "Barcode": "6902083881405",
+  "ItemName": "娃哈哈饮用纯净水",
+  "ItemClassCode": "10000594",
+  "ItemClassName": "瓶装水",
+  "BrandName": "娃哈哈",
+  "ItemSpecification": "596毫升",
+  "ItemWidth": "22.7",
+  "ItemHeight": "6.3",
+  "ItemDepth": "6.3",
+  "codeSource": "china",
+  "FirmName": "杭州娃哈哈集团有限公司",
+  "ItemGrossWeight": "620",
+  "Batch": "",
+  "branch_code": null,
+  "FirmAddress": "浙江省杭州市清泰街160号",
+  "FirmStatus": "有效",
+  "gpc": "10000232",
+  "gpcname": "瓶装水",
+  "saledate": null,
+  "import_importers_name": null,
+  "remark": "",
+  "Source": "",
+  "Image": [
+    {
+      "Imageurl": "http://www.api-yun.cn/getPic/getPics/6902083881405/1795414922/0ddc4a93/0"
+    }
+  ],
+  "ImageStream": [
+    {
+      "Imageurl": "http://www.api-yun.cn/getPicStream/getPics/6902083881405/1795414922/0ddc4a93/0"
+    }
+  ]
+}

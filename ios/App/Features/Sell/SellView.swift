@@ -58,7 +58,7 @@ struct SellView: View {
         .navigationDestination(item: $model.registerCode) { req in
             NewProductView(db: model.db, barcode: req.code, mode: fixture.newProduct.mode ?? .sell,
                            quick: model.registration == .quick, canLinkPack: app.capabilities.canSend(.barcodeLink),
-                           lookup: StubNameLookup(offline: fixture.offline), pendingCount: model.pendingCount,
+                           lookup: app.nameLookup(offline: fixture.offline), pendingCount: model.pendingCount,
                            suggestedProduct: model.focusLine?.conversion.product, fixture: fixture.newProduct) { outcome in
                 model.finishRegistration(outcome)
                 model.refreshPending()

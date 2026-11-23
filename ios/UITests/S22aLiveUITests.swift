@@ -312,4 +312,38 @@ final class S22aLiveUITests: XCTestCase {
         wait("07a 出现另一台的三笔", timeout: 20) { cards.count >= n0 + 3 }
         print("S22A 第二台：服务器入账后 \(String(format: "%.1f", Date().timeIntervalSince(t))) 秒出现在 07a")
     }
+    /// 热修（真机同步风暴）：已登录的手机重开 App 后空闲 60 秒，`/v1/sync` 不超过 5 次（15 秒一次 + 回前台），
+    /// 整个进程只有一个同步协调器。原来每次 `App.body` 重算都新建一个协调器并马上同步，~150ms 一次停不下来
+    func test7IdleSyncRate() throws {
+        try XCTSkipIf(observer)
+        var app = launch(["-uiSyncProbe"])
+        if el(app, "page.login").waitForExistence(timeout: 8) {
+            let u = app.textFields["login.username"]; u.tap(); u.typeText(env["YH_LIVE_USER"]!)
+            let p = app.secureTextFields["login.password"]; p.tap(); p.typeText(env["YH_LIVE_PASSWORD"]!)
+            app.buttons["login.submit"].tap()
+            if el(app, "page.onboarding").waitForExistence(timeout: 120) { app.buttons["onboarding.done"].tap() }
+            XCTAssertTrue(el(app, "page.home").waitForExistence(timeout: 30))
+        }
+        app.terminate()
+        app = launch(["-uiSyncProbe"])   // 风暴出在「已有会话、重开 App」这条路上
+        XCTAssertTrue(el(app, "page.home").waitForExistence(timeout: 30))
+        wait("已同步（现在「\(syncLabel(app))」）", timeout: 60) { syncLabel(app) == "已同步" }
+        RunLoop.current.run(until: Date().addingTimeInterval(3))
+        func stats() -> (requests: Int, coordinators: Int) {
+            var out: [String: Int] = [:]
+            for part in el(app, "debug.sync").label.split(separator: ";") {
+                let kv = part.split(separator: "=", maxSplits: 1).map(String.init)
+                if kv.count == 2 { out[kv[0]] = Int(kv[1]) }
+            }
+            return (out["requests"] ?? -1, out["coordinators"] ?? -1)
+        }
+        let before = stats()
+        RunLoop.current.run(until: Date().addingTimeInterval(60))
+        let after = stats()
+        print("S22A 空闲 60 秒同步请求 \(after.requests - before.requests) 次，协调器 \(after.coordinators) 个")
+        XCTAssertGreaterThanOrEqual(before.requests, 1, "探针读到了数")
+        XCTAssertLessThanOrEqual(after.requests - before.requests, 5, "空闲 60 秒内同步请求 ≤ 5")
+        XCTAssertEqual(after.coordinators, 1, "整个进程只有一个同步协调器")
+    }
+
 }

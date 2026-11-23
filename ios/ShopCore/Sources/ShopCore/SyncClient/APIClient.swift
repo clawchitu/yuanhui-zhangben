@@ -33,6 +33,19 @@ public struct SessionGrant: Decodable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey { case token, epoch, role, store, label, deletePendingUntil = "delete_pending_until" }
 }
 
+/// `GET /v1/barcode-lookup/:barcode`（契约 components/schemas/BarcodeLookup）。收银员只有 found、name、spec、has_image
+public struct BarcodeLookupResult: Decodable, Equatable, Sendable {
+    public let found: Bool
+    public let name: String?
+    public let spec: String?
+    public let brand: String?
+    public let hasImage: Bool?
+    enum CodingKeys: String, CodingKey { case found, name, spec, brand, hasImage = "has_image" }
+    public init(found: Bool, name: String? = nil, spec: String? = nil, brand: String? = nil, hasImage: Bool? = nil) {
+        self.found = found; self.name = name; self.spec = spec; self.brand = brand; self.hasImage = hasImage
+    }
+}
+
 /// 服务器的错误响应（契约 components/schemas/Error），或者连不上
 public enum APIError: Error, Equatable, Sendable {
     case server(status: Int, code: String, lockedUntil: Date?, retryAfterS: Int?)
@@ -107,6 +120,18 @@ public final class APIClient: Sendable {
 
     struct Label: Decodable { let label: String }
 
+    /// 条码查询只认这些字符（契约 Barcode：1–64 个可见 ASCII，服务器按 `^[0-9A-Za-z._-]+$` 校验）
+    public static func isLookupBarcode(_ code: String) -> Bool {
+        (1...64).contains(code.count) && code.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) }
+    }
+
+    /// `GET /v1/barcode-lookup/:barcode`（真机热修：S21 起就该接，之前一直是桩）。服务器先查自家缓存、没有再调快鸟（2 秒超时），
+    /// 所以这里 5 秒就不等了：超时按连不上处理，界面让人手填。码不合法直接当没查到，不发请求
+    public func barcodeLookup(_ code: String, token: String) async throws -> BarcodeLookupResult {
+        guard Self.isLookupBarcode(code) else { return BarcodeLookupResult(found: false) }
+        return try await send("GET", "/v1/barcode-lookup/\(code)", body: nil as [String: String]?, token: token, timeout: 5)
+    }
+
     /// `PATCH /v1/devices/me`（§14 S15-2）。返回服务器定下的名字（重名会加序号）
     public func renameDevice(_ label: String, token: String) async throws -> String {
         let r: Label = try await send("PATCH", "/v1/devices/me", body: ["label": label], token: token)
@@ -141,17 +166,18 @@ public final class APIClient: Sendable {
 
     /// `fallback`：下发地址连不上时是否退回默认地址重发一次。一次性的写请求（兑码）传 false
     func send<B: Encodable, T: Decodable>(_ method: String, _ path: String, body: B?, token: String?,
-                                          fallback: Bool = true) async throws -> T {
+                                          fallback: Bool = true, timeout: TimeInterval = 15) async throws -> T {
         let primary = bases.current
         do {
-            return try await sendOnce(method, base: primary, path, body: body, token: token)
+            return try await sendOnce(method, base: primary, path, body: body, token: token, timeout: timeout)
         } catch APIError.transport where fallback && primary != bases.defaultBase {
-            return try await sendOnce(method, base: bases.defaultBase, path, body: body, token: token)
+            return try await sendOnce(method, base: bases.defaultBase, path, body: body, token: token, timeout: timeout)
         }
     }
 
-    func sendOnce<B: Encodable, T: Decodable>(_ method: String, base: URL, _ path: String, body: B?, token: String?) async throws -> T {
-        var req = URLRequest(url: APIBase.url(base, path: path), timeoutInterval: 15)
+    func sendOnce<B: Encodable, T: Decodable>(_ method: String, base: URL, _ path: String, body: B?, token: String?,
+                                              timeout: TimeInterval = 15) async throws -> T {
+        var req = URLRequest(url: APIBase.url(base, path: path), timeoutInterval: timeout)
         req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {

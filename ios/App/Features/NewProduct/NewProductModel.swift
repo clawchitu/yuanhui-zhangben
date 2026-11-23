@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import ShopCore
 
-// MARK: - 查名称（协议 + 桩；真实网络在 S21 接 `GET /v1/barcode-lookup/:code`）
+// MARK: - 查名称（协议 + 桩 + 真实网络 `GET /v1/barcode-lookup/:code`）
 
 enum NameLookupResult: Equatable, Sendable {
     /// 查到了：名称，可能还有规格里的单位（「包」）
@@ -32,6 +32,51 @@ struct StubNameLookup: ProductNameLookup {
         if offline { return .offline }
         guard let (name, unit) = Self.demo[barcode] else { return .notFound }
         return .found(name: name, unit: unit)
+    }
+}
+
+/// 真实查码（真机热修：原来进货、卖出两页都写死用桩，正式包永远「没查到」、服务器一次查码请求都没收到）。
+/// 扫到本机没有的码进 04a 时调一次服务器；查到预填名称（带上规格，名称里已经有就不重复），查不到 / 出错让人手填，
+/// 连不上（含 5 秒超时）显示 25e「没网」也照样能登记。同一个码查过（查到或明确没查到）就记在本进程里，不再发请求
+/// （服务器那边查到的永久缓存、没查到的缓存 7 天，同一码也不会再扣快鸟的次数）。
+struct ServerNameLookup: ProductNameLookup {
+    let api: APIClient
+    let tokens: TokenStore
+    let tokenRef: String
+    var memo: NameLookupMemo = .shared
+
+    func lookup(_ barcode: String) async -> NameLookupResult {
+        if let hit = await memo.get(barcode) { return hit }
+        guard let token = try? tokens.token(ref: tokenRef) else { return .notFound }
+        let r: NameLookupResult
+        do {
+            r = Self.result(try await api.barcodeLookup(barcode, token: token))
+        } catch APIError.transport {
+            return .offline
+        } catch {
+            return .notFound   // 429（额度、限速）、服务器错：不记，下次进来再查
+        }
+        await memo.put(barcode, r)
+        return r
+    }
+
+    /// 服务器结果 → 预填：名称 + 规格（名称里已经含规格就不再拼）；单位不从规格猜（「550ml」「20支」不是卖的单位）
+    static func result(_ b: BarcodeLookupResult) -> NameLookupResult {
+        guard b.found, let name = b.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return .notFound }
+        let spec = b.spec?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let full = spec.isEmpty || name.contains(spec) ? name : "\(name) \(spec)"
+        return .found(name: full, unit: nil)
+    }
+}
+
+/// 本进程里查过的码（只记查到和明确没查到；没网、出错不记）
+actor NameLookupMemo {
+    static let shared = NameLookupMemo()
+    private var items: [String: NameLookupResult] = [:]
+    func get(_ code: String) -> NameLookupResult? { items[code] }
+    func put(_ code: String, _ r: NameLookupResult) {
+        if items.count > 500 { items.removeAll() }
+        items[code] = r
     }
 }
 

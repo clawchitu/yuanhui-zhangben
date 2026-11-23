@@ -1,0 +1,36 @@
+{
+  "status": "200",
+  "message": "查询成功！",
+  "Barcode": "6901028075831",
+  "ItemName": "红双喜（硬8mg）",
+  "ItemClassCode": "50211502",
+  "ItemClassName": "香烟",
+  "BrandName": "红双喜",
+  "ItemSpecification": "20支",
+  "ItemWidth": "",
+  "ItemHeight": "",
+  "ItemDepth": "",
+  "codeSource": "china",
+  "FirmName": "上海烟草集团有限责任公司",
+  "ItemGrossWeight": "",
+  "Batch": "",
+  "branch_code": null,
+  "FirmAddress": "上海市长阳路717号",
+  "FirmStatus": "有效",
+  "gpc": "10000185",
+  "gpcname": "香烟",
+  "saledate": null,
+  "import_importers_name": null,
+  "remark": "",
+  "Source": "",
+  "Image": [
+    {
+      "Imageurl": "http://www.api-yun.cn/getPic/getPics/6901028075831/1795414922/792b1c17/0"
+    }
+  ],
+  "ImageStream": [
+    {
+      "Imageurl": "http://www.api-yun.cn/getPicStream/getPics/6901028075831/1795414922/792b1c17/0"
+    }
+  ]
+}

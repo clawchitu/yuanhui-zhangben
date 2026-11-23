@@ -3,14 +3,35 @@ import SwiftUI
 
 @main
 struct YuanhuiZhangbenApp: App {
+    /// 启动时建一次（热修：同步风暴）。不能放进 `AppRoot.init`：`WindowGroup { AppRoot() }` 在 `App.body` 里，
+    /// `App.body` 每重算一次就再调一次 `AppRoot.init`；而 `@State(initialValue:)` 的初值每次都会算（只是第一次之后被丢掉）。
+    /// 原来 `AppRoot.init` 里直接走 `makeBoot` → `liveModel` → `attach`：每重算一次就开一个本机库、建一个新的
+    /// `SyncCoordinator` 并马上同步一趟；建的过程中读了 `sync.status`（`applySyncStatus`），Observation 把它记成
+    /// `App.body` 的依赖 → 这趟同步改了 `status` → `App.body` 重算 → 又一个新 `SyncCoordinator` → 又同步……
+    /// 已登录状态下打开 App 就停不下来（真机 ~150ms 一次 `/v1/sync`）。`App.init` 只调一次、不在任何 body 里，读什么都不会被记成依赖。
+    private let launch: AppLaunch
+
     init() {
         UIFixture.applyLaunchOverrides()
+        launch = AppLaunch.make()
     }
 
     var body: some Scene {
         WindowGroup {
-            AppRoot()
+            AppRoot(launch: launch)
         }
+    }
+}
+
+/// 进程启动时建一次的东西：网络服务和首屏（见 `YuanhuiZhangbenApp.launch`）。`AppRoot.init` 只拿它的值，不建任何东西
+@MainActor
+struct AppLaunch {
+    let services: AppServices?
+    let boot: AppRoot.Boot
+
+    static func make(args: [String] = ProcessInfo.processInfo.arguments) -> AppLaunch {
+        let services = AppRoot.needsServices(args) ? AppServices.make(args: args) : nil
+        return AppLaunch(services: services, boot: AppRoot.makeBoot(args, services: services))
     }
 }
 
@@ -52,10 +73,10 @@ struct AppRoot: View {
     /// 钥匙串读不出来时点过几次「再试一次」（PR #35 Fable 可选 1：试过还不行给「重新登录」出口）
     @State private var tokenAttempts = 0
 
-    init(args: [String] = ProcessInfo.processInfo.arguments) {
-        let services = AppRoot.needsServices(args) ? AppServices.make(args: args) : nil
-        _services = State(initialValue: services)
-        _boot = State(initialValue: AppRoot.makeBoot(args, services: services))
+    /// 只接 `AppLaunch` 建好的值：本 init 会随 `App.body` 重算被反复调用，这里不许开库、建模型、建同步（热修：同步风暴）
+    init(launch: AppLaunch) {
+        _services = State(initialValue: launch.services)
+        _boot = State(initialValue: launch.boot)
     }
 
     var body: some View {
@@ -81,6 +102,9 @@ struct AppRoot: View {
                 if services?.needsUpdate == true {
                     UpdateRequiredView().transition(.opacity)
                 }
+                #if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("-uiSyncProbe") { SyncProbe() }
+                #endif
             }
         }
         .task { await services?.refreshConfig() }
@@ -335,6 +359,23 @@ struct MainView: View {
         }
     }
 }
+
+#if DEBUG
+/// 联调探针（`-uiSyncProbe`）：本进程发过几次 `/v1/sync`、建过几个同步协调器。每秒刷新，读屏标签「requests=N;coordinators=M」
+private struct SyncProbe: View {
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            let text = "requests=\(SyncStats.shared.requests);coordinators=\(SyncCoordinator.created)"
+            Text(text)
+                .font(.system(size: 1)).foregroundStyle(.clear).frame(width: 1, height: 1)
+                .accessibilityLabel(text)
+                .accessibilityIdentifier("debug.sync")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        .allowsHitTesting(false)
+    }
+}
+#endif
 
 /// 钥匙串暂时读不出来：不退出登录，解锁后再试
 private struct TokenUnavailableView: View {

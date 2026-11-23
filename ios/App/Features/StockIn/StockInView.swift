@@ -57,7 +57,7 @@ struct StockInView: View {
         .navigationDestination(item: $model.registerCode) { req in
             NewProductView(db: model.db, barcode: req.code, mode: .stock, quick: false,
                            canLinkPack: app.capabilities.canSend(.barcodeLink),
-                           lookup: StubNameLookup(offline: fixture.offline), pendingCount: model.pendingCount,
+                           lookup: app.nameLookup(offline: fixture.offline), pendingCount: model.pendingCount,
                            suggestedProduct: nil, fixture: fixture.newProduct) { outcome in
                 model.finishRegistration(outcome)
             }
