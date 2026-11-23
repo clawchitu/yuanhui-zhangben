@@ -83,14 +83,18 @@ final class AppServices {
 
     /// 登录 / 兑码 / 演示登录成功之后：令牌进钥匙串，开本地会话（新设备 id、本地新生成的店 id），记下 epoch。
     /// 登录响应里没有店 id（契约 `Session`），`storeId` 只用于本机 outbox 分组，S22a 再定是否改成服务器下发（PR 已知偏差）。
-    func establish(_ grant: SessionGrant, deviceId: UUID, db: LocalDB) throws -> LocalSession {
+    /// S22b：开会话（清投影、压缩）不在主线程做（PR #9 约束），放到后台任务里等它。
+    func establish(_ grant: SessionGrant, deviceId: UUID, db: LocalDB) async throws -> LocalSession {
         let ref = TokenRef.forDevice(deviceId)
         try tokens.save(grant.token, ref: ref)
         let s = try LocalSession(deviceId: deviceId, storeId: UUID(), role: grant.role, tokenRef: ref,
                                  storeName: grant.store.name, deviceLabel: grant.label)
         do {
-            try db.beginSession(s)
-            try db.setMeta(.serverEpoch, grant.epoch)
+            let epoch = grant.epoch
+            try await Task.detached(priority: .userInitiated) {
+                try db.beginSession(s)
+                try db.setMeta(.serverEpoch, epoch)
+            }.value
         } catch {
             tokens.delete(ref: ref)
             throw error

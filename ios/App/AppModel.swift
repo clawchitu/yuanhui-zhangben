@@ -28,6 +28,8 @@ struct HomeFigures: Equatable, Sendable {
     var scannerConnected: Bool?
     /// 手机时钟和服务器差了几分钟（超过 5 分钟才有值，T5 的提醒条）
     var clockSkewMinutes: Int?
+    /// S22b：服务器拒收、还没点「知道了」的笔数（「N 笔没记上」提醒条；拒收的不再重试）
+    var rejectedCount = 0
 
     /// 设计稿 01 / 02 / 21a 上的数
     static let design = HomeFigures(pendingCount: 0, staleUnsyncedCount: 0, expiringCount: 3,
@@ -52,6 +54,8 @@ extension HomeFigures.LastRecord {
 /// 首页提醒条（25a）。规则：「没同步」在「快过期」上面。
 enum HomeReminder: Hashable, Sendable {
     case unsynced(Int)
+    /// S22b：服务器拒收的笔数（不再重试），点「知道了」收起
+    case rejected(Int)
     case expiring(Int)
     /// 手机时间不准（T5）：差了几分钟
     case clockOff(Int)
@@ -59,6 +63,7 @@ enum HomeReminder: Hashable, Sendable {
     /// 要显示哪些提醒、按什么顺序。快过期只给有「处理快过期」能力的手机（收银员没有黄条，S27）
     static func list(_ f: HomeFigures, capabilities: Capabilities) -> [HomeReminder] {
         var r: [HomeReminder] = []
+        if f.rejectedCount > 0 { r.append(.rejected(f.rejectedCount)) }
         if f.staleUnsyncedCount > 0 { r.append(.unsynced(f.staleUnsyncedCount)) }
         if let m = f.clockSkewMinutes { r.append(.clockOff(m)) }
         if f.expiringCount > 0, capabilities.has(.expiry) { r.append(.expiring(f.expiringCount)) }
@@ -170,6 +175,7 @@ final class AppModel {
         guard let st = sync?.status else { return }
         figures.pendingCount = st.pendingCount
         figures.staleUnsyncedCount = st.overdueCount
+        figures.rejectedCount = (try? db.rejectedUnseenCount()) ?? 0
         if let off = clockOffset, abs(off) >= Self.clockSkewThreshold {
             figures.clockSkewMinutes = Int((abs(off) / 60).rounded())
         } else {
@@ -249,5 +255,55 @@ final class AppModel {
             }
             return
         }
+    }
+
+    // MARK: - S22b 没记上、退出登录
+
+    /// 「N 笔没记上」点「知道了」
+    func acknowledgeRejected() {
+        try? db.acknowledgeRejected()
+        figures.rejectedCount = (try? db.rejectedUnseenCount()) ?? 0
+    }
+
+    enum LogoutOutcome: Equatable {
+        /// 传完了、令牌已注销
+        case done
+        /// 没传完（没网）：这几笔进恢复队列，联网后自动补传，传完才注销旧令牌
+        case pending(Int)
+    }
+
+    /// 退出登录（§4.5）：先把 outbox 传完，再调 `logout`；传不完（没网）就推迟 `logout`，未传的进恢复队列。
+    /// 两种都结束本地会话（清投影）。开写事务、压缩都在后台线程。
+    func logout() async -> LogoutOutcome {
+        sync?.stop()
+        await sync?.idle()
+        let db = db, ref = session.tokenRef
+        if let sync {
+            sync.onSignedOut = nil
+            let engine = SyncEngine(db: db, appBuild: services?.build ?? 0, transport: sync.transportForDrain)
+            _ = await Task.detached(priority: .userInitiated) { try? engine.sync() }.value
+        }
+        let pending = (try? db.pendingOps().count) ?? 0
+        var loggedOut = false
+        if pending == 0, let services, let token = try? services.tokens.token(ref: ref) {
+            #if DEBUG
+            let offline = ProcessInfo.processInfo.arguments.contains("-uiOffline")
+            #else
+            let offline = false
+            #endif
+            if !offline, let code = try? await services.api.logout(token: token), code == 204 || code == 200 || code == 401 {
+                loggedOut = true
+            }
+        }
+        let deviceId = session.deviceId
+        let tokens = services?.tokens
+        _ = await Task.detached(priority: .userInitiated) { () -> Void in
+            try? db.endSession(logoutPending: !loggedOut)
+            if loggedOut {
+                tokens?.delete(ref: ref)
+                try? db.forgetSession(deviceId: deviceId)
+            }
+        }.value
+        return loggedOut ? .done : .pending(pending)
     }
 }

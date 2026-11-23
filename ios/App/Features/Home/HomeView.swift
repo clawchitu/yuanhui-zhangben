@@ -138,6 +138,29 @@ struct HomeView: View {
             .buttonStyle(PressDimStyle())
             .fixedSize(horizontal: false, vertical: true)  // 辅助字号下文字换行时提醒条跟着长高，不被压扁
             .accessibilityIdentifier("home.banner.unsynced")
+        case .rejected(let n):
+            // S22b：服务器拒收的（收银员越权、商品不存在……）不再重试；点进记的账能看到标「没记上」的那几张
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "exclamationmark.triangle").font(.system(size: 22, weight: .semibold))
+                Text("\(n) 笔没记上，服务器不收，不会再传了")
+                    .font(TypeScale.body.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                    .accessibilityIdentifier("home.banner.rejected.text")
+                Spacer(minLength: 0)
+                Button("知道了") { model.acknowledgeRejected() }
+                    .font(TypeScale.secondary.weight(.bold))
+                    .accessibilityIdentifier("home.banner.rejected.ok")
+            }
+            .foregroundStyle(Tokens.Palette.ink)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .frame(minHeight: 60)
+            .background(Tokens.Palette.tagTint, in: RoundedRectangle(cornerRadius: Tokens.Radius.banner))
+            .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.banner).strokeBorder(Tokens.Palette.ink, lineWidth: 2.5))
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("home.banner.rejected")
         case .clockOff(let m):
             // T5：手机时钟不准。快了服务器会改成收到时间；慢了分不出来，盘点后记的卖出会被当成迟到的补偿掉，只能请人校时间
             HStack(alignment: .center, spacing: 12) {

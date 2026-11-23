@@ -11,11 +11,14 @@ import ShopCore
 /// - 线程：`SyncEngine` 的方法是同步阻塞的、会开写事务和压缩（PR #9 Fable 约束：不许在主线程），所以整趟放在
 ///   `Task.detached` 里；传输用 `APIClient.sync`（带令牌、不跟重定向），在后台线程上等它回来。
 /// - 结果：每页回调一次进度（首次同步 29「194 / 312 样」），跑完把 `SyncStatus` 交回主线程给首页、设置、07a。
-/// - 被踢（revoked）、换 epoch（409）交 S22b，这里只记下、不重试。
+/// - S22b：每趟先用旧令牌传一遍恢复队列（`RecoveryRunner`，传不完不拦），再同步当前会话。换 epoch 由引擎握手处理；
+///   被踢（revoked）：引擎已记下结果、会话已退役，这里停下并通知外面进 25b / 25f（演示店重置回登录页）。
 @MainActor @Observable
 final class SyncCoordinator {
     let db: LocalDB
     private let transport: SyncEngine.Transport
+    /// 退出登录排空用：同一个传输（同一个令牌、同样的 Debug 断网模拟）
+    var transportForDrain: SyncEngine.Transport { transport }
     private let build: Int
     private(set) var status: SyncStatus?
     private(set) var progress: SyncProgress?
@@ -26,10 +29,14 @@ final class SyncCoordinator {
     private(set) var lastError: String?
     /// 网络不通（NWPathMonitor）。首页右上角显示「↑ 没网」（25e）
     private(set) var offline = false
-    /// S22b 要处理的：被踢 / 换 epoch
-    private(set) var needsS22b: SyncError?
+    /// 被踢了（会话已退役）：不再同步
+    private(set) var signedOut: SyncError?
     /// 跑完一趟（成功或失败）的回调：AppModel 据此刷新首页的数
     var onFinish: (() -> Void)?
+    /// 被踢 / 演示店重置：AppRoot 据此换到 25b / 25f 或登录页
+    var onSignedOut: (() -> Void)?
+    /// 恢复队列（以前的会话没传完的 op）：每趟同步之前先传一遍
+    var recovery: RecoveryRunner?
     /// 完成的趟数（测试看）
     private(set) var rounds = 0
 
@@ -82,6 +89,7 @@ final class SyncCoordinator {
         }
         let c = SyncCoordinator(db: db, build: services.build, transport: transport)
         c.simulatedOffline = simulatedOffline
+        c.recovery = RecoveryRunner.live(db: db, services: services, args: args)
         return c
     }
 
@@ -121,7 +129,7 @@ final class SyncCoordinator {
 
     /// 来一趟。已经在跑就记下、跑完再来一趟（写入很快连着来时不会并发两趟）
     func kick() {
-        guard needsS22b == nil else { return }
+        guard signedOut == nil else { return }
         if running { again = true; return }
         running = true
         Task { await self.loop() }
@@ -136,7 +144,7 @@ final class SyncCoordinator {
         repeat {
             again = false
             await once()
-        } while again && needsS22b == nil
+        } while again && signedOut == nil
         running = false
     }
 
@@ -145,13 +153,24 @@ final class SyncCoordinator {
         let report: @Sendable (SyncProgress) -> Void = { [weak self] p in
             Task { @MainActor in self?.apply(p) }
         }
+        let recovery = recovery
         let result = await Task.detached(priority: .utility) { () -> Result<SyncStatus, Error> in
-            Result { try engine.sync(progress: report) }
+            // 恢复队列先传（兑码成功后第一次拉取之前也是这里），没网、传不完都不拦当前会话
+            _ = recovery?.runBlocking()
+            return Result { try engine.sync(progress: report) }
         }.value
         rounds += 1
         switch result {
         case .success: lastError = nil
-        case .failure(let e as SyncError): needsS22b = e
+        case .failure(let e as SyncError):
+            signedOut = e
+            stop()
+            // 被踢：同一个旧令牌接着把剩下的补传（卖出带补传标记入账、别的待确认），然后才通知外面
+            if case .revoked = e { _ = await recovery?.run() }
+            refreshStatus()
+            onFinish?()
+            onSignedOut?()
+            return
         case .failure(let e):
             lastError = String(describing: e)
             Self.logger.notice("同步没成功：\(String(describing: e), privacy: .public)")
