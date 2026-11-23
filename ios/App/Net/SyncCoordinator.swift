@@ -167,7 +167,13 @@ final class SyncCoordinator {
         let result = await Task.detached(priority: .utility) { () -> Result<SyncStatus, Error> in
             // 恢复队列先传（兑码成功后第一次拉取之前也是这里），没网、传不完都不拦当前会话
             _ = recovery?.runBlocking()
-            return Result { try engine.sync(progress: report) }
+            let r = Result { try engine.sync(progress: report) }
+            // 当前会话刚握手换了 epoch：当趟就探旧会话、把它们保留的 op 用各自的令牌重传（PR #41 第二轮 Fable ①）
+            if engine.handshakes > 0, let recovery {
+                RecoveryRunner.requestProbe()
+                _ = recovery.runBlocking()
+            }
+            return r
         }.value
         rounds += 1
         switch result {
@@ -195,7 +201,8 @@ final class SyncCoordinator {
 
     private func apply(_ p: SyncProgress) {
         progress = p
-        if p.catalogDone { catalogDone = true }
+        // 跟本地库走：换 epoch 重建时商品流还没拉完就退回 29（PR #41 第二轮 Codex 可选）
+        catalogDone = p.catalogDone || ((try? db.meta(.catalogDone)) ?? nil) != nil
     }
 
     /// 从本地库重取同步状态（写入后不等同步也要马上看到待传笔数）

@@ -42,17 +42,20 @@ final class RecoveryRunner: @unchecked Sendable {
         precondition(!Thread.isMainThread, "恢复队列不在主线程传")
         Self.lock.lock()
         defer { Self.lock.unlock() }
-        // 每次启动第一趟顺带探一下旧会话那家店换没换 epoch（§4.6，PR #41 必须修 2），之后不再多发
+        // 启动、回前台、当前会话刚握手换了 epoch 时探一下旧会话那家店换没换 epoch（§4.6）；没探成（5xx、没网）下趟再探
         let probe = !Self.probed
         do {
             let r = try uploader.run(probeEpochs: probe)
-            Self.probed = true
+            if probe && !r.probeIncomplete { Self.probed = true }
             return r
         } catch {
             Self.logger.notice("恢复队列这趟没传完：\(String(describing: error), privacy: .public)")
             return nil
         }
     }
+
+    /// 下一趟恢复上传要探 epoch（回前台、当前会话握手之后）
+    static func requestProbe() { lock.lock(); probed = false; lock.unlock() }
 
     /// 在后台跑一趟
     func run() async -> RecoveryReport? {

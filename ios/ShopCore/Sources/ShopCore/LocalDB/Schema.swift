@@ -223,6 +223,7 @@ enum LocalSchema {
                 ALTER TABLE session ADD COLUMN epoch TEXT;
                 ALTER TABLE session ADD COLUMN logout_pending INTEGER NOT NULL DEFAULT 0;
                 ALTER TABLE session ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE session ADD COLUMN logged_out INTEGER NOT NULL DEFAULT 0;
                 """)
         }
         return m

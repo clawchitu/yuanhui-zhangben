@@ -36,7 +36,7 @@ final class MigrationTests: XCTestCase {
             try db.execute(sql: """
                 DROP TABLE effect_hold; DROP TABLE barcode_pending; DROP TABLE product_remap;
                 ALTER TABLE session DROP COLUMN epoch; ALTER TABLE session DROP COLUMN logout_pending;
-                ALTER TABLE session DROP COLUMN revoked;
+                ALTER TABLE session DROP COLUMN revoked; ALTER TABLE session DROP COLUMN logged_out;
                 DELETE FROM grdb_migrations WHERE identifier IN ('v3-sync', 'v4-sync-pending-barcode', 'v5-identity');
                 """)
         }

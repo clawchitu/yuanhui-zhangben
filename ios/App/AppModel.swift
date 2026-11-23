@@ -284,6 +284,7 @@ final class AppModel {
         await sync?.idle()
         let db = db, ref = session.tokenRef, deviceId = session.deviceId, storeId = session.storeId
         var revoked = false
+        var drainError: Error?
         if let sync {
             sync.onSignedOut = nil
             let engine = SyncEngine(db: db, appBuild: services?.build ?? 0, transport: sync.transportForDrain)
@@ -291,8 +292,10 @@ final class AppModel {
                 do { try engine.sync(); return nil } catch { return error }
             }.value
             if case .revoked? = r as? SyncError { revoked = true }
+            drainError = r
         }
         if revoked {
+            if case .revoked(true)? = drainError as? SyncError { sync?.onDiscard?() }   // 演示店重置：令牌也删
             // 会话已由引擎退役（原因 kicked_*，演示店重置则已丢弃）；剩下的用同一个旧令牌由恢复队列补传
             if let recovery = sync?.recovery { _ = await recovery.run() }
             return .kicked
@@ -309,14 +312,11 @@ final class AppModel {
                 loggedOut = true
             }
         }
-        let tokens = services?.tokens
         _ = await Task.detached(priority: .userInitiated) { () -> Void in
             try? db.endSession(logoutPending: !loggedOut)
-            // 删令牌的前提：这个会话一笔没拿到结果的都没有（再查一次，不靠上面的数）
-            if loggedOut, (try? db.pendingCount(deviceId: deviceId, storeId: storeId)) == 0 {
-                tokens?.delete(ref: ref)
-                try? db.forgetSession(deviceId: deviceId)
-            }
+            // 注销成功也不删令牌、不删会话行：14 天保留期内的 op 换 epoch 后要用它重传；
+            // 统一由恢复队列在这个会话的 op 全部清掉后删（PR #41 第二轮必须修）
+            if loggedOut { try? db.markRetiredLoggedOut(deviceId: deviceId) }
         }.value
         return loggedOut ? .done : .pending(pending)
     }

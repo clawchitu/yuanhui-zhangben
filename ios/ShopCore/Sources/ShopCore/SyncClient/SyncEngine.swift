@@ -532,6 +532,8 @@ public final class SyncEngine: @unchecked Sendable {
     let appBuild: Int
     /// 一批最多几个 op（默认 200，§4.2）。建好后、开始同步前设
     public var maxBatchOps = LocalDB.maxBatchOps
+    /// 上一趟 `sync()` 握手换了几次 epoch（调用方据此当趟补传旧会话保留的 op）
+    public private(set) var handshakes = 0
 
     public init(db: LocalDB, appBuild: Int, transport: @escaping Transport) {
         self.db = db; self.appBuild = appBuild; self.transport = transport
@@ -550,7 +552,7 @@ public final class SyncEngine: @unchecked Sendable {
         }
         var products = 0
         var lastCursors: SyncResponse.Cursors? = nil
-        var handshakes = 0
+        handshakes = 0
         for _ in 0..<maxRounds {
             let status = try db.syncStatus()
             let batch = status.deletePendingUntil == nil ? try db.nextPushBatch(maxOps: maxBatchOps) : nil

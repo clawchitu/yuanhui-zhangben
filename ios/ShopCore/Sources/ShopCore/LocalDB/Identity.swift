@@ -134,8 +134,11 @@ extension LocalDB {
     @discardableResult
     public func resetRetiredForEpoch(deviceId: UUID, _ epoch: UUID) throws -> Int {
         try writer.write { db in
-            try db.execute(sql: "UPDATE session SET epoch = ? WHERE device_id = ? AND is_current = 0",
-                           arguments: [epoch.uuidString.lowercased(), deviceId.uuidString])
+            // 主动退出时已注销过的：重传完再注销一次（恢复后的库里这台设备可能还没注销）；被踢的不用（PR #41 第二轮 Fable ②）
+            try db.execute(sql: """
+                UPDATE session SET epoch = ?, logout_pending = CASE WHEN logged_out = 1 THEN 1 ELSE logout_pending END, logged_out = 0
+                WHERE device_id = ? AND is_current = 0
+                """, arguments: [epoch.uuidString.lowercased(), deviceId.uuidString])
             try db.execute(sql: """
                 UPDATE outbox SET status = 'pending', reject_code = NULL, result_json = NULL, confirmed_at = NULL
                 WHERE status IN ('applied', 'held') AND device_id = ?
@@ -148,7 +151,7 @@ extension LocalDB {
     /// 主动退出时推迟的 logout 已经调过了（之后不再调；令牌照样留到 op 清掉）
     public func markRetiredLoggedOut(deviceId: UUID) throws {
         try writer.write { db in
-            try db.execute(sql: "UPDATE session SET logout_pending = 0, revoked = 1 WHERE device_id = ? AND is_current = 0",
+            try db.execute(sql: "UPDATE session SET logout_pending = 0, logged_out = 1 WHERE device_id = ? AND is_current = 0",
                            arguments: [deviceId.uuidString])
         }
     }
@@ -202,16 +205,8 @@ extension LocalDB {
             let s = try Self.requireSession(db)
             let oldEpoch = try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [MetaKey.serverEpoch.rawValue])
             try Self.clearProjection(db)
-            // 同一家店（旧 epoch 相同）的退役会话保留的 op 也重新标成待传、记下新 epoch，用它们自己的令牌重传（PR #41 必须修 2）
-            if let oldEpoch {
-                try db.execute(sql: """
-                    UPDATE outbox SET status = 'pending', reject_code = NULL, result_json = NULL, confirmed_at = NULL
-                    WHERE status IN ('applied', 'held')
-                      AND device_id IN (SELECT device_id FROM session WHERE is_current = 0 AND lower(epoch) = lower(?))
-                    """, arguments: [oldEpoch])
-                try db.execute(sql: "UPDATE session SET epoch = ? WHERE is_current = 0 AND lower(epoch) = lower(?)",
-                               arguments: [epoch.uuidString.lowercased(), oldEpoch])
-            }
+            // 退役会话保留的 op 不在这里重标：由恢复队列握手后当趟探测（只探钥匙串里还有令牌的会话，PR #41 第二轮 Fable ①）
+            _ = oldEpoch
             try db.execute(sql: "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                            arguments: [MetaKey.serverEpoch.rawValue, epoch.uuidString.lowercased()])
             try db.execute(sql: """

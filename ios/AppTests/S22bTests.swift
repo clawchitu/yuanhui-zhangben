@@ -36,12 +36,17 @@ final class S22bTests: XCTestCase {
         var offline = false
         /// 账号注销期间：一个都不应用、results 为空
         var deletePending = false
+        /// 设了就模拟服务器换了 epoch：请求带的不一样就 409
+        var epoch: String?
         var logouts: [String] = []
         func sync(token: String, body: Data) throws -> (Int, Data) {
             lock.lock(); defer { lock.unlock() }
             if offline { throw URLError(.notConnectedToInternet) }
             let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any] ?? [:]
             let ops = obj["ops"] as? [[String: Any]] ?? []
+            if let epoch, (obj["epoch"] as? String)?.lowercased() != epoch {
+                return (409, try JSONSerialization.data(withJSONObject: ["code": "epoch_mismatch", "epoch": epoch]))
+            }
             log.append((token, obj["pull"] as? Bool ?? true, ops.count))
             var r: [String: Any] = [
                 "results": deletePending ? [] : ops.map { ["id": $0["id"]!, "status": "applied"] },
@@ -180,6 +185,52 @@ final class S22bTests: XCTestCase {
         XCTAssertEqual(server.log.map(\.ops), [200, 1], "第二批由恢复队列用同一个旧令牌补")
         XCTAssertEqual(try db.allOutbox().filter { $0.status == .pending }.count, 0)
         XCTAssertNotNil(try tokens.token(ref: "tNow"), "保留期内的 op 还在，令牌留着")
+    }
+
+    /// `/v1/auth/logout` 一律 204
+    final class LogoutStub: URLProtocol, @unchecked Sendable {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override func startLoading() {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!,
+                                cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        override func stopLoading() {}
+    }
+
+    /// PR #41 第二轮必须修：在线退出、logout 成功（真的走 services）后，旧令牌和会话行都还在（14 天保留期的 op 要用）；
+    /// 服务器从备份恢复换了 epoch，探测后用旧令牌重传保留的 op，重传完再注销一次
+    func testOnlineLogoutKeepsTokenForEpochResend() async throws {
+        let db = try db(.family)
+        try sell(db)
+        let server = Server()
+        let tokens = MemoryTokenStore(); try tokens.save("token-old", ref: "tNow")
+        let m = AppModel(db: db, session: try XCTUnwrap(try db.currentSession()), figures: HomeFigures(), defaults: defaults)
+        let bases = try XCTUnwrap(APIBaseStore(defaultBase: "https://api.yuanhuishop.cn",
+                                               policy: APIBasePolicy(hosts: ["api.yuanhuishop.cn"]), defaults: defaults))
+        let conf = URLSessionConfiguration.ephemeral
+        conf.protocolClasses = [LogoutStub.self]
+        m.services = AppServices(api: APIClient(bases: bases, session: APIClient.makeSession(conf)), tokens: tokens, defaults: defaults, build: 1)
+        let c = coordinator(db, server, tokens: tokens)
+        m.sync = c
+        let old = m.session.deviceId
+        let out = await m.logout()
+        XCTAssertEqual(out, .done)
+        XCTAssertEqual(try tokens.token(ref: "tNow"), "token-old", "注销成功也不删令牌")
+        let retired = try XCTUnwrap(try db.retiredSession(deviceId: old), "会话行还在")
+        XCTAssertFalse(retired.logoutPending)
+        XCTAssertEqual(try db.allOutbox().map(\.status), [.applied], "保留期内的 op 还在")
+        XCTAssertThrowsError(try db.forgetSession(deviceId: old), "有保留期的 op，不许删会话")
+        // 新会话；服务器从备份恢复、换了 epoch
+        try db.beginSession(try session(.family, 2, token: "tB"))
+        server.epoch = UUID().uuidString.lowercased()
+        RecoveryRunner.requestProbe()
+        _ = await c.recovery?.run()
+        XCTAssertTrue(server.log.contains { $0.token == "token-old" && !$0.pull && $0.ops == 1 }, "用旧令牌重传保留的那笔：\(server.log)")
+        XCTAssertEqual(try db.recoveryPendingCount(), 0)
+        XCTAssertEqual(server.logouts, ["token-old"], "重传完再注销一次（恢复后的库里它可能还没注销）")
+        XCTAssertEqual(try tokens.token(ref: "tNow"), "token-old", "保留期没过，令牌还留着")
     }
 
     func testRejectedReminderAndAck() throws {

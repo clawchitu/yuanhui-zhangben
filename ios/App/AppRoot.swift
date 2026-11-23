@@ -142,6 +142,7 @@ struct AppRoot: View {
     /// 回到前台要做的事
     @MainActor private func onReturnToForeground() async {
         if case .tokenUnavailable = boot { retryBoot() }
+        RecoveryRunner.requestProbe()   // 回前台：旧会话那家店换没换 epoch 再探一次
         await services?.refreshConfig()
         await recoverSignedOut()
         if case .app(let model, _) = boot {

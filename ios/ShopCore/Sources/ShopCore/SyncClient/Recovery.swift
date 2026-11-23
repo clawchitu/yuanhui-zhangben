@@ -31,6 +31,8 @@ public struct RecoveryReport: Equatable, Sendable {
     public var discarded = false
     /// 还剩几笔没传
     public var remaining = 0
+    /// 要求探测 epoch、但有会话没探成（连不上、5xx）：下趟再探
+    public var probeIncomplete = false
     public init() {}
 }
 
@@ -55,7 +57,7 @@ public final class RecoveryUploader: Sendable {
         // 补做没做成的压缩（只跑恢复上传、没有当前会话时也要做，§3.4）；14 天到期的已确认 op 清掉（§4.6）
         do { try db.compactIfNeeded() } catch LocalDBError.compactionBusy {}
         try db.purgeConfirmed()
-        if probeEpochs { try probe() }
+        if probeEpochs { report.probeIncomplete = try !probe() }
         for g in try db.recoveryQueue() {
             try upload(g, report: &report, maxRounds: maxRounds)
         }
@@ -108,15 +110,27 @@ public final class RecoveryUploader: Sendable {
     }
 
     /// 还留着已确认 op 的旧会话：发一个空请求（只推不拉）看它那家店的 epoch，不一致就重标保留的 op
-    func probe() throws {
+    /// 返回 false = 有会话没探成（5xx 等），调用方下趟再探。连不上直接抛出（同样算没探成）
+    @discardableResult
+    func probe() throws -> Bool {
+        var complete = true
         for r in try db.retiredSessionsWithRetainedOps() {
+            // 钥匙串里没有令牌的不重标：重标了也传不上去，只会让库存多算、「N 笔没传」不归零
             guard let token = try tokens.token(ref: r.session.tokenRef) else { continue }
             let empty = PushBatch(storeId: r.session.storeId, items: [])
             let (code, data) = try send(.sync(token: token, body: LocalDB.recoveryRequestBody(empty, epoch: r.epoch, appBuild: appBuild)))
-            guard code == 409, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let e = (obj["epoch"] as? String).flatMap(UUID.init(uuidString:)) else { continue }
-            try db.resetRetiredForEpoch(deviceId: r.session.deviceId, e)
+            if code == 409, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let e = (obj["epoch"] as? String).flatMap(UUID.init(uuidString:)) {
+                try db.resetRetiredForEpoch(deviceId: r.session.deviceId, e)
+            } else if code == 200, let resp = try? SyncResponse.decode(data), resp.device.discardOutbox == true {
+                // 演示店重置：这家店的 op 和令牌都丢掉（PR #41 第二轮 Codex 可选）
+                try db.discardOutbox(storeId: r.session.storeId)
+                tokens.delete(ref: r.session.tokenRef)
+            } else if code != 200 && code != 401 {
+                complete = false
+            }
         }
+        return complete
     }
 
     /// 恢复队列清空的旧会话：推迟的 `logout` 现在调（§4.5「传完才注销」）。旧令牌和会话行留到它的 op 全部清掉

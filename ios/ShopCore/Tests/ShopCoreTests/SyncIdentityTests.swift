@@ -306,10 +306,17 @@ final class SyncIdentityTests: XCTestCase, @unchecked Sendable {
         try db.endSession(logoutPending: true)
         let logouts = Box(0)
         let sent = Box<[(String, [String])]>([])
+        let serverB = Box(false)
         let up = RecoveryUploader(db: db, tokens: tokens, appBuild: 1) { call in
             switch call {
             case .logout: logouts.value += 1; return (204, Data())
-            case .sync(let t, let req): sent.value.append((t, self.opIds(req))); return (200, try self.response(req, epoch: self.epochB))
+            case .sync(let t, let req):
+                let e = self.body(req)["epoch"] as? String
+                if sent.value.isEmpty == false || e == self.epochB.uuidString.lowercased() || e == self.epochA.uuidString.lowercased() && serverB.value == false {
+                    sent.value.append((t, self.opIds(req)))
+                    return (200, try self.response(req, epoch: serverB.value ? self.epochB : self.epochA))
+                }
+                return (409, try JSONSerialization.data(withJSONObject: ["code": "epoch_mismatch", "epoch": self.epochB.uuidString.lowercased()]))
             }
         }
         try up.run()
@@ -318,12 +325,13 @@ final class SyncIdentityTests: XCTestCase, @unchecked Sendable {
         // 新会话，同一家店（epoch 相同）
         try db.beginSession(try session(.family, device: 2, store: storeB, token: "tB"))
         try db.setMeta(.serverEpoch, epochA.uuidString)
+        serverB.value = true; sent.value = []
         try db.resetForEpoch(epochB)
-        XCTAssertEqual(try db.recoveryPendingCount(), 1, "旧会话保留的那笔重新待传")
-        try up.run()
+        XCTAssertEqual(try db.recoveryPendingCount(), 0, "握手本身不重标旧会话（只探有令牌的）")
+        try up.run(probeEpochs: true)   // 握手后当趟探测（App 里由协调器触发）
         XCTAssertEqual(sent.value.map(\.0), ["token-A"], "用旧会话自己的令牌")
         XCTAssertEqual(sent.value.first?.1, [old.uuidString.lowercased()])
-        XCTAssertEqual(logouts.value, 1, "已经注销过，不再调")
+        XCTAssertEqual(logouts.value, 2, "重传完再注销一次")
         XCTAssertEqual(try db.retiredSession(deviceId: uuid(1))?.epoch, epochB)
     }
 
@@ -366,5 +374,21 @@ final class SyncIdentityTests: XCTestCase, @unchecked Sendable {
         try up.run()
         XCTAssertNil(try tokens.token(ref: "tA"))
         XCTAssertNil(try db.retiredSession(deviceId: uuid(1)))
+    }
+
+    /// 探测遇到 5xx：这趟不算探过（App 里下趟再探）；钥匙串里没有令牌的会话不探、不重标
+    func testProbeIncompleteOn5xxAndSkipsSessionsWithoutToken() throws {
+        let db = try makeDB()
+        try sell(db)
+        try SyncEngine(db: db, appBuild: 1) { req in (200, try self.response(req, epoch: self.epochA)) }.sync()
+        try db.endSession(revoked: true)
+        let tokens = MemoryTokenStore()
+        let calls = Box(0)
+        let up = RecoveryUploader(db: db, tokens: tokens, appBuild: 1) { _ in calls.value += 1; return (503, Data()) }
+        XCTAssertFalse(try up.run(probeEpochs: true).probeIncomplete, "没有令牌：不探")
+        XCTAssertEqual(calls.value, 0)
+        try tokens.save("token-A", ref: "tA")
+        XCTAssertTrue(try up.run(probeEpochs: true).probeIncomplete)
+        XCTAssertEqual(try db.recoveryPendingCount(), 0)
     }
 }
