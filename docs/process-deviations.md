@@ -45,3 +45,7 @@
 | #3 | 只改 ios/ | 成功 | 成功 | Fable「不通过」时拒绝，改「通过」后可合并；runner 停掉再推，ios-ci 排队中时拒绝 |
 
 真正执行 `gh pr merge` 的那一步没在示例 PR 上跑（示例 PR 不合并），第一个真实 PR（S01）合并时验证。
+
+## D-S22b-1 ios-ci 时限 45 → 75 分钟（2026-11-23）
+
+PR #41 的 ios-ci 两次都在 45 分钟时被取消：`xcodebuild test` 本身全部通过（约 40 分钟，S15 遍历四条就占约 15 分钟），被砍在随后的 Release 构建检查上（Release、Beta 各约 6 分钟）。`ios.yml` 的 `timeout-minutes` 改成 75。检查内容不变。
