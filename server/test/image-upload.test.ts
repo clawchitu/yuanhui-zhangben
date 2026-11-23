@@ -127,6 +127,33 @@ describe("选图与拍照", () => {
     await app.close();
   });
 
+  it("同内容并发（PR #42 必须改 1）：两路同时 PUT 同一张、两路同时 select 同一张，都 200 同一个 image_ver，对象还在，GET 200", async () => {
+    const { app, store } = mk();
+    const s = await setup(app);
+    const photo = await jpeg("#5a5");
+    const [a, b] = await Promise.all([put(app, s.token, s.productId, photo), put(app, s.token, s.productId, photo)]);
+    expect([a.statusCode, b.statusCode, a.json(), b.json()]).toEqual([200, 200, { image_ver: 1 }, { image_ver: 1 }]);
+    const p1 = await product(s.storeId, s.productId);
+    expect(store.objects.has(p1.image_key!)).toBe(true);
+    expect((await app.inject({ method: "GET", url: `/v1/images/${s.productId}?v=1`, headers: bearer(s.token) })).statusCode).toBe(200);
+    const [c, d] = await Promise.all([select(app, s.token, s.productId, s.barcode, s.ids[0]!), select(app, s.token, s.productId, s.barcode, s.ids[0]!)]);
+    expect([c.statusCode, d.statusCode, c.json(), d.json()]).toEqual([200, 200, { image_ver: 2 }, { image_ver: 2 }]);
+    const p2 = await product(s.storeId, s.productId);
+    expect(store.objects.has(p2.image_key!)).toBe(true);
+    expect(store.objects.has(p1.image_key!)).toBe(false); // 换图后旧的照删
+    expect((await app.inject({ method: "GET", url: `/v1/images/${s.productId}?v=2`, headers: bearer(s.token) })).statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("超 1 MB 的 413 文案不说「拆批」（PR #42 Fable 可选 6）", async () => {
+    const { app } = mk();
+    const s = await setup(app);
+    const r = await put(app, s.token, s.productId, Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(1024 * 1024)]));
+    expect([r.statusCode, r.json().code]).toEqual([413, "invalid"]);
+    expect(r.json().message).not.toContain("拆");
+    await app.close();
+  });
+
   it("PUT 超 1 MB → 413；PNG、伪装成 JPEG 文件头的垃圾 → 400 invalid；带 EXIF GPS 的照片输出不含任何元数据", async () => {
     const { app, store } = mk();
     const s = await setup(app);

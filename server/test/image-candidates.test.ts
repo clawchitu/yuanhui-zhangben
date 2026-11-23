@@ -282,6 +282,44 @@ describe("清扫与开关", () => {
     expect([...store.objects.keys()].sort()).toEqual([live, newOrphan].sort());
   });
 
+  it("清扫与转存竞态（PR #42 必须改 2）：列举之后、删除之前这个键刚被写成 ready → 不删，不留悬空 ready 行", async () => {
+    const store = new MemoryObjectStore();
+    const now = new Date();
+    const code = newBarcode();
+    await tdb.kysely.insertInto("barcode_catalog").values({ barcode: code, found: true, name: "x", source: "kuainiao" }).execute();
+    const key = candidateKey(barcodeDir(code), "4".repeat(16));
+    await store.put(key, Buffer.from("jpg"), "image/jpeg");
+    store.objects.get(key)!.at = new Date(now.getTime() - 2 * ORPHAN_GRACE_MS);
+    const list = store.listWithTimes.bind(store);
+    store.listWithTimes = async (p) => {
+      const r = await list(p);
+      // 快照拿到之后，worker 重新转存了同一张并写成 ready
+      await tdb.kysely.insertInto("catalog_image_candidates").values({ barcode: code, idx: 0, source_url: "https://x/y", state: "ready", cid: "4".repeat(16), object_key: key }).execute();
+      return r;
+    };
+    expect(await sweepCandidateObjects({ db: tdb.kysely, store, enabled: true, clock: () => now })).toEqual([]);
+    expect(store.objects.has(key)).toBe(true);
+  });
+
+  it("领满 3 次还停在 pending 的遗留行（第 3 次领取后进程退出）：不再算 pending，下一轮收成 failed", async () => {
+    const app = mk();
+    const a = await shop(app);
+    const code = newBarcode();
+    await tdb.kysely.insertInto("barcode_catalog").values({ barcode: code, found: true, name: "x", source: "kuainiao" }).execute();
+    await tdb.kysely.insertInto("catalog_image_candidates").values({ barcode: code, idx: 0, source_url: "https://x/y", state: "pending", attempts: 3, next_try_at: new Date(Date.now() - 1000) }).execute();
+    expect((await poll(app, a.token, code)).json()).toEqual({ state: "none", ids: [] });
+    await app.candidates.drain();
+    expect((await rows(code)).map((r) => [r.state, r.last_error])).toEqual([["failed", "abandoned"]]);
+    await app.close();
+  });
+
+  it("开关关着时轮询一律 404，不进限速计数（PR #42 Codex 可选 1）", async () => {
+    const app = mk({ config: { productImagesEnabled: false }, rateLimits: { barcodeImages: { limit: 2, windowMs: 60_000 } } });
+    const a = await shop(app);
+    for (let i = 0; i < 4; i++) expect((await poll(app, a.token, newBarcode())).statusCode).toBe(404);
+    await app.close();
+  });
+
   it("开关关着：不插候选、不下载；lookup state=none、has_image=false；候选、缩图、选图、上传、读图全部 404；/v1/config 为 false", async () => {
     const app = mk({ config: { productImagesEnabled: false } });
     const a = await shop(app);

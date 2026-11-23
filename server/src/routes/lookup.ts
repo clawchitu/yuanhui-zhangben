@@ -69,7 +69,7 @@ export async function lookupRoutes(app: FastifyInstance): Promise<void> {
           if ((await ensureCandidates(cand, req.params.barcode, urlsOf(r.hit))) > 0) app.candidates.wake();
           view = await candidateView(cand, req.params.barcode);
         } catch (e) {
-          req.log.warn({ barcode: req.params.barcode, err: (e as Error).message }, "商品图候选登记失败");
+          req.log.warn({ barcode: req.params.barcode, code: (e as { code?: string })?.code ?? "error" }, "商品图候选登记失败");
         }
       }
       const body: Record<string, unknown> = { found: true, name: r.hit.name };
@@ -88,9 +88,10 @@ export async function lookupRoutes(app: FastifyInstance): Promise<void> {
     { schema: { params: { type: "object", required: ["barcode"], properties: { barcode: BARCODE_PARAM } } } },
     async (req, reply) => {
       const auth = authOf(req);
+      // 开关关着一律 404，不进限速计数（PR #42 Codex 可选 1）
+      if (!imagesOn) return sendError(reply, 404, "not_found");
       const wait = pollPerDevice.hit(auth.device.id, req.receivedAt.getTime());
       if (wait > 0) return sendError(reply, 429, "rate_limited", { retry_after_s: wait });
-      if (!imagesOn) return sendError(reply, 404, "not_found");
       if (auth.store.isDemo) return NONE;
       return candidateView(cand, req.params.barcode);
     },

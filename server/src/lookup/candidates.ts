@@ -72,12 +72,13 @@ export async function candidateView(d: Pick<CandidateDeps, "db" | "enabled" | "s
   if (!d.enabled || !d.store) return { state: "none", ids: [] };
   const rows = await d.db
     .selectFrom("catalog_image_candidates")
-    .select(["idx", "state", "cid"])
+    .select(["idx", "state", "cid", "attempts"])
     .where("barcode", "=", barcode)
     .orderBy("idx")
     .execute();
   const ids = rows.filter((r) => r.state === "ready" && r.cid).map((r) => r.cid!);
-  if (rows.some((r) => r.state === "pending")) return { state: "pending", ids };
+  // 领满 3 次还停在 pending 的（第 3 次领取后进程退出，PR #42 可选）不算 pending，免得手机空等；runCandidateJobs 会把它收成 failed
+  if (rows.some((r) => r.state === "pending" && r.attempts < CANDIDATE_MAX_ATTEMPTS)) return { state: "pending", ids };
   return ids.length ? { state: "ready", ids } : { state: "none", ids: [] };
 }
 
@@ -126,16 +127,22 @@ async function processCandidate(d: CandidateDeps, store: ObjectStore, c: Claimed
       return "duplicate";
     }
     const key = candidateKey(barcodeDir(c.barcode), cid);
-    await store.put(key, thumb, "image/jpeg");
     try {
-      const u = await d.db
-        .updateTable("catalog_image_candidates")
-        .set({ state: "ready", cid, object_key: key, last_error: null, fetched_at: d.clock() })
-        .where("barcode", "=", c.barcode)
-        .where("idx", "=", c.idx)
-        .where("state", "=", "pending")
-        .executeTakeFirst();
-      if (Number(u.numUpdatedRows) === 0) return "failed"; // 行被清掉了（T12 手册）：对象交给每周清扫
+      // 上传和写成 ready 在同一个按键的咨询锁里做（PR #42 必须改 2）：清扫删对象前拿同一把锁、再查一次有没有行，
+      // 两边按键串行，不会出现「刚写成 ready、对象被清扫删掉」的悬空行
+      const n = await d.db.transaction().execute(async (trx) => {
+        await lockKey(trx, key);
+        await store.put(key, thumb, "image/jpeg");
+        const u = await trx
+          .updateTable("catalog_image_candidates")
+          .set({ state: "ready", cid, object_key: key, last_error: null, fetched_at: d.clock() })
+          .where("barcode", "=", c.barcode)
+          .where("idx", "=", c.idx)
+          .where("state", "=", "pending")
+          .executeTakeFirst();
+        return Number(u.numUpdatedRows);
+      });
+      if (n === 0) return "failed"; // 行被清掉了（T12 手册）：对象交给每周清扫
     } catch (e) {
       // 同条码另一行同时转存了同样的内容（唯一索引）：这一行记重复；对象是同一个键，归那一行
       if ((e as { code?: string }).code === "23505") {
@@ -173,11 +180,28 @@ async function markFailed(d: CandidateDeps, c: Claimed, reason: string) {
     .execute();
 }
 
-/** 跑一轮：一次领一行，做完再领，最多 limit 行 */
-export async function runCandidateJobs(d: CandidateDeps, limit = 30): Promise<Record<CandidateOutcome, number>> {
+/** 一个对象键的咨询锁（事务级）：候选转存写对象 + 写行、清扫查行 + 删对象，都在它里面 */
+async function lockKey(trx: Kysely<Database>, key: string) {
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`candidate:${key}`}, 0))`.execute(trx);
+}
+
+/** 第 3 次领取后进程退出、没来得及记结果的行：领取次数用完了，收成 failed（PR #42 可选） */
+async function abandonExhausted(d: CandidateDeps): Promise<void> {
+  await d.db
+    .updateTable("catalog_image_candidates")
+    .set({ state: "failed", last_error: sql`coalesce(last_error, 'abandoned')` })
+    .where("state", "=", "pending")
+    .where("attempts", ">=", CANDIDATE_MAX_ATTEMPTS)
+    .where("next_try_at", "<=", d.clock())
+    .execute();
+}
+
+/** 跑一轮：一次领一行，做完再领，最多 limit 行；stop() 返回 true 时做完手上这一行就停 */
+export async function runCandidateJobs(d: CandidateDeps, limit = 30, stop: () => boolean = () => false): Promise<Record<CandidateOutcome, number>> {
   const out: Record<CandidateOutcome, number> = { ready: 0, duplicate: 0, failed: 0, retry: 0 };
   if (!d.enabled || !d.store) return out;
-  for (let i = 0; i < limit; i++) {
+  await abandonExhausted(d);
+  for (let i = 0; i < limit && !stop(); i++) {
     const c = await claimCandidate(d);
     if (!c) break;
     out[await processCandidate(d, d.store, c)] += 1;
@@ -192,6 +216,7 @@ export class CandidateWorker {
   private readonly d: CandidateDeps;
   private running: Promise<void> | null = null;
   private again = false;
+  private stopped = false;
   constructor(d: CandidateDeps) {
     this.d = d;
   }
@@ -200,6 +225,8 @@ export class CandidateWorker {
   }
   /** 等正在跑的这一轮跑完（关服务时用，不再开新的一轮） */
   async idle(): Promise<void> {
+    // 关服务：不再开新的一轮，在跑的这一轮做完手上那一行就停（PR #42 Fable 可选 2）
+    this.stopped = true;
     this.again = false;
     if (this.running) await this.running;
   }
@@ -209,7 +236,7 @@ export class CandidateWorker {
   }
   /** 跑到没有到期的为止（正在跑就等它，并在它之后再补一轮） */
   drain(): Promise<void> {
-    if (!this.d.enabled || !this.d.store) return Promise.resolve();
+    if (!this.d.enabled || !this.d.store || this.stopped) return Promise.resolve();
     if (this.running) {
       this.again = true;
       return this.running;
@@ -218,9 +245,9 @@ export class CandidateWorker {
       do {
         this.again = false;
         try {
-          await runCandidateJobs(this.d);
+          await runCandidateJobs(this.d, 30, () => this.stopped);
         } catch (e) {
-          this.d.log?.warn({ err: (e as Error)?.message }, "商品图候选任务出错，下次再试");
+          this.d.log?.warn({ code: (e as { code?: string })?.code ?? "error" }, "商品图候选任务出错，下次再试");
         }
       } while (this.again);
     })().finally(() => {
@@ -242,10 +269,18 @@ export async function sweepCandidateObjects(d: CandidateDeps): Promise<string[]>
   const cutoff = d.clock().getTime() - ORPHAN_GRACE_MS;
   const removed: string[] = [];
   for (const o of listed) {
+    // 快照只用来挑候选；真正删之前逐个在按键的咨询锁里再查一次有没有行（PR #42 必须改 2）。
+    // 转存在同一把锁里先写对象再写 ready：锁里查不到行，说明转存要么还没开始（之后会重新上传），要么写行失败（本就是孤儿）
     if (live.has(o.key) || o.modifiedAt.getTime() > cutoff) continue;
     try {
-      await store.delete(o.key);
-      removed.push(o.key);
+      const deleted = await d.db.transaction().execute(async (trx) => {
+        await lockKey(trx, o.key);
+        const ref = await trx.selectFrom("catalog_image_candidates").select("idx").where("object_key", "=", o.key).executeTakeFirst();
+        if (ref) return false;
+        await store.delete(o.key);
+        return true;
+      });
+      if (deleted) removed.push(o.key);
     } catch (e) {
       d.log?.warn({ code: (e as { code?: string })?.code ?? "error" }, "商品图候选孤儿对象删除失败，下周再删");
     }

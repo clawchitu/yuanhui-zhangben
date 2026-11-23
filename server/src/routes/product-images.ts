@@ -14,7 +14,7 @@ import { ImageRejected, makeThumbnail, sha256, sniffFormat } from "../lookup/ima
 import { CID_RE } from "../lookup/candidates.ts";
 import { imageKey, isCandidateKey, isImageKey, safeJoin, type ObjectStore } from "../lookup/oss.ts";
 import { dropLateObject, storeGone } from "../jobs/account-purge.ts";
-import { withStoreLock } from "../sync/lock.ts";
+import { StoreBusy, withStoreLock } from "../sync/lock.ts";
 import { sendError } from "./errors.ts";
 
 /** 拍照上传的请求体上限（手机端压到长边 ≤ 1024px、≤ 400 KB；服务器硬上限 1 MB） */
@@ -60,7 +60,7 @@ export async function productImageRoutes(app: FastifyInstance): Promise<void> {
         if (await storeGone(kysely, storeId).catch(() => false)) await dropLateObject(kysely, storeId, () => store.delete(key), log);
         throw e;
       }
-      let out: "gone" | "missing" | "changed" | { old: string | null };
+      let out: "gone" | { miss: "missing" | "changed"; current: string | null } | { old: string | null };
       try {
         out = await withStoreLock(kysely, storeId, async (tx) => {
           if (await storeGone(tx.trx, storeId)) return "gone" as const;
@@ -70,8 +70,8 @@ export async function productImageRoutes(app: FastifyInstance): Promise<void> {
             .where("store_id", "=", tx.storeId)
             .where("id", "=", productId)
             .executeTakeFirst();
-          if (!now || now.archived_at) return "missing" as const;
-          if (now.image_ver !== cur.image_ver) return "changed" as const;
+          if (!now || now.archived_at) return { miss: "missing" as const, current: now?.image_key ?? null };
+          if (now.image_ver !== cur.image_ver) return { miss: "changed" as const, current: now.image_key };
           await tx.trx
             .updateTable("products")
             .set({ image_key: key, image_source: source, image_ver: ver, rev: await tx.nextRev(), updated_at: app.deps.clock() })
@@ -86,28 +86,36 @@ export async function productImageRoutes(app: FastifyInstance): Promise<void> {
           await dropLateObject(kysely, storeId, () => store.delete(key), log);
           return { kind: "not_found" };
         }
+        // 没写回（排队满了、库出错）：刚传的对象只在确认没被引用时删（PR #42 Fable 可选 4）
+        await discardIfUnreferenced(store, key, storeId, productId, log);
+        if (e instanceof StoreBusy) return { kind: "busy" };
         throw e;
       }
       if (out === "gone") {
         await dropLateObject(kysely, storeId, () => store.delete(key), log);
         return { kind: "not_found" };
       }
-      if (typeof out === "string") {
-        // 没写回：刚传的对象没人引用，删掉（删不掉只记日志）
-        await discard(store, key, storeId, productId, log);
-        if (out === "missing") return { kind: "not_found" };
+      if ("miss" in out) {
+        // 没写回。同内容的另一路先提交了同一个键（PR #42 必须改 1）：这个键正被商品引用，绝不删，按成功处理（下一轮命中幂等）
+        if (out.current !== key) await discardIfUnreferenced(store, key, storeId, productId, log);
+        if (out.miss === "missing") return { kind: "not_found" };
         continue;
       }
-      if (out.old && out.old !== key && isImageKey(out.old)) await discard(store, out.old, storeId, productId, log);
+      if (out.old && out.old !== key && isImageKey(out.old)) await discardIfUnreferenced(store, out.old, storeId, productId, log);
       log.info({ store_id: storeId, product_id: productId, image_ver: ver, source }, "商品图已更换");
       return { kind: "ok", imageVer: ver };
     }
     return { kind: "busy" };
   }
 
-  /** 尽力删一个不再引用的商品图对象和它在本机缓存里的文件 */
-  async function discard(store: ObjectStore, key: string, storeId: string, productId: string, log: FastifyBaseLogger) {
+  /**
+   * 尽力删一个商品图对象和它在本机缓存里的文件：只在提交之后、再查一次确认没有任何商品引用这个键时才删（PR #42 必须改 1）。
+   * 键里带着 image_ver：版本一旦越过它，就再没有请求能把这个键写进商品（锁内要求读到的版本没变），所以「查过没引用」之后不会再被引用
+   */
+  async function discardIfUnreferenced(store: ObjectStore, key: string, storeId: string, productId: string, log: FastifyBaseLogger) {
     try {
+      const ref = await kysely.selectFrom("products").select("id").where("image_key", "=", key).executeTakeFirst();
+      if (ref) return;
       await store.delete(key);
       await rm(safeJoin(config.imageCacheDir, key), { force: true });
     } catch (e) {

@@ -157,7 +157,9 @@ export function buildApp(input: AppDeps): FastifyInstance {
     const status = err.statusCode && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 500;
     if (status >= 500) req.log.error({ err }, "未处理的错误");
     if (status === 413) {
-      reply.code(413).send({ code: "invalid", message: `请求体超过 ${BODY_LIMIT} 字节，拆成几批再发` });
+      // 拍照上传（PUT /v1/images/:id）的上限同是 1 MiB，但不是「拆批」的事（PR #42 Fable 可选 6）
+      const upload = req.method === "PUT" && req.url.startsWith("/v1/images/");
+      reply.code(413).send({ code: "invalid", message: upload ? "图片超过 1 MB，压小一点再传" : `请求体超过 ${BODY_LIMIT} 字节，拆成几批再发` });
       return;
     }
     reply.code(status).send(status === 400 ? { code: "invalid" } : status === 404 ? { code: "not_found" } : { code: "unavailable" });
