@@ -160,6 +160,52 @@ final class SyncEngineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try db.writer.read { try Int64.fetchOne($0, sql: "SELECT SUM(amount_fen) FROM entry WHERE \(cond)") }, 0, "合计 ¥0.00")
     }
 
+    /// PR #36 Codex 增量复审必须修（库存）：卖出已确认、新基线还在商品流后页时离线超过 14 天，14 天清理不能把这笔
+    /// 连同 effect_hold 删掉，否则显示库存错回卖前（47 → 48）；新基线到了、hold 放掉之后才清
+    func testPurgeKeepsOpWhileEffectHeld() throws {
+        let db = try makeDB()
+        let (_, pid) = try sell(db)
+        let shown = try XCTUnwrap(try db.displayStock(pid))
+        let batch = try XCTUnwrap(try db.nextPushBatch())
+        let r1 = try SyncResponse.decode(try response(ops: ops(try db.syncRequestBody(batch, appBuild: 1)), cursor: 5, moreCatalog: true))
+        try db.applySyncResponse(r1, sent: batch)
+        XCTAssertEqual(try db.count("effect_hold"), 1)
+        let later = Date().addingTimeInterval(15 * 86400)
+        XCTAssertEqual(try db.purgeConfirmed(now: later), 0, "hold 还没放：不清")
+        XCTAssertEqual(try db.displayStock(pid)?.qty, shown.qty, "离线 >14 天清理后库存不错回")
+        let r2 = try SyncResponse.decode(try response(ops: [], cursor: 9, products: [productJSON(pid, stock: shown.baselineQty - 1)]))
+        try db.applySyncResponse(r2, sent: nil)
+        XCTAssertEqual(try db.displayStock(pid)?.qty, shown.qty)
+        XCTAssertEqual(try db.purgeConfirmed(now: later), 1, "新基线到了、hold 放掉：可以清")
+        XCTAssertEqual(try db.displayStock(pid)?.qty, shown.qty)
+    }
+
+    /// PR #36 Codex 增量复审必须修（金额）：两台手机撤同一笔、本机 void 已 applied 但流水还在后页时离线超过 14 天，
+    /// 14 天清理不能先删掉这条 void op，否则流水拉到底时认不出残留的本机临时冲销行，合计 −¥5.00（应为 ¥0.00）
+    func testPurgeKeepsAppliedVoidUntilLedgerDrained() throws {
+        let db = try makeDB()
+        let (batchId, _) = try sell(db)
+        let cond = "batch_id = '\(batchId.uuidString)'"
+        let sale = try serverEntries(db, where: cond, seq: 1)
+        let b1 = try XCTUnwrap(try db.nextPushBatch())
+        try db.applySyncResponse(try SyncResponse.decode(try response(ops: ops(try db.syncRequestBody(b1, appBuild: 1)), entries: sale)), sent: b1)
+        guard case .voided = try db.void(.batch(batchId)) else { return XCTFail() }
+        let other = uuid(0x0B)
+        var otherRev = try serverEntries(db, where: "\(cond) AND reverses_entry_id IS NOT NULL", seq: 2)
+        for i in otherRev.indices { otherRev[i]["id"] = UUID().uuidString; otherRev[i]["op_id"] = UUID().uuidString; otherRev[i]["device_id"] = other.uuidString }
+        let voided = try serverEntries(db, where: "\(cond) AND reverses_entry_id IS NULL", seq: 1, voidedAt: "2026-11-22T10:00:00Z")
+        // 本机 void 确认了，但另一台的冲销行在流水后页
+        let b2 = try XCTUnwrap(try db.nextPushBatch())
+        try db.applySyncResponse(try SyncResponse.decode(try response(ops: ops(try db.syncRequestBody(b2, appBuild: 1)),
+                                                                         entries: voided, moreLedger: true)), sent: b2)
+        let later = Date().addingTimeInterval(15 * 86400)
+        XCTAssertEqual(try db.purgeConfirmed(now: later), 1, "卖出那条可以清，void 那条还在对账：留着")
+        try db.applySyncResponse(try SyncResponse.decode(try response(ops: [], cursor: 20, entries: otherRev)), sent: nil)
+        XCTAssertEqual(try db.writer.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM entry WHERE seq IS NULL") }, 0, "本机临时冲销行清掉")
+        XCTAssertEqual(try db.writer.read { try Int64.fetchOne($0, sql: "SELECT SUM(amount_fen) FROM entry WHERE \(cond)") }, 0, "合计 ¥0.00")
+        XCTAssertEqual(try db.purgeConfirmed(now: later), 1, "流水拉到底之后才清")
+    }
+
     /// Fable 可选 2：被拒的卖出，本机临时行留着标「没记上」，但「更早」的合计不算它；outbox 14 天清掉后仍认得出
     func testRejectedSaleRowsMarkedAndNotCounted() throws {
         let db = try makeDB()

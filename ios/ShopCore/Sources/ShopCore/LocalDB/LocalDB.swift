@@ -153,6 +153,8 @@ public final class LocalDB: Sendable {
     /// 清投影，并在同一个事务里记下「待压缩」
     static func clearProjection(_ db: Database) throws {
         for t in LocalSchema.projectionTables { try db.execute(sql: "DELETE FROM \(t)") }
+        // 基线跟投影一起清了（游标归零、重拉的基线已含这些增减），hold 没有意义，留着还会挡住 14 天清理
+        try db.execute(sql: "DELETE FROM effect_hold")
         for k in LocalSchema.projectionMetaKeys { try db.execute(sql: "DELETE FROM meta WHERE key = ?", arguments: [k.rawValue]) }
         try markCompactionPending(db)
     }
