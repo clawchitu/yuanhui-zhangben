@@ -145,6 +145,41 @@ final class CameraResumeReplayTests: XCTestCase {
         XCTAssertEqual(count(m, Self.erguotou), 1)
     }
 
+    /// 增量复审（Fable 1）：A、B 停之前同在镜头里 → 抹零 5 秒 → 回来两件还在，[A, B]、[B, A] 两种顺序都不加，抹的零不作废
+    func testSellTwoItemsInViewAcrossTheDiscountPanelAreNotReplayed() throws {
+        for order in [[Self.beer, Self.erguotou], [Self.erguotou, Self.beer]] {
+            let m = try sell()
+            frames([Self.beer, Self.erguotou], seconds: 1)
+            XCTAssertEqual(m.itemCount, 2)
+            cover(m, true)
+            now += 5
+            try m.setPaid(500)
+            let discount = m.discountFen
+            cover(m, false)
+            now += 4   // 首回调晚到
+            frames(order, seconds: 3)
+            XCTAssertEqual(count(m, Self.beer), 1, "顺序 \(order)")
+            XCTAssertEqual(count(m, Self.erguotou), 1, "顺序 \(order)")
+            XCTAssertNotNil(discount)
+            XCTAssertEqual(m.discountFen, discount, "抹零金额不变")
+        }
+    }
+
+    /// 增量复审（Codex 1）：扫 A → 抹零 → 恢复后第一个回调是 B、然后才是 A：B 照记，A 不重记
+    func testSellFirstCallbackAnotherCodeThenTheOldOne() throws {
+        let m = try sell()
+        frames([Self.beer], seconds: 1)
+        cover(m, true)
+        now += 5
+        cover(m, false)
+        now += 4
+        runner.onCode?(Self.erguotou)
+        runner.onCode?(Self.beer)
+        frames([Self.erguotou, Self.beer], seconds: 2)
+        XCTAssertEqual(count(m, Self.beer), 1)
+        XCTAssertEqual(count(m, Self.erguotou), 1)
+    }
+
     /// 防重放不挡真的第二件：A 拿开满 1.5 秒再对上，照常加一
     func testSellSameItemAgainAfterLeavingTheViewCounts() throws {
         let m = try sell()

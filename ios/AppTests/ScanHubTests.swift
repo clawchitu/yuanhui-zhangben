@@ -258,6 +258,7 @@ final class ScanHubTests: XCTestCase {
         let hub = makeHub(known: ["6921168509256", "6901028075831"])
         let a = "6921168509256", b = "6901028075831"
         XCTAssertEqual(hub.receive(a, from: .camera), .known)
+        hub.cameraPaused()
         now += 5   // 相机停着
         hub.cameraResumed()
         now += 0.6  // 会话起来
@@ -271,11 +272,12 @@ final class ScanHubTests: XCTestCase {
         XCTAssertEqual(scans.map(\.code), [a, b, a])
     }
 
-    /// 2（复审）：相机首个回调晚到（> 2.5 秒）也不重放 A；看到别的码才解除，A 同在画面里也不重复算
-    func testResumeHoldDoesNotExpireByTimeAndReleasesOnAnotherCode() {
+    /// 2（复审）：相机首个回调晚到（> 2.5 秒）也不重放 A；看到别的码不解除 A 的保护（A 同在画面里也不重复算）
+    func testResumeHoldDoesNotExpireByTimeNorOnAnotherCode() {
         let hub = makeHub(known: ["6921168509256", "6901028075831"])
         let a = "6921168509256", b = "6901028075831"
         XCTAssertEqual(hub.receive(a, from: .camera), .known)
+        hub.cameraPaused()
         now += 5
         hub.cameraResumed()
         now += 4   // 首个识别结果 4 秒后才到
@@ -283,19 +285,77 @@ final class ScanHubTests: XCTestCase {
         now += 0.1
         XCTAssertEqual(hub.receive(b, from: .camera), .known, "下一件照常收")
         now += 0.1
-        XCTAssertNil(hub.receive(a, from: .camera), "B 来了解除保护后，A 还在画面里照旧去重")
+        XCTAssertNil(hub.receive(a, from: .camera), "B 来了 A 仍受保护")
         XCTAssertEqual(scans.map(\.code), [a, b])
     }
 
-    /// 2（续）：再开相机后 A 一直没出现：拿开很久后第一次对上 A 先挡一下，离开满 1.5 秒再对上照常算
+    /// 增量复审（Codex 1）：恢复后第一个回调是 B、然后才是 A：B 照收，A 不重记
+    func testResumeFirstCallbackIsAnotherCodeThenTheOldOne() {
+        let hub = makeHub(known: ["6921168509256", "6901028075831"])
+        let a = "6921168509256", b = "6901028075831"
+        XCTAssertEqual(hub.receive(a, from: .camera), .known)
+        hub.cameraPaused()
+        now += 5
+        hub.cameraResumed()
+        now += 4
+        XCTAssertEqual(hub.receive(b, from: .camera), .known)
+        XCTAssertNil(hub.receive(a, from: .camera), "A 停之前在镜头里：不重记")
+        for _ in 0..<20 { now += 0.1; hub.receive(a, from: .camera); hub.receive(b, from: .camera) }
+        XCTAssertEqual(scans.map(\.code), [a, b])
+    }
+
+    /// 增量复审（Fable 1）：A、B 停之前都在镜头里，两件各自挡着，[A, B]、[B, A] 两种顺序都不重放
+    func testResumeHoldsEveryCodeInViewBeforeThePause() {
+        for order in [[0, 1], [1, 0]] {
+            scans = []
+            let hub = makeHub(known: ["6921168509256", "6901028075831"])
+            let codes = ["6921168509256", "6901028075831"]
+            for _ in 0..<10 { for c in codes { hub.receive(c, from: .camera) }; now += 0.1 }
+            XCTAssertEqual(scans.count, 2)
+            hub.cameraPaused()
+            now += 5
+            hub.cameraResumed()
+            for _ in 0..<20 { for i in order { XCTAssertNil(hub.receive(codes[i], from: .camera)) }; now += 0.1 }
+            XCTAssertEqual(scans.count, 2, "顺序 \(order)：两件都不重放")
+        }
+    }
+
+    /// 停之前 1.5 秒内没在镜头里的码不挡：A 早拿走了，停过再开第一次对上 A 照常算（Fable 可选 1）
+    func testResumeDoesNotHoldACodeThatLeftBeforeThePause() {
+        let hub = makeHub()
+        let a = "6921168509256"
+        XCTAssertEqual(hub.receive(a, from: .camera), .known)
+        now += CameraDeduper.defaultWindow + 0.1
+        hub.cameraPaused()
+        now += 600
+        hub.cameraResumed()
+        XCTAssertEqual(hub.receive(a, from: .camera), .known)
+    }
+
+    /// 2（续）：A 停之前在镜头里，恢复后很久才第一次对上：先挡着，离开满 1.5 秒再对上照常算
     func testResumeHoldReleasesAfterTheCodeLeavesTheView() {
         let hub = makeHub()
         let a = "6921168509256"
         XCTAssertEqual(hub.receive(a, from: .camera), .known)
+        hub.cameraPaused()
         hub.cameraResumed()
         now += 10
         XCTAssertNil(hub.receive(a, from: .camera))
         now += CameraDeduper.defaultWindow + 0.1
         XCTAssertEqual(hub.receive(a, from: .camera), .known)
+    }
+
+    // MARK: 一次只认一件（负责人 11/23 定）
+
+    func testPickCenteredTakesTheCodeNearestTheCenterInsideTheRect() {
+        let rect = CGRect(x: 0.2, y: 0.2, width: 0.6, height: 0.6)   // 中心 (0.5, 0.5)
+        let a = (code: "A", bounds: CGRect(x: 0.25, y: 0.25, width: 0.1, height: 0.1))
+        let b = (code: "B", bounds: CGRect(x: 0.45, y: 0.4, width: 0.1, height: 0.2))
+        let out = (code: "C", bounds: CGRect(x: 0.85, y: 0.45, width: 0.1, height: 0.1))   // 中心在识别区外
+        XCTAssertEqual(CameraSession.pickCentered([a, b], in: rect), "B", "同帧 A、B：只取靠中心的 B")
+        XCTAssertEqual(CameraSession.pickCentered([b, a], in: rect), "B", "和交来的顺序无关")
+        XCTAssertEqual(CameraSession.pickCentered([a, out], in: rect), "A", "识别区外的不算，哪怕只剩它离中心远")
+        XCTAssertNil(CameraSession.pickCentered([out], in: rect))
+        XCTAssertNil(CameraSession.pickCentered([], in: rect))
     }
 }

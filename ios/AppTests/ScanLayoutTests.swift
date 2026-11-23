@@ -172,7 +172,9 @@ final class ScanLayoutTests: XCTestCase {
         XCTAssertEqual(hub.receive(Self.erguotou, from: .camera), .known, "确认后 B 下一帧就收")
         XCTAssertEqual(m.product?.name, "牛栏山二锅头 500ml")
         // 2：B 的卡 → 填进价（相机停 3 秒）→ 相机再开 → 确认；B 还在镜头里，不重新弹卡
+        frames([Self.erguotou], seconds: 2)   // A 拿走了，镜头里只剩 B
         m.focus(.cost)
+        hub.cameraPaused()
         now += 3
         m.doneEditing()
         hub.cameraResumed()

@@ -71,45 +71,60 @@ final class ScanHub {
         guard Self.isAcceptable(code) else { return nil }
         guard source == .camera else { return deliver(Scan(code: code, source: source)) }
         let now = clock()
+        if processedSeen[code] != nil { processedSeen[code] = now }
         if heldOver(code, at: now) { return nil }
         if !deduper.accept(code, at: now) { return nil }
         let outcome = deliver(Scan(code: code, source: source))
-        if outcome == .ignored, code != lastCameraCode {
+        if outcome == .ignored, processedSeen[code] == nil {
             // 页面没收（进货页商品卡在 / 页面被盖住）：这个码没处理过，不占去重窗口，
             // 否则它一直在镜头里就一直刷新计时，恢复后也扫不进去（PR #40 Codex 必须修 1）。
-            // 已经处理过的那个码照旧留着计时：还在镜头里就不重复算
+            // 已经处理过的码照旧留着计时：还在镜头里就不重复算
             deduper.forget(code)
         } else if let outcome, outcome != .ignored {
-            lastCameraCode = code
+            processedSeen[code] = now
         }
         return outcome
     }
 
-    /// 相机上一次处理过的码（页面收了的）
-    private var lastCameraCode: String?
-    /// 相机停过再开（进货页填数时相机区收起）：上一次处理过的码先挡着。不按固定时长解除（相机首个回调可能晚到），
-    /// 按恢复后真正收到的识别结果：看到别的码、或它被看见后离开镜头满一个去重窗口，才解除
-    private var holdOver: (code: String, lastSeen: TimeInterval?)?
+    /// 相机处理过（页面收了）的码 → 相机最后一次看见它的时间（之后每次看见都刷新，去重挡掉、防重放挡掉的也算）
+    private var processedSeen: [String: TimeInterval] = [:]
+    /// 相机停过再开的防重放（PR #40 Codex 复审、Fable 必须修）：停相机前 1.5 秒内相机看见过的、处理过的码，每个码各自挡着。
+    /// 码 → 恢复后最后一次看见的时间（nil：恢复后还没看见）。不设总时长（相机首个回调可能晚到），
+    /// 也不因为看见别的码就解除；每个码只在离开镜头满一个去重窗口后解除：
+    /// 恢复后看见过的按最后看见的时间算，没看见过的按恢复后第一个识别结果的时间算
+    private var held: [String: TimeInterval?] = [:]
+    /// 恢复后第一个识别结果的时间（nil：恢复后还没收到识别结果）
+    private var firstFrameAt: TimeInterval?
 
-    /// 相机停过、要重新开：不重放上一次处理过的码（PR #40 Codex 必须修 2）。停的这段时间去重计时过期了，
-    /// 那件货还在镜头里的话，一开相机就会被当成新扫的一次，把刚确认完的商品又弹回来、挡住下一件
+    /// 相机要停了（页面被盖住、相机区收起、退到后台、离开页面）：记下这会儿还在镜头里的处理过的码
+    func cameraPaused() {
+        let now = clock()
+        let window = deduper.window
+        processedSeen = processedSeen.filter { _, seen in now >= seen && now - seen < window }
+        // 上一次恢复后还挡着、没确认离开的码接着挡（恢复后没等到识别结果又停了）
+        for code in Set(held.keys).union(processedSeen.keys) { held[code] = .some(nil) }
+        firstFrameAt = nil
+    }
+
+    /// 相机停过、要重新开：停之前在镜头里的那几件不重放。停的这段时间去重计时过期了，
+    /// 那几件还在镜头里的话，一开相机就会被当成新扫的，卖出页多记一件、进货页把刚确认完的商品又弹回来
     func cameraResumed() {
-        guard let code = lastCameraCode else { return }
-        holdOver = (code, nil)
+        for code in held.keys { held[code] = .some(nil) }
+        firstFrameAt = nil
     }
 
     private func heldOver(_ code: String, at now: TimeInterval) -> Bool {
-        guard let h = holdOver else { return false }
-        if code == h.code {
-            // 被看见后离开镜头满一个窗口再对上：算新的一次
-            if let seen = h.lastSeen, now - seen >= deduper.window { holdOver = nil; return false }
-            holdOver?.lastSeen = now
-            return true
+        guard !held.isEmpty else { return false }
+        if firstFrameAt == nil { firstFrameAt = now }
+        let window = deduper.window
+        // 离开镜头满一个窗口的码解除（这一个码自己若到期，也按新的一次处理）
+        held = held.filter { _, seen in
+            guard let since = seen ?? firstFrameAt else { return true }
+            return !(now >= since && now - since >= window)
         }
-        // 看到了别的码：解除。旧码若刚刚还在镜头里，把它交回去重器接着计时（同在画面里也不重复算）
-        holdOver = nil
-        if let seen = h.lastSeen { _ = deduper.accept(h.code, at: seen) }
-        return false
+        guard held[code] != nil else { return false }
+        held[code] = .some(now)
+        return true
     }
 
     /// 扫码枪的一个按键（`HIDKeyCaptureView` 交来；时间用 UIPress.timestamp，与 `clock` 同一个时基：开机以来的秒数）
