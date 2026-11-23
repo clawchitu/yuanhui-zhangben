@@ -12,7 +12,7 @@ struct HomeView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ModeBar(title: model.session.storeName, pendingCount: model.figures.pendingCount)
+            ModeBar(title: model.session.storeName, pendingCount: model.figures.pendingCount, offline: model.offline)
             GeometryReader { geo in
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -66,7 +66,7 @@ struct HomeView: View {
         f.locale = Locale(identifier: "zh_CN")
         f.timeZone = TimeZone(identifier: "Asia/Shanghai")
         f.dateFormat = "M月d日 EEEE"
-        return f.string(from: model.today)
+        return f.string(from: model.now)
     }
 
     @ViewBuilder private var dateRow: some View {
@@ -138,6 +138,25 @@ struct HomeView: View {
             .buttonStyle(PressDimStyle())
             .fixedSize(horizontal: false, vertical: true)  // 辅助字号下文字换行时提醒条跟着长高，不被压扁
             .accessibilityIdentifier("home.banner.unsynced")
+        case .clockOff(let m):
+            // T5：手机时钟不准。快了服务器会改成收到时间；慢了分不出来，盘点后记的卖出会被当成迟到的补偿掉，只能请人校时间
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "clock.badge.exclamationmark").font(.system(size: 22, weight: .semibold))
+                Text("手机时间和服务器差了 \(m) 分钟，记的账时间会不对。请到「设置 → 通用 → 日期与时间」打开「自动设置」")
+                    .font(TypeScale.secondary.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Tokens.Palette.ink)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .frame(minHeight: 60)
+            .background(Tokens.Palette.tagTint, in: RoundedRectangle(cornerRadius: Tokens.Radius.banner))
+            .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.banner).strokeBorder(Tokens.Palette.ink, lineWidth: 2.5))
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("home.banner.clock")
         case .expiring(let n):
             NavigationLink(value: Route.expiry) {
                 HStack(alignment: .center, spacing: 12) {
@@ -277,7 +296,7 @@ struct RecentCard: View {
                     .font(TypeScale.body.weight(.bold))
                     .foregroundStyle(Tokens.Palette.ink)
                     .fixedSize()
-                PriceText(cents: record.amountFen, size: 26)
+                if let a = record.amountFen { PriceText(cents: a, size: 26) }
             }
         }
         // 收银员带「点开看」字样；家用整条也可点进 07a，不加字样（§14 S15-6）

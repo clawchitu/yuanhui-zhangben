@@ -103,14 +103,17 @@ public struct RecordCard: Hashable, Sendable, Identifiable {
     /// 「19:32」
     public var time: String { String(occurredAt.dropFirst(11).prefix(5)) }
     public var allVoided: Bool { lines.allSatisfy(\.voided) }
+    /// 撤了一部分（07a 金额上面写「撤了一部分，还剩」）
+    public var partlyVoided: Bool { lines.contains(where: \.voided) && !allVoided }
     public var openLines: [RecordLine] { lines.filter { !$0.voided } }
 
     /// 卡片上的大数：卖出 = 实收；进货 = 总价；过期扔掉 / 退货 = 按进价算的货值（有才显示）；盘点、期初不显示
     public var amountFen: Int64? {
         switch type {
-        // 撤过一部分的：只算还没撤的行（各行的摊后实收），不显示整笔原实收（PR #34 Fable 可选 1）
+        // 撤过一部分的：只算还没撤的行（各行的摊后实收），不显示整笔原实收（PR #34 Fable 可选 1）。
+        // 全撤了的仍显示原实收（卡片上划掉）
         case .sale:
-            if lines.contains(where: \.voided) { return openLines.reduce(0) { $0 + $1.amountFen } }
+            if lines.contains(where: \.voided), !allVoided { return openLines.reduce(0) { $0 + $1.amountFen } }
             return paidTotalFen ?? lines.reduce(0) { $0 + $1.amountFen }
         case .stockIn: return lines.reduce(0) { $0 + $1.amountFen }
         case .expireLoss, .supplierReturn:

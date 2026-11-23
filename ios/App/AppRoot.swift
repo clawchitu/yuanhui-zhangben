@@ -49,6 +49,8 @@ struct AppRoot: View {
     @State private var services: AppServices?
     @Environment(\.scenePhase) private var scenePhase
     @State private var foreground = ForegroundRefresh()
+    /// 钥匙串读不出来时点过几次「再试一次」（PR #35 Fable 可选 1：试过还不行给「重新登录」出口）
+    @State private var tokenAttempts = 0
 
     init(args: [String] = ProcessInfo.processInfo.arguments) {
         let services = AppRoot.needsServices(args) ? AppServices.make(args: args) : nil
@@ -69,7 +71,8 @@ struct AppRoot: View {
                 case .failed(let message):
                     StartupErrorView(message: message)
                 case .tokenUnavailable:
-                    TokenUnavailableView { retryBoot() }
+                    TokenUnavailableView(attempts: tokenAttempts, retry: { tokenAttempts += 1; retryBoot() },
+                                         relogin: { relogin() })
                 #if DEBUG
                 case .scannerLab(let login):
                     ScannerLab(login: login, args: ProcessInfo.processInfo.arguments)
@@ -99,6 +102,17 @@ struct AppRoot: View {
         if case .tokenUnavailable = boot { retryBoot() }
         await services?.refreshConfig()
         if case .app(let model, _) = boot { await model.reportPendingLabel() }
+    }
+
+    /// 「重新登录」：结束本地会话（清投影、会话退役，outbox 不动——未传的账按 S22b 的退役会话补传，不丢），回登录页
+    @MainActor private func relogin() {
+        do {
+            let db = try LocalDB(path: try AppRoot.storeDirectory().appendingPathComponent(AppRoot.liveDBName).path)
+            try db.endSession()
+            boot = .signedOut(AppRoot.makeLogin(db: db, services: services))
+        } catch {
+            boot = .failed(String(describing: error))
+        }
     }
 
     /// 钥匙串读不出来时重走一遍启动（会话没结束，读出来就直接进）
@@ -168,19 +182,29 @@ struct AppRoot: View {
     /// 它改过的手机名留到 `pendingDeviceLabel`，第一次登录时带上（§14 S15-2）。
     @MainActor static func liveBoot(directory: URL, tokens: TokenStore, defaults: UserDefaults = .standard,
                                     services: AppServices? = nil) throws -> Boot {
-        let db = try LocalDB(path: directory.appendingPathComponent(liveDBName).path)
+        let db = try LocalDB(path: directory.appendingPathComponent(liveDBName).path, faultHook: crashHook())
         try clearLegacyDemo(directory: directory, db: db, defaults: defaults)
         if let session = try db.currentSession() {
             let token: String?
             do { token = try tokens.token(ref: session.tokenRef) } catch { return .tokenUnavailable }
             if token != nil {
                 let model = try liveModel(db: db, session: session, services: services)
+                #if DEBUG
+                return .app(model, UIFixture.injectedRoutes(from: ProcessInfo.processInfo.arguments))  // 联调 XCUITest 直接开到某页
+                #else
                 return .app(model, [])
+                #endif
             }
             // 钥匙串里没有这个会话的令牌（重装、换机恢复）：不能当作已登录
             try db.endSession()
         }
         return .signedOut(makeLogin(db: db, services: services))
+    }
+
+    /// 强杀验收「本地提交中途」：处理同步响应的事务里直接退出进程（只在 Debug 带 `-uiCrashAt midCommit` 时）
+    static func crashHook(_ args: [String] = ProcessInfo.processInfo.arguments) -> (@Sendable (LocalDBFaultPoint) throws -> Void)? {
+        guard CrashPoint.from(args) == .midCommit else { return nil }
+        return { p in if p == .midSyncCommit { CrashPoint.die(.midCommit) } }
     }
 
     @MainActor static func makeLogin(db: LocalDB, services: AppServices?) -> LoginModel {
@@ -222,9 +246,21 @@ struct AppRoot: View {
     @MainActor static func liveModel(db: LocalDB, session: LocalSession, services: AppServices?) throws -> AppModel {
         var figures = HomeFigures()
         figures.pendingCount = try db.pendingOps().count
-        figures.lastRecord = try db.lastRecord().map(HomeFigures.LastRecord.init)
+        figures.lastRecord = HomeFigures.LastRecord.today(try db.lastRecord(), now: Date())
         let model = AppModel(db: db, session: session, figures: figures)
         model.services = services
+        #if DEBUG
+        // 联调（S22a XCUITest）：真会话下也能用假扫码、调试探针；-uiInjectDemo 往本机塞服务器上没有的演示商品（卖它会被拒）
+        let args = ProcessInfo.processInfo.arguments
+        if UIFixture.value(for: "-uiScan", in: args) != nil || args.contains("-uiProbe") || args.contains("-uiOffline") {
+            model.sellFixture = SellFixture.from(args)
+        }
+        if args.contains("-uiInjectDemo") { try DemoSeed.install(into: db) }
+        #endif
+        if let services {
+            model.attach(SyncCoordinator.live(db: db, services: services, tokenRef: session.tokenRef,
+                                              crash: CrashPoint.from(ProcessInfo.processInfo.arguments)))
+        }
         Task { await model.reportPendingLabel() }
         return model
     }
@@ -258,7 +294,7 @@ struct AppRoot: View {
         // S20：-uiRecords 装上稿子 07a / 07b / 07c 的账，首页「刚记的」和待传笔数都从库里取
         let liveRecent = try UIFixture.installRecords(into: db, session: session, args: args)
         if liveRecent {
-            figures.lastRecord = try db.lastRecord().map(HomeFigures.LastRecord.init)
+            figures.lastRecord = HomeFigures.LastRecord.today(try db.lastRecord(), now: UIFixture.designNow)
             figures.pendingCount = try db.pendingOps().count
         }
         let model = AppModel(db: db, session: session, figures: figures, today: UIFixture.designNow, defaults: defaults,
@@ -266,6 +302,7 @@ struct AppRoot: View {
                              fixedNow: UIFixture.designNow)
         model.liveRecent = liveRecent
         model.sellFixture = SellFixture.from(args)
+        if args.contains("-uiFirstSync") { model.firstSyncFixture = (194, 312) }  // 29 稿子上的数
         return model
     }
     #endif
@@ -282,7 +319,9 @@ struct MainView: View {
     }
 
     var body: some View {
-        if !model.onboarded {
+        if !model.catalogReady {
+            FirstSyncView()  // 29：商品拉完才能开卖，流水在后台接着拉
+        } else if !model.onboarded {
             OnboardingView()
         } else {
             NavigationStack(path: $path) {
@@ -296,13 +335,27 @@ struct MainView: View {
 
 /// 钥匙串暂时读不出来：不退出登录，解锁后再试
 private struct TokenUnavailableView: View {
+    let attempts: Int
     let retry: () -> Void
+    let relogin: () -> Void
+    @State private var confirming = false
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("手机还没准备好").font(TypeScale.title)
             Text("刚开机的手机要先解锁一次。解锁以后点「再试一次」，账和登录都还在。")
                 .font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
             Button("再试一次", action: retry).accessibilityIdentifier("tokenUnavailable.retry")
+            if attempts >= 2 {
+                // 一直读不出来（钥匙串条目坏了）：给出口。没传的账留在本机，重新登录后自动补传
+                Button("还是不行，重新登录") { confirming = true }
+                    .accessibilityIdentifier("tokenUnavailable.relogin")
+                    .confirmationDialog("重新登录？", isPresented: $confirming, titleVisibility: .visible) {
+                        Button("重新登录", action: relogin)
+                        Button("不了", role: .cancel) {}
+                    } message: {
+                        Text("这台手机上还没传上去的账不会丢，重新登录后会自动补传。")
+                    }
+            }
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

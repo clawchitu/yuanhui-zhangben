@@ -130,7 +130,7 @@ struct RouteView: View {
             case .manualCode: ManualCodeView(db: model.db)
             // 抹零面板要对着一个购物篮，只能从卖出页的「抹零 / 改总价」弹出；直接塞路由只出一句说明
             case .discountEntry: PlaceholderPage(route: route, layout: model.layout, message: "从卖出页的「抹零 / 改总价」进")
-            case .stockIn: StockInView(db: model.db, today: model.today, fixture: model.sellFixture)
+            case .stockIn: StockInView(db: model.db, clock: { [model] in model.now }, fixture: model.sellFixture)
             case .settings: SettingsView()
             case .deviceName: DeviceNameView()
             case .scanner: ScannerStatusView()

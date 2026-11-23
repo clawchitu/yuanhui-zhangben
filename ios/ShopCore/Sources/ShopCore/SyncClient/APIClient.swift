@@ -113,6 +113,32 @@ public final class APIClient: Sendable {
         return r.label
     }
 
+    /// `POST /v1/sync`（S22a）：请求体是 `LocalDB.syncRequestBody` 拼好的原样字节，回 (HTTP 状态, 响应体)。
+    /// 非 2xx 不抛，交给 `SyncEngine` 判断（409 epoch、413 等）；30x 照样不跟。同一批 op 重发是幂等的（op id），
+    /// 所以下发地址连不上时可以退回默认地址重发。
+    public func sync(body: Data, token: String) async throws -> (Int, Data) {
+        let primary = bases.current
+        do {
+            return try await syncOnce(base: primary, body: body, token: token)
+        } catch APIError.transport where primary != bases.defaultBase {
+            return try await syncOnce(base: bases.defaultBase, body: body, token: token)
+        }
+    }
+
+    func syncOnce(base: URL, body: Data, token: String) async throws -> (Int, Data) {
+        var req = URLRequest(url: APIBase.url(base, path: "/v1/sync"), timeoutInterval: 30)
+        req.httpMethod = "POST"
+        req.httpBody = body
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let data: Data, resp: URLResponse
+        do { (data, resp) = try await session.data(for: req, delegate: NoRedirect.shared) } catch { throw APIError.transport(String(describing: error)) }
+        guard let http = resp as? HTTPURLResponse else { throw APIError.badResponse(0) }
+        if (300..<400).contains(http.statusCode) { throw APIError.redirected(http.statusCode) }
+        return (http.statusCode, data)
+    }
+
     /// `fallback`：下发地址连不上时是否退回默认地址重发一次。一次性的写请求（兑码）传 false
     func send<B: Encodable, T: Decodable>(_ method: String, _ path: String, body: B?, token: String?,
                                           fallback: Bool = true) async throws -> T {

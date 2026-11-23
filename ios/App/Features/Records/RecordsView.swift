@@ -18,7 +18,8 @@ struct RecordsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ModeBar(title: model.cashier ? "我今天记的" : "记的账", pendingCount: model.pendingCount, onBack: { dismiss() })
+            ModeBar(title: model.cashier ? "我今天记的" : "记的账", pendingCount: app.sync == nil ? model.pendingCount : app.figures.pendingCount,
+                    offline: app.offline, onBack: { dismiss() })
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     if !model.cashier { tabs }
@@ -53,6 +54,8 @@ struct RecordsView: View {
             }
             #endif
         }
+        // 每同步完一趟重取：拉下来的服务器行换掉本机的临时行、被拒的标「没记上」
+        .onChange(of: app.sync?.rounds) { _, _ in model.reload() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(route.pageId)
     }
@@ -228,6 +231,12 @@ struct RecordCardView: View {
             .accessibilityHidden(true)
             Text(card.kindText).font(.system(size: 24, weight: .bold)).fixedSize()
             Text(card.time).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2).fixedSize()
+            if card.rejected {
+                // 服务器拒收了（收银员越权、商品不存在……）：这笔没记上，库存已按服务器纠正（S22a）
+                Text("没记上").font(TypeScale.secondary.weight(.bold)).foregroundStyle(Tokens.Palette.sell)
+                    .fixedSize()
+                    .accessibilityIdentifier("records.rejected")
+            }
             if showDevice {
                 Text(card.deviceLabel).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -239,7 +248,10 @@ struct RecordCardView: View {
 
     @ViewBuilder private var amount: some View {
         VStack(alignment: .leading, spacing: 2) {
-            if card.type == .sale, card.discountFen != 0, let l = card.listTotalFen {
+            if card.partlyVoided {
+                Text("撤了一部分，还剩").font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if card.type == .sale, card.discountFen != 0, let l = card.listTotalFen {
                 (Text("原价 ") + Text("¥\(Money.yuanString(Int(l)))").strikethrough() + Text("    实收"))
                 .font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
                 .fixedSize(horizontal: false, vertical: true)

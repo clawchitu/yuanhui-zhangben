@@ -50,7 +50,9 @@ final class StockInModel {
     var registerCode: RegisterRequest?
     var accepting = true
     private let defaults: UserDefaults
-    private let today: CalendarDate
+    /// 上海的「今天」。每次用时按当前时钟重算（跨零点不过时，PR #34 Codex 3 / Fable 可选 2）
+    private let todayProvider: () -> CalendarDate
+    private var today: CalendarDate { todayProvider() }
 
     private(set) var conversion: PackConversion?
     private(set) var baseline: ProductPrivate?
@@ -85,9 +87,18 @@ final class StockInModel {
         return (try? CalendarDate(year: c.year ?? 2026, month: c.month ?? 1, day: c.day ?? 1)) ?? (try! CalendarDate("2026-01-01"))
     }
 
-    init(db: LocalDB, today: CalendarDate, defaults: UserDefaults = .standard) {
+    convenience init(db: LocalDB, today: CalendarDate, defaults: UserDefaults = .standard) {
+        self.init(db: db, todayProvider: { today }, defaults: defaults)
+    }
+
+    /// App 里用：按 `model.now` 算今天
+    convenience init(db: LocalDB, clock: @escaping () -> Date, defaults: UserDefaults = .standard) {
+        self.init(db: db, todayProvider: { StockInModel.shanghaiToday(clock()) }, defaults: defaults)
+    }
+
+    init(db: LocalDB, todayProvider: @escaping () -> CalendarDate, defaults: UserDefaults = .standard) {
         self.db = db
-        self.today = today
+        self.todayProvider = todayProvider
         self.defaults = defaults
         pendingCount = (try? db.pendingOps().count) ?? 0
     }
