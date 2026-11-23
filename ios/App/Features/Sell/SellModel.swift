@@ -30,6 +30,8 @@ final class SellModel {
         case saveFailed(String)
         /// 抹零后篮子变了，抹的零作废、回到按原价收（§14 S16-1：不悄悄变）
         case paidCleared
+        /// 相机一帧里有好几个码：一次只认一件（负责人 11/23 定），什么都没记
+        case oneAtATime
 
         var text: String {
             switch self {
@@ -38,6 +40,7 @@ final class SellModel {
             case .saveFailed(let why): "没记上，再按一次试试（\(why)）"
             case .paidCleared: "东西变了，刚才抹的零取消了，要抹请再抹一次"
             case .quickSaved: "已记下，回头让家里人补全"
+            case .oneAtATime: "一次扫一件：镜头里有好几个码，先把别的挪开"
             }
         }
 
@@ -191,6 +194,12 @@ final class SellModel {
         guard basket.paidOverrideFen != nil else { return }
         try? basket.setPaid(nil)
         show(.paidCleared)
+    }
+
+    /// 扫码层说相机一帧里有好几个码（`ScanHub.onSeveralCodes`）：不盖掉别的提示
+    func showOneAtATime() {
+        guard notice == nil || notice == .oneAtATime else { return }
+        show(.oneAtATime)
     }
 
     private func show(_ n: Notice) {

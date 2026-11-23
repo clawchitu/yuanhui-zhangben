@@ -87,6 +87,7 @@ struct SellView: View {
             model.registration = caps.has(.fullRegister) ? .full : (caps.has(.quickRegister) ? .quick : .none)
             let model = model
             hub.handler = { model.handle($0) }
+            hub.onSeveralCodes = { model.showOneAtATime() }
             model.accepting = !covered
         }
         .onChange(of: covered) { _, c in model.accepting = !c }

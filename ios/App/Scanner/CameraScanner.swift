@@ -9,8 +9,8 @@ protocol CameraRunning: AnyObject {
     func start()
     /// 停止识别；调用之后已经排队的识别回调一律不再交出
     func stop()
-    /// 认出的码（主线程）
-    var onCode: ((String) -> Void)? { get set }
+    /// 一帧认出的所有码（主线程；识别区内的，可能多个，带码制）
+    var onFrame: (([CameraCode]) -> Void)? { get set }
 }
 
 /// 识别结果输出端（正式是 `AVCaptureMetadataOutput`，测试换成记录器）。只在会话队列上用。
@@ -23,7 +23,7 @@ protocol MetadataOutputTarget: AnyObject {
 extension AVCaptureMetadataOutput: MetadataOutputTarget {}
 
 /// 相机识别条码：`AVCaptureMetadataOutput`（§1：EAN-13 / EAN-8 / UPC-E / ITF-14 / Code128；扫码登录另加 QR）。
-/// 会话的配置、启动、停止、识别范围都在自己的串行队列上做，按调用顺序执行；认出的码在主线程交给 `onCode`。
+/// 会话的配置、启动、停止、识别范围都在自己的串行队列上做，按调用顺序执行；每帧认出的码在主线程整帧交给 `onFrame`。
 ///
 /// 交码按「代」隔离（PR #17 Codex 第二轮 1、2）：主线程上每次 `start()` / `stop()` / `setRectOfInterest` 都换一代（`epoch`），
 /// 并立刻关掉交码；会话队列按顺序做完这一代的设置后，才给输出端装上一个带这一代代号的新回调（`Relay`），
@@ -55,7 +55,7 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     /// 只在主线程读写：当前这一代，和已经装好回调、允许交码的那一代
     @MainActor private(set) var epoch = 0
     @MainActor private var acceptedEpoch: Int?
-    @MainActor var onCode: ((String) -> Void)?
+    @MainActor var onFrame: (([CameraCode]) -> Void)?
     private var observers: [NSObjectProtocol] = []
 
     /// 这台机器有没有后置相机（模拟器没有）
@@ -213,7 +213,7 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
             return
         }
         output.rectOfInterest = rect
-        let relay = Relay(owner: self, epoch: e, rect: rect)
+        let relay = Relay(owner: self, epoch: e)
         self.relay = relay
         // 先排「开交码」再装回调：这一代的回调到主线程时，交码一定已经开了（主队列先进先出）
         DispatchQueue.main.async { [self] in
@@ -223,13 +223,10 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     }
 
     /// 主线程：只交当前这一代、并且已经开了交码的码。
-    /// 同一帧有多个码时每个码交出前都重新核对代号：交前一个码时 `onCode` 可能同步停用 / 重开 / 换范围（换代），
-    /// 换代之后同批剩下的码全部丢掉（PR #17 Codex 第三轮）
-    @MainActor fileprivate func deliver(_ codes: [String], epoch e: Int) {
-        for code in codes {
-            guard e == epoch, acceptedEpoch == e else { return }
-            onCode?(code)
-        }
+    /// 一帧整帧交出（PR #40 第三轮：一次只认一件要看到同帧所有码，由 `ScanHub.receiveFrame` 判定）
+    @MainActor fileprivate func deliver(_ codes: [CameraCode], epoch e: Int) {
+        guard e == epoch, acceptedEpoch == e else { return }
+        onFrame?(codes)
     }
 
     nonisolated private func configure() {
@@ -260,41 +257,42 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     final class Relay: NSObject, AVCaptureMetadataOutputObjectsDelegate, @unchecked Sendable {
         private weak var owner: CameraSession?
         let epoch: Int
-        /// 这一代的识别区（换范围就换一代）
-        let rect: CGRect
 
-        init(owner: CameraSession, epoch: Int, rect: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1)) {
+        init(owner: CameraSession, epoch: Int) {
             self.owner = owner
             self.epoch = epoch
-            self.rect = rect
         }
 
         nonisolated func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject],
                                         from connection: AVCaptureConnection) {
-            // 一次只认一件（负责人 11/23 定）：同一帧多个码只取离识别区中心最近的那一个，其余不交（不记账、不占去重）
-            let found = objects.compactMap { o -> (code: String, bounds: CGRect)? in
+            let codes = objects.compactMap { o -> CameraCode? in
                 guard let c = o as? AVMetadataMachineReadableCodeObject, let v = c.stringValue else { return nil }
-                return (v, c.bounds)
+                return CameraCode(v, kind: Self.kind(c.type))
             }
-            let code = CameraSession.pickCentered(found, in: rect)
-            MainActor.assumeIsolated { deliver(code.map { [$0] } ?? []) }
+            MainActor.assumeIsolated { deliver(codes) }
         }
 
-        /// 主线程：把这一代认出的码交给会话（测试直接调它模拟排队的回调）
-        @MainActor func deliver(_ codes: [String]) {
+        nonisolated static func kind(_ t: AVMetadataObject.ObjectType) -> CameraCode.Kind {
+            switch t {
+            case .ean13: .ean13
+            case .ean8: .ean8
+            case .upce: .upce
+            case .itf14: .itf14
+            case .code128: .code128
+            case .qr: .qr
+            default: .other
+            }
+        }
+
+        /// 主线程：把这一代认出的一帧交给会话（测试直接调它模拟排队的回调）
+        @MainActor func deliver(_ codes: [CameraCode]) {
             owner?.deliver(codes, epoch: epoch)
         }
-    }
 
-    /// 一次只认一件（负责人 11/23 定，进货、卖出、扫码登录共用）：码的中心必须落在识别区里，
-    /// 多个都在时取中心离识别区中心最近的那一个；都不在时不交。坐标都是元数据输出坐标（0…1）
-    nonisolated static func pickCentered(_ found: [(code: String, bounds: CGRect)], in rect: CGRect) -> String? {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        func dist(_ b: CGRect) -> CGFloat { hypot(b.midX - center.x, b.midY - center.y) }
-        return found
-            .filter { rect.contains(CGPoint(x: $0.bounds.midX, y: $0.bounds.midY)) }
-            .min { dist($0.bounds) < dist($1.bounds) }?
-            .code
+        /// 测试用：码制不明的一帧（按 `.other` 交）
+        @MainActor func deliver(_ codes: [String]) {
+            deliver(codes.map { CameraCode($0, kind: .other) })
+        }
     }
 
     /// 测试用：等会话队列上已排的活做完
@@ -322,8 +320,8 @@ struct RestartLimiter: Sendable {
 final class CameraController {
     let permission: CameraPermission
     private let runner: CameraRunning?
-    /// 认出的码（通常接 `ScanHub.receive(_:from: .camera)`）
-    var onCode: ((String) -> Void)?
+    /// 一帧认出的码（通常接 `ScanHub.receiveFrame`）
+    var onFrame: (([CameraCode]) -> Void)?
     /// 相机（重新）开起来时（暂停后恢复、回前台、页面重新出现）：接 `ScanHub.cameraResumed`，不重放上一次处理过的码
     var onResume: (() -> Void)?
     /// 相机要停时（被盖住、收起、退后台、离开页面）：接 `ScanHub.cameraPaused`，记下这会儿镜头里的码
@@ -337,7 +335,7 @@ final class CameraController {
     init(runner: CameraRunning?, permission: CameraPermission) {
         self.runner = runner
         self.permission = permission
-        runner?.onCode = { [weak self] code in self?.receive(code) }
+        runner?.onFrame = { [weak self] codes in self?.receive(codes) }
     }
 
     func update(visible: Bool, sceneActive: Bool, paused: Bool = false) {
@@ -357,17 +355,17 @@ final class CameraController {
         if want { onResume?(); runner?.start() } else { onPause?(); runner?.stop() }
     }
 
-    /// 接到卖出 / 进货页的扫码层：认出的码交 `hub.receive(_:from: .camera)`，每次停相机调 `hub.cameraPaused()`、（重新）开相机调 `hub.cameraResumed()`
+    /// 接到卖出 / 进货页的扫码层：每帧认出的码交 `hub.receiveFrame`，每次停相机调 `hub.cameraPaused()`、（重新）开相机调 `hub.cameraResumed()`
     /// （PR #40 Codex 复审 2、Fable 必须修：两页所有暂停→恢复路径走同一个防重放）
     func attach(to hub: ScanHub) {
-        onCode = { [weak hub] in hub?.receive($0, from: .camera) }
+        onFrame = { [weak hub] in hub?.receiveFrame($0) }
         onResume = { [weak hub] in hub?.cameraResumed() }
         onPause = { [weak hub] in hub?.cameraPaused() }
     }
 
-    private func receive(_ code: String) {
+    private func receive(_ codes: [CameraCode]) {
         guard running else { return }
-        onCode?(code)
+        onFrame?(codes)
     }
 }
 

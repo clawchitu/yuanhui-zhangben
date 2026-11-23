@@ -73,7 +73,8 @@ struct CameraViewfinder: View {
             session = hasCamera ? CameraSession(includeQR: includeQR) : nil
             controller = CameraController(runner: session, permission: permission)
             if let onRawCode {
-                controller.onCode = { onRawCode($0) }
+                // 扫码登录页：一帧只取一个码（登录码是 QR，一次一个），不经扫码层
+                controller.onFrame = { if let code = ($0.first { $0.kind == .qr } ?? $0.first) { onRawCode(code.value) } }
             } else {
                 // 进货、卖出两页所有暂停→恢复路径（面板、手输页、登记页返回、切后台回来）走同一个防重放（PR #40 Codex 2 / Fable）
                 controller.attach(to: hub)

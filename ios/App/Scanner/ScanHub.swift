@@ -23,6 +23,14 @@ struct Scan: Equatable, Sendable {
     let source: ScanSource
 }
 
+/// 相机一帧里认出的一个码（带码制：一次只认一件要按码制过滤）
+struct CameraCode: Equatable, Sendable {
+    enum Kind: Sendable { case ean13, ean8, upce, itf14, code128, qr, other }
+    let value: String
+    let kind: Kind
+    init(_ value: String, kind: Kind) { self.value = value; self.kind = kind }
+}
+
 /// 页面处理完一次扫码后告诉扫码层结果，扫码层据此出声、震动
 enum ScanOutcome: Equatable, Sendable {
     /// 登记过的码（高而短的「嘀」+ 成功触感）
@@ -51,7 +59,8 @@ final class ScanHub {
 
     private let feedback: ScanFeedbackPlaying?
     private let clock: () -> TimeInterval
-    private var deduper: CameraDeduper
+    /// 相机「离开多久算新的一次」：1.5 秒（有效时钟）
+    let cameraWindow: TimeInterval
     private var parser: HIDScanParser
 
     init(feedback: ScanFeedbackPlaying? = nil,
@@ -60,71 +69,132 @@ final class ScanHub {
          gunConfig: HIDScanParser.Config = .init()) {
         self.feedback = feedback
         self.clock = clock
-        self.deduper = CameraDeduper(window: cameraWindow)
+        self.cameraWindow = cameraWindow
         self.parser = HIDScanParser(config: gunConfig)
     }
 
-    /// 相机或手输条码交来一个码。空码、含数字和字母以外字符的码（首尾的空格、Tab、换行也算，不先裁掉）、
-    /// 被相机去重挡掉的码返回 nil（不出声、不交给页面），否则返回页面的处理结果。
+    /// 手输条码（或测试里的单码相机帧）交来一个码。空码、含数字和字母以外字符的码（首尾的空格、Tab、换行也算，
+    /// 不先裁掉）返回 nil（不出声、不交给页面），否则返回页面的处理结果。
+    /// `.camera` 等同于只有这一个码的一帧（`receiveFrame([code])`），按相机规则判定。
     @discardableResult
     func receive(_ code: String, from source: ScanSource) -> ScanOutcome? {
-        guard Self.isAcceptable(code) else { return nil }
-        guard source == .camera else { return deliver(Scan(code: code, source: source)) }
-        let now = clock()
-        if processedSeen[code] != nil { processedSeen[code] = now }
-        if heldOver(code, at: now) { return nil }
-        if !deduper.accept(code, at: now) { return nil }
-        let outcome = deliver(Scan(code: code, source: source))
-        if outcome == .ignored, processedSeen[code] == nil {
-            // 页面没收（进货页商品卡在 / 页面被盖住）：这个码没处理过，不占去重窗口，
-            // 否则它一直在镜头里就一直刷新计时，恢复后也扫不进去（PR #40 Codex 必须修 1）。
-            // 已经处理过的码照旧留着计时：还在镜头里就不重复算
-            deduper.forget(code)
-        } else if let outcome, outcome != .ignored {
-            processedSeen[code] = now
+        guard source == .camera else {
+            guard Self.isAcceptable(code) else { return nil }
+            return deliver(Scan(code: code, source: source))
+        }
+        return receiveFrame([code])
+    }
+
+    // MARK: - 相机：有效时钟 + 资格（PR #40 第三轮重写 + Fable 补洞，进货、卖出共用）
+    //
+    // 1. 有效时钟：只在相机开着时走；停相机（抹零、手输、登记页、切后台、收起相机区、离开页面）期间不走；
+    //    开相机后冻结到收到第一批识别回调才走（首回调晚到的那段不算「离开」）。
+    // 2. 每帧识别区内的所有商品码（选没选中、页面收不收都算）都按有效时钟记「最后看见」。
+    // 3. 一个码出现时，距它上次被看见满离开阈值（有效时钟）或从没见过，给它「可记一次」的资格；一直在画面里不会再得资格。
+    //    离开阈值：从没记过的码 1.5 秒；本页已记过的码 2.5 秒（防漏帧：识别断档不当成拿开）。
+    // 4. 一次只认一件（负责人 11/23 决定）：一帧滤完只剩一个码、它有资格、页面收了，才算记一笔并用掉资格。
+    //    滤完 ≥ 2 个不同的码：什么都不交、不用掉资格，提示「一次扫一件」。
+    //    过滤：只收数字字母；EAN-13 / EAN-8 / UPC-E 校验位要对；ITF-14（校验位要对）和 Code128 只在同帧没有 EAN / UPC 时才算；
+    //    同一码值多个框算一个。
+    // 5. 页面从「不收」转回「收」（相机重开、进货商品卡关掉，`inputResumed`）：清空所有码的资格——还在画面里的要拿开再扫。
+
+    /// 码 → 最后一次被看见的有效时钟
+    private var lastSeen: [String: TimeInterval] = [:]
+    /// 有「可记一次」资格的码
+    private var eligible: Set<String> = []
+    /// 本页相机记过的码（离开阈值加长）
+    private var recorded: Set<String> = []
+    /// 已记过的码的离开阈值
+    static let recordedWindow: TimeInterval = 2.5
+    /// 有效时钟：已累计的部分，和这一段开始走时的真实时钟（nil：停着，或开了还没收到识别回调）
+    private var effectiveBase: TimeInterval = 0
+    private var runningSince: TimeInterval?
+    private var cameraOn = true
+    /// 上一次提示「一次扫一件」的有效时钟
+    private var lastSeveralNotice: TimeInterval?
+    /// 一帧里有好几个码：页面出「一次扫一件」提示（最多 2 秒一次）
+    var onSeveralCodes: (() -> Void)?
+
+    private var effectiveNow: TimeInterval {
+        guard let s = runningSince else { return effectiveBase }
+        return effectiveBase + max(0, clock() - s)
+    }
+
+    /// 相机要停了：有效时钟停走
+    func cameraPaused() {
+        effectiveBase = effectiveNow
+        runningSince = nil
+        cameraOn = false
+    }
+
+    /// 相机（重新）开了：有效时钟冻结到第一个识别回调；页面转回收码，清空资格
+    func cameraResumed() {
+        effectiveBase = effectiveNow
+        runningSince = nil
+        cameraOn = true
+        inputResumed()
+    }
+
+    /// 页面从「不收」转回「收」（进货商品卡关掉等）：所有码的资格清空，还在画面里的要拿开再扫
+    func inputResumed() {
+        eligible = []
+    }
+
+    /// 一帧里算数的商品码（过滤规则见上面第 4 条）
+    static func productCodes(in frame: [CameraCode]) -> [String] {
+        let ok = frame.filter { isAcceptable($0.value) }
+        let primary = ok.filter {
+            switch $0.kind {
+            case .ean13: $0.value.count == 13 && GTIN.checkDigitOK($0.value)
+            case .ean8: $0.value.count == 8 && GTIN.checkDigitOK($0.value)
+            case .upce: GTIN.upceOK($0.value)
+            case .other: true   // 码制不明（Debug 夹具 / 测试的单码入口）
+            case .itf14, .code128, .qr: false
+            }
+        }
+        let picked = primary.isEmpty ? ok.filter {
+            switch $0.kind {
+            case .itf14: $0.value.count == 14 && GTIN.checkDigitOK($0.value)
+            case .code128: true
+            default: false
+            }
+        } : primary
+        var seen = Set<String>()
+        return picked.map(\.value).filter { seen.insert($0).inserted }
+    }
+
+    /// 测试 / 夹具用：码制不明的一帧
+    @discardableResult
+    func receiveFrame(_ values: [String]) -> ScanOutcome? {
+        receiveFrame(values.map { CameraCode($0, kind: .other) })
+    }
+
+    /// 相机交来一帧（识别区内的所有码）。返回页面的处理结果；没交给页面时返回 nil
+    @discardableResult
+    func receiveFrame(_ frame: [CameraCode]) -> ScanOutcome? {
+        if runningSince == nil, cameraOn { runningSince = clock() }
+        let now = effectiveNow
+        let codes = Self.productCodes(in: frame)
+        if lastSeen.count > 64 { lastSeen = lastSeen.filter { now >= $0.value && now - $0.value < Self.recordedWindow } }
+        for c in codes {
+            let window = recorded.contains(c) ? Self.recordedWindow : cameraWindow
+            if let seen = lastSeen[c], now >= seen, now - seen < window {} else { eligible.insert(c) }
+            lastSeen[c] = now
+        }
+        guard codes.count == 1, let code = codes.first else {
+            if codes.count > 1, lastSeveralNotice.map({ now - $0 >= 2 || now < $0 }) ?? true {
+                lastSeveralNotice = now
+                onSeveralCodes?()
+            }
+            return nil
+        }
+        guard eligible.contains(code) else { return nil }
+        let outcome = deliver(Scan(code: code, source: .camera))
+        if let outcome, outcome != .ignored {
+            eligible.remove(code)
+            if outcome == .known { recorded.insert(code) }
         }
         return outcome
-    }
-
-    /// 相机处理过（页面收了）的码 → 相机最后一次看见它的时间（之后每次看见都刷新，去重挡掉、防重放挡掉的也算）
-    private var processedSeen: [String: TimeInterval] = [:]
-    /// 相机停过再开的防重放（PR #40 Codex 复审、Fable 必须修）：停相机前 1.5 秒内相机看见过的、处理过的码，每个码各自挡着。
-    /// 码 → 恢复后最后一次看见的时间（nil：恢复后还没看见）。不设总时长（相机首个回调可能晚到），
-    /// 也不因为看见别的码就解除；每个码只在离开镜头满一个去重窗口后解除：
-    /// 恢复后看见过的按最后看见的时间算，没看见过的按恢复后第一个识别结果的时间算
-    private var held: [String: TimeInterval?] = [:]
-    /// 恢复后第一个识别结果的时间（nil：恢复后还没收到识别结果）
-    private var firstFrameAt: TimeInterval?
-
-    /// 相机要停了（页面被盖住、相机区收起、退到后台、离开页面）：记下这会儿还在镜头里的处理过的码
-    func cameraPaused() {
-        let now = clock()
-        let window = deduper.window
-        processedSeen = processedSeen.filter { _, seen in now >= seen && now - seen < window }
-        // 上一次恢复后还挡着、没确认离开的码接着挡（恢复后没等到识别结果又停了）
-        for code in Set(held.keys).union(processedSeen.keys) { held[code] = .some(nil) }
-        firstFrameAt = nil
-    }
-
-    /// 相机停过、要重新开：停之前在镜头里的那几件不重放。停的这段时间去重计时过期了，
-    /// 那几件还在镜头里的话，一开相机就会被当成新扫的，卖出页多记一件、进货页把刚确认完的商品又弹回来
-    func cameraResumed() {
-        for code in held.keys { held[code] = .some(nil) }
-        firstFrameAt = nil
-    }
-
-    private func heldOver(_ code: String, at now: TimeInterval) -> Bool {
-        guard !held.isEmpty else { return false }
-        if firstFrameAt == nil { firstFrameAt = now }
-        let window = deduper.window
-        // 离开镜头满一个窗口的码解除（这一个码自己若到期，也按新的一次处理）
-        held = held.filter { _, seen in
-            guard let since = seen ?? firstFrameAt else { return true }
-            return !(now >= since && now - since >= window)
-        }
-        guard held[code] != nil else { return false }
-        held[code] = .some(now)
-        return true
     }
 
     /// 扫码枪的一个按键（`HIDKeyCaptureView` 交来；时间用 UIPress.timestamp，与 `clock` 同一个时基：开机以来的秒数）
@@ -145,5 +215,34 @@ final class ScanHub {
         let outcome = handler?(scan) ?? .ignored
         if outcome != .ignored { feedback?.play(outcome) }
         return outcome
+    }
+}
+
+/// 商品条码校验位（GS1：从右往左数，数据位权重 3、1 交替）
+enum GTIN {
+    static func checkDigitOK(_ code: String) -> Bool {
+        let d = code.compactMap(\.wholeNumberValue)
+        guard d.count == code.count, d.count >= 2 else { return false }
+        return check(Array(d.dropLast())) == d.last
+    }
+
+    static func check(_ body: [Int]) -> Int {
+        let sum = body.reversed().enumerated().reduce(0) { $0 + $1.element * ($1.offset % 2 == 0 ? 3 : 1) }
+        return (10 - sum % 10) % 10
+    }
+
+    /// UPC-E（8 位：数制 + 6 位 + 校验位）：展开成 UPC-A 再算校验位
+    static func upceOK(_ code: String) -> Bool {
+        let d = code.compactMap(\.wholeNumberValue)
+        guard d.count == 8, d.count == code.count, d[0] == 0 || d[0] == 1 else { return false }
+        let (s, x) = (d[0], Array(d[1...6]))
+        let a: [Int]
+        switch x[5] {
+        case 0, 1, 2: a = [s, x[0], x[1], x[5], 0, 0, 0, 0, x[2], x[3], x[4]]
+        case 3: a = [s, x[0], x[1], x[2], 0, 0, 0, 0, 0, x[3], x[4]]
+        case 4: a = [s, x[0], x[1], x[2], x[3], 0, 0, 0, 0, 0, x[4]]
+        default: a = [s, x[0], x[1], x[2], x[3], x[4], 0, 0, 0, 0, x[5]]
+        }
+        return check(a) == d[7]
     }
 }

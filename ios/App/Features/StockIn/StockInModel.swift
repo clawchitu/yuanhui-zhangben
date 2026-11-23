@@ -24,6 +24,8 @@ final class StockInModel {
         case registered(String)
         /// 04b 没填数量（或填 0）：只登记了商品，库存还没记，接着在进货页填这一批（PR #31 Fable 必须改 2）
         case registeredNoStock(String)
+        /// 相机一帧里有好几个码：一次只认一件（负责人 11/23 定），什么都没认
+        case oneAtATime
 
         var text: String {
             switch self {
@@ -32,10 +34,11 @@ final class StockInModel {
             case .saved(let what): "记好了：\(what)"
             case .registered(let name): "登记好了：\(name)，刚填的库存已记上"
             case .registeredNoStock(let name): "登记好了：\(name)，库存还没记，接着填这一批"
+            case .oneAtATime: "一次扫一件：镜头里有好几个码，先把别的挪开"
             }
         }
         var isError: Bool {
-            switch self { case .unknownBarcode, .rejected: true; case .saved, .registered, .registeredNoStock: false }
+            switch self { case .unknownBarcode, .rejected, .oneAtATime: true; case .saved, .registered, .registeredNoStock: false }
         }
     }
 
@@ -54,7 +57,11 @@ final class StockInModel {
     private let todayProvider: () -> CalendarDate
     private var today: CalendarDate { todayProvider() }
 
-    private(set) var conversion: PackConversion?
+    private(set) var conversion: PackConversion? {
+        didSet { if oldValue != nil, conversion == nil { onCardClosed?() } }
+    }
+    /// 商品卡关掉（确认入库、重新扫）：页面转回收相机码，接 `ScanHub.inputResumed`（PR #40 Fable 补洞 c）
+    var onCardClosed: (() -> Void)?
     private(set) var baseline: ProductPrivate?
     private(set) var stockBefore: Int64?
     /// 这一样在本机有没上传的库存变动（§14 S19-1）
@@ -374,6 +381,12 @@ final class StockInModel {
     func cancelDate() { confirmDate = false }
 
     // MARK: - 其他
+
+    /// 扫码层说相机一帧里有好几个码（`ScanHub.onSeveralCodes`）：不盖掉别的提示
+    func showOneAtATime() {
+        guard notice == nil || notice == .oneAtATime else { return }
+        show(.oneAtATime)
+    }
 
     private func show(_ n: Notice) {
         notice = n
