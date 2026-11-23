@@ -90,8 +90,14 @@ final class SyncCoordinator {
         let c = SyncCoordinator(db: db, build: services.build, transport: transport)
         c.simulatedOffline = simulatedOffline
         c.recovery = RecoveryRunner.live(db: db, services: services, args: args)
+        #if DEBUG
+        if let n = UIFixture.value(for: "-uiMaxBatchOps", in: args).flatMap(Int.init) { c.maxBatchOps = n }
+        #endif
         return c
     }
+
+    /// 一批最多推几个 op（正常 200；Debug 的 `-uiMaxBatchOps` 调小，联调「被踢时还剩几笔」用）
+    var maxBatchOps = LocalDB.maxBatchOps
 
     /// Debug 的 `-uiOffline`：右上角显示「没网」，不听真实网络
     var simulatedOffline = false
@@ -150,6 +156,7 @@ final class SyncCoordinator {
 
     private func once() async {
         let engine = SyncEngine(db: db, appBuild: build, transport: transport)
+        engine.maxBatchOps = maxBatchOps
         let report: @Sendable (SyncProgress) -> Void = { [weak self] p in
             Task { @MainActor in self?.apply(p) }
         }

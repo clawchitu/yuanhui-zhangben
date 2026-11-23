@@ -234,6 +234,13 @@ struct AppRoot: View {
             let boot = try liveBoot(directory: try storeDirectory(), tokens: tokens,
                                     defaults: services?.defaults ?? .standard, services: services)
             #if DEBUG
+            // S22b 联调：被踢页（25f）上带着要兑的码重开，等同点了「扫家里人给的码」再扫
+            if case .kicked(let k) = boot, UIFixture.value(for: "-uiRedeemCode", in: args) != nil {
+                try? k.db.clearSignOutReason()
+                let login = makeLogin(db: k.db, services: services)
+                UIFixture.applyLoginFixture(login, args: args)
+                return .signedOut(login)
+            }
             if case .signedOut(let login) = boot { UIFixture.applyLoginFixture(login, args: args) }
             #endif
             return boot

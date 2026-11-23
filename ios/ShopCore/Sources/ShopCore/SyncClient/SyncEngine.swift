@@ -524,12 +524,14 @@ extension LocalDB {
 
 /// 同步引擎：推 outbox、拉两条流、每个响应一个事务提交。传输由调用方注入（App 里是 `APIClient`，测试里是假服务器）。
 /// 全部方法同步阻塞，调用方在后台线程 / 后台任务里调（`beginSession` / `recordResults` / 压缩不许在主线程）。
-public final class SyncEngine: Sendable {
+public final class SyncEngine: @unchecked Sendable {
     /// 发一次 `/v1/sync`：请求体 → (HTTP 状态, 响应体)
     public typealias Transport = @Sendable (Data) throws -> (Int, Data)
     public let db: LocalDB
     let transport: Transport
     let appBuild: Int
+    /// 一批最多几个 op（默认 200，§4.2）。建好后、开始同步前设
+    public var maxBatchOps = LocalDB.maxBatchOps
 
     public init(db: LocalDB, appBuild: Int, transport: @escaping Transport) {
         self.db = db; self.appBuild = appBuild; self.transport = transport
@@ -551,7 +553,7 @@ public final class SyncEngine: Sendable {
         var handshakes = 0
         for _ in 0..<maxRounds {
             let status = try db.syncStatus()
-            let batch = status.deletePendingUntil == nil ? try db.nextPushBatch() : nil
+            let batch = status.deletePendingUntil == nil ? try db.nextPushBatch(maxOps: maxBatchOps) : nil
             let body = try db.syncRequestBody(batch, appBuild: appBuild)
             let (code, data) = try transport(body)
             if code == 409, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -572,7 +574,7 @@ public final class SyncEngine: Sendable {
             // 分子取本机商品数：强杀重开后接着数，不从 0 起
             products = (try? db.productCount()) ?? products + r.changes.products.count
             progress?(SyncProgress(products: products, totalProducts: Int(r.totalProducts), catalogDone: !r.hasMore.catalog))
-            let next = r.deletePendingUntil == nil ? try db.nextPushBatch() : nil; let morePush = next != nil
+            let next = r.deletePendingUntil == nil ? try db.nextPushBatch(maxOps: maxBatchOps) : nil; let morePush = next != nil
             if !r.hasMore.catalog && !r.hasMore.ledger && !morePush { return try db.syncStatus() }
             // 没有进展（推上去的一个都没出队、游标没动）就结束本趟，等下一次触发（PR #36 评审可选 3）
             let after = try db.syncStatus()

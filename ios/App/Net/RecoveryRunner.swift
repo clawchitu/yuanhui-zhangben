@@ -17,7 +17,8 @@ final class RecoveryRunner: @unchecked Sendable {
     @MainActor static func live(db: LocalDB, services: AppServices, args: [String] = ProcessInfo.processInfo.arguments) -> RecoveryRunner {
         let api = services.api
         #if DEBUG
-        let offline = args.contains("-uiOffline")
+        // -uiRecoveryOffline：只有恢复队列连不上（联调「被踢后还剩几笔没传」）
+        let offline = args.contains("-uiOffline") || args.contains("-uiRecoveryOffline")
         #else
         let offline = false
         #endif
