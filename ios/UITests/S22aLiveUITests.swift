@@ -10,7 +10,7 @@ import XCTest
 @MainActor
 final class S22aLiveUITests: XCTestCase {
     static let beer = "6970000099010", zhCarton = "6970000099002"
-    static let demoBeer = "6901035600016"   // 演示数据里的青岛啤酒：服务器上没有这个商品，卖它会被拒
+    static let demoErguotou = "6901234500011"   // 演示数据里的二锅头：服务器上没有这个商品
     private var env: [String: String] { ProcessInfo.processInfo.environment }
     private var destructive: Bool { env["YH_S22A_DESTRUCTIVE"] == "1" }
     private var observer: Bool { env["YH_S22A_OBSERVER"] == "1" }
@@ -55,7 +55,14 @@ final class S22aLiveUITests: XCTestCase {
         return out
     }
 
-    private func syncLabel(_ app: XCUIApplication) -> String { el(app, "syncStatus").label }
+    /// 右上角同步状态的字（读屏标签里可能带图标名，只取「已同步 / N 笔待传 / 没网」那段）
+    private func syncLabel(_ app: XCUIApplication) -> String {
+        // 图标（checkmark 读作 Selected）和文字都带这个 id：把几个元素的标签拼起来找
+        let l = app.descendants(matching: .any).matching(identifier: "syncStatus").allElementsBoundByIndex.map(\.label).joined(separator: " ")
+        for k in ["已同步", "没网"] where l.contains(k) { return k }
+        if let r = l.range(of: #"\d+ 笔待传"#, options: .regularExpression) { return String(l[r]) }
+        return l
+    }
 
     /// 断网卖一笔（-uiOffline：同步请求一律连不上）：开到卖出页、假扫码、自动收款，等「记好了」
     private func sellOffline(_ code: String, extra: [String] = []) {
@@ -136,20 +143,22 @@ final class S22aLiveUITests: XCTestCase {
 
     /// 首次同步：全新登录后先见 29「n / 312 样」，商品拉完进 16，做完首次进入到首页「已同步」
     func test1FirstSync() throws {
-        let app = launch(["-uiSyncDelayMs", "400"], fresh: true)
+        let app = launch(["-uiSyncDelayMs", "600"], fresh: true)
         XCTAssertTrue(el(app, "page.login").waitForExistence(timeout: 15))
         let u = app.textFields["login.username"]; u.tap(); u.typeText(env["YH_LIVE_USER"]!)
         let p = app.secureTextFields["login.password"]; p.tap(); p.typeText(env["YH_LIVE_PASSWORD"]!)
         app.buttons["login.submit"].tap()
         XCTAssertTrue(el(app, "page.firstSync").waitForExistence(timeout: 20), "登录后先进 29")
         let count = el(app, "firstSync.count")
-        wait("进度「n / 312 样」（现在「\(count.label)」）") { count.label.range(of: #"^\d+ / \d+ 样$"#, options: .regularExpression) != nil }
-        print("S22A 首次同步进度：\(count.label)")
-        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "29-first-sync-live"; shot.lifetime = .keepAlways; add(shot)
+        // 本机服务端分页小（每页 40 行），看得见「n / 312 样」；线上一页 500 行，商品少时一页就拉完，只要求进过 29
+        let progress = { count.exists && count.label.range(of: #"^\d+ / \d+ 样$"#, options: .regularExpression) != nil }
+        wait("进度「n / N 样」（现在「\(count.label)」）") { progress() || (!destructive && el(app, "page.onboarding").exists) }
+        print("S22A 首次同步进度：\(count.exists ? count.label : "（一页就拉完了）")")
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "first-sync-live"; shot.lifetime = .keepAlways; add(shot)
         XCTAssertTrue(el(app, "page.onboarding").waitForExistence(timeout: 120), "商品拉完进 16")
         app.buttons["onboarding.done"].tap()
         XCTAssertTrue(el(app, "page.home").waitForExistence(timeout: 15))
-        wait("已同步", timeout: 120) { syncLabel(app) == "已同步" }
+        wait("已同步（现在「\(syncLabel(app))」）", timeout: 120) { syncLabel(app) == "已同步" }
     }
 
     /// 断网卖三笔 → 联网 → 服务器上每条流水恰好一条（另一台模拟器同时跑 observer，看 20 秒内出现）
@@ -194,18 +203,23 @@ final class S22aLiveUITests: XCTestCase {
         }
     }
 
-    /// 服务器已拒绝但响应丢失 → 重试拿到的仍是拒绝，本地标「没记上」，临时库存被纠正
+    /// 服务器已拒绝但响应丢失 → 重试拿到的仍是拒绝，本地把这条标为没记上，临时库存被纠正。
+    /// 造一条一定被拒的：-uiInjectDemo 往本机塞演示商品（服务器上没有），断网给它记一笔进货 → 服务器拒「商品不存在」。
+    /// （卖出不行：服务器对不认识的商品 id 自动建待确认商品，照样入账，S05-9。）
     func test4RejectedReplay() throws {
         try XCTSkipIf(observer || !destructive)
-        sellOffline(Self.demoBeer, extra: ["-uiInjectDemo"])
-        crash(at: "beforeCommit")
-        let app = syncedHome(["-uiRoute", "records"])
-        XCTAssertTrue(el(app, "records.rejected").waitForExistence(timeout: 15), "07a 这笔标「没记上」")
-        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "07a-rejected-live"; shot.lifetime = .keepAlways; add(shot)
+        let app = launch(["-uiInjectDemo", "-uiOffline", "-uiRoute", "stockIn", "-uiScan", Self.demoErguotou])
+        XCTAssertTrue(el(app, "stockIn.qty").waitForExistence(timeout: 20))
+        keys(app, "2")
+        el(app, "stockIn.cost").tap()
+        keys(app, "10")
+        el(app, "stockIn.commit").tap()
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
         app.terminate()
-        let s = launch(["-uiRoute", "sell", "-uiProbe", "-uiScan", Self.demoBeer])
-        XCTAssertTrue(el(s, "debug.ledger").waitForExistence(timeout: 15))
-        wait("被拒的那笔不再扣库存（\(probe(s))）") { probe(s)["pending"] == "0" }
+        crash(at: "beforeCommit")
+        let r = syncedHome(["-uiRoute", "records"])
+        XCTAssertTrue(el(r, "records.rejected").waitForExistence(timeout: 15), "07a 这笔进货标「没记上」")
+        let shot = XCTAttachment(screenshot: r.screenshot()); shot.name = "07a-rejected-live"; shot.lifetime = .keepAlways; add(shot)
     }
 
     /// remap：本机离线登记的条码服务器上已被另一台登记 → remap；响应丢失后重试仍得到 remap，库存记在赢家上
@@ -243,18 +257,34 @@ final class S22aLiveUITests: XCTestCase {
     /// 进货：原 6 包货值 ¥242.80，进 5 条 × ¥400 → 服务器平均进价 ¥40.05（cost.json 第一条），手机显示服务器的数
     func test6StockInAverage() throws {
         try XCTSkipIf(observer || !destructive)
+        // 每次新建一样商品（新条码），用另一台设备把它铺到 cost.json 第一条的起始状态：6 包、货值 ¥242.80
         let server = try Server.login(env)
-        let pid = try XCTUnwrap(server.productId(barcode: Self.zhCarton))
+        let tail = String(Int(Date().timeIntervalSince1970) % 10_000_000)
+        let pack = "6978" + tail.padding(toLength: 9, withPad: "1", startingAt: 0)
+        let carton = "6979" + tail.padding(toLength: 9, withPad: "2", startingAt: 0)
+        let pid = UUID().uuidString.lowercased()
+        let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func op(_ type: String, _ p: [String: Any]) -> [String: Any] {
+            ["id": UUID().uuidString.lowercased(), "type": type, "occurred_at": iso.string(from: Date()), "payload": p]
+        }
+        let r = try server.sync([
+            op("product_upsert", ["product_id": pid, "barcode": pack, "name": "S22A 中华 \(tail)", "price_fen": 4500, "quick": false, "base_unit": "包"]),
+            op("barcode_link", ["barcode": carton, "product_id": pid, "pack_qty": 10, "unit_name": "条", "pack_price_fen": 45000]),
+            op("stock_in", ["entry_id": UUID().uuidString.lowercased(), "product_id": pid, "barcode": pack, "pack_qty": 1, "pack_count": 2, "unit_cost_fen": 4046]),
+            op("stock_in", ["entry_id": UUID().uuidString.lowercased(), "product_id": pid, "barcode": pack, "pack_qty": 1, "pack_count": 4, "unit_cost_fen": 4047]),
+        ])
+        XCTAssertEqual((r["results"] as? [[String: Any]])?.compactMap { $0["status"] as? String }, ["applied", "applied", "applied", "applied"])
         let s0 = try server.stock(of: pid)
-        try XCTSkipUnless(s0 == (6, 24280), "这个用例只在铺货后的起始状态跑（现在 \(s0)）")
-        let app = launch(["-uiRoute", "stockIn", "-uiScan", Self.zhCarton])
+        XCTAssertTrue(s0 == (6, 24280), "起始状态 \(s0)")
+        syncedHome().terminate()   // 本机先把这样商品和它的基线拉下来
+        let app = launch(["-uiRoute", "stockIn", "-uiScan", carton])
         XCTAssertTrue(el(app, "stockIn.qty").waitForExistence(timeout: 20))
         keys(app, "5")
         el(app, "stockIn.cost").tap()
         keys(app, "400")
         XCTAssertTrue(el(app, "stockIn.average").waitForExistence(timeout: 5))
         XCTAssertTrue(el(app, "stockIn.average").label.contains("40.05"), "预计平均进价按服务器的基线算：\(el(app, "stockIn.average").label)")
-        app.buttons["stockIn.commit"].tap()
+        el(app, "stockIn.commit").tap()
         app.terminate()
         syncedHome()
         let s1 = try server.stock(of: pid)

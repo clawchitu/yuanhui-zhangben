@@ -101,7 +101,10 @@ struct AppRoot: View {
     @MainActor private func onReturnToForeground() async {
         if case .tokenUnavailable = boot { retryBoot() }
         await services?.refreshConfig()
-        if case .app(let model, _) = boot { await model.reportPendingLabel() }
+        if case .app(let model, _) = boot {
+            model.sync?.kick()  // S22a：回前台同步一趟
+            await model.reportPendingLabel()
+        }
     }
 
     /// 「重新登录」：结束本地会话（清投影、会话退役，outbox 不动——未传的账按 S22b 的退役会话补传，不丢），回登录页
