@@ -26,6 +26,11 @@ const S09_TABLES: Record<string, string[]> = {
   object_discards: ["object_key", "upload_id", "store_id", "created_at", "attempts", "next_try_at", "last_error"],
 };
 
+// S22d 的商品图候选表（全局、不分店，与 barcode_catalog 一样不进 §3 的表格），字段以 migrations/0005_catalog_image_candidates.sql 为准
+const S22D_TABLES: Record<string, string[]> = {
+  catalog_image_candidates: ["barcode", "idx", "source_url", "state", "cid", "object_key", "attempts", "next_try_at", "last_error", "fetched_at"],
+};
+
 // 索引：名字 → 定义里必须出现的片段（结构回归保护，Codex 审核意见）
 const INDEXES: Record<string, string> = {
   accounts_pkey: "(id)",
@@ -78,6 +83,9 @@ const INDEXES: Record<string, string> = {
   store_purges_pkey: "(store_id)",
   object_discards_pkey: "(object_key, upload_id)",
   image_jobs_pending_idx: "(next_try_at) WHERE (done_at IS NULL)",
+  catalog_image_candidates_pkey: "(barcode, idx)",
+  catalog_image_candidates_cid_key: "UNIQUE INDEX catalog_image_candidates_cid_key ON catalog_image_candidates USING btree (barcode, cid) WHERE (state = 'ready'::text)",
+  catalog_image_candidates_due_idx: "(next_try_at) WHERE (state = 'pending'::text)",
   removed_pkey: "(store_id, rev)",
   removed_row_idx: "(store_id, kind, row_id)",
   schema_migrations_pkey: "(name)",
@@ -148,8 +156,8 @@ describe("迁移", () => {
     expect(SPEC.lot_moves).toEqual(["store_id", "entry_id", "lot_id", "qty"]);
     expect(SPEC.ops).toContain("resolved_by_device");
     const cols = await columns(t);
-    expect(Object.keys(cols).sort()).toEqual([...Object.keys(SPEC), ...Object.keys(S09_TABLES), "schema_migrations"].sort());
-    for (const [table, fields] of Object.entries({ ...SPEC, ...S09_TABLES })) {
+    expect(Object.keys(cols).sort()).toEqual([...Object.keys(SPEC), ...Object.keys(S09_TABLES), ...Object.keys(S22D_TABLES), "schema_migrations"].sort());
+    for (const [table, fields] of Object.entries({ ...SPEC, ...S09_TABLES, ...S22D_TABLES })) {
       expect(Object.keys(cols[table]).sort(), table).toEqual([...fields].sort());
     }
   });
@@ -199,6 +207,21 @@ describe("迁移", () => {
     const statuses = api.components.schemas.OpResult.properties.status.enum;
     expect(await checkValues(t, "ops", "status")).toEqual([...statuses].sort());
     expect(await checkValues(t, "accounts", "kind")).toEqual(["family", "review"]);
+    expect(await checkValues(t, "catalog_image_candidates", "state")).toEqual(["failed", "pending", "ready"]);
+  });
+
+  it("0005 商品图候选表：ready 必须有 cid 和对象键；序号只能 0–5；同条码同内容只能一张 ready；删条码库行连带删候选", async () => {
+    await t.pool.query("INSERT INTO barcode_catalog (barcode, found, name, source) VALUES ('m5', true, 'x', 'kuainiao')");
+    const ins = (idx: number, state: string, cid: string | null, key: string | null) =>
+      t.pool.query("INSERT INTO catalog_image_candidates (barcode, idx, source_url, state, cid, object_key) VALUES ('m5', $1, 'https://a/b', $2, $3, $4)", [idx, state, cid, key]);
+    await expect(ins(0, "ready", null, null)).rejects.toThrow();
+    await expect(ins(6, "pending", null, null)).rejects.toThrow();
+    await expect(ins(0, "ready", "XYZ", "k")).rejects.toThrow();
+    await ins(0, "ready", "0123456789abcdef", "k0");
+    await expect(ins(1, "ready", "0123456789abcdef", "k0")).rejects.toThrow();
+    await ins(1, "failed", "0123456789abcdef", null);
+    await t.pool.query("DELETE FROM barcode_catalog WHERE barcode = 'm5'");
+    expect((await t.pool.query("SELECT count(*)::int AS n FROM catalog_image_candidates WHERE barcode = 'm5'")).rows[0].n).toBe(0);
   });
 
   it("契约里同步下发的字段都有对应的列（Product.private、ProductBarcode、Entry、SaleBatch、StockLot、Removed）", async () => {

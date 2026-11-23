@@ -201,7 +201,7 @@ paths:
       tags: [查询]
       operationId: barcodeLookup
       summary: 查条码对应的商品名
-      description: 先查 `barcode_catalog`，没有再调快鸟（2 秒超时）。每设备每分钟 20 次，每店每天 300 次。演示店返回内置假数据、不调付费接口。收银员只拿到 name、spec、has_image。外部没问到时回 `{found:false, retry_later:true}`（不缓存），明确没查到回 `{found:false}`。
+      description: 先查 `barcode_catalog`，没有再调快鸟（2 秒超时）。每设备每分钟 20 次，每店每天 300 次。演示店返回内置假数据、不调付费接口。收银员只拿到 name、spec、has_image。外部没问到时回 `{found:false, retry_later:true}`（不缓存），明确没查到回 `{found:false}`。S22d：查到且图片开着、不是演示店时，服务器把条码库的前 6 张图异步转存成候选（不等下载），家用 / 审核的响应带 `image_candidates`；`has_image` = `image_candidates.state != none`。第三方图片地址对谁都不下发。
       x-permission: GET /v1/barcode-lookup/{barcode}
       parameters:
         - name: barcode
@@ -216,6 +216,84 @@ paths:
               schema: { $ref: "#/components/schemas/BarcodeLookup" }
         "403": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
+  /v1/barcode-lookup/{barcode}/images:
+    get:
+      tags: [查询]
+      operationId: barcodeImageCandidates
+      summary: 条码的商品图候选（S22d，供轮询）
+      description: 只读库、不调快鸟。每设备每分钟 60 次（超了 429 rate_limited）。图片开关关着 404；演示店恒为 `{state:none, ids:[]}`。收银员 403。
+      x-permission: GET /v1/barcode-lookup/{barcode}/images
+      parameters:
+        - name: barcode
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/Barcode" }
+      responses:
+        "200":
+          description: 候选现状
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImageCandidates" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/barcode-lookup/{barcode}/images/{cid}:
+    get:
+      tags: [查询]
+      operationId: barcodeImageCandidate
+      summary: 一张候选缩图（200px JPEG，S22d）
+      description: 强缓存一年（`private, max-age=31536000, immutable`），带 `nosniff` 和 `CSP default-src 'none'`。图片开关关着、演示店、候选不存在或不是 ready 都 404。收银员 403。
+      x-permission: GET /v1/barcode-lookup/{barcode}/images/{cid}
+      parameters:
+        - name: barcode
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/Barcode" }
+        - name: cid
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/CandidateId" }
+      responses:
+        "200":
+          description: 图片
+          content:
+            image/jpeg:
+              schema: { type: string, contentEncoding: binary }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/images/{product_id}/select:
+    post:
+      tags: [查询]
+      operationId: selectImage
+      summary: 把一张候选图设成商品图（S22d）
+      description: >-
+        条码必须在本店挂在这个商品上、候选是 ready；服务器把候选缩图复制成商品图，`image_ver` +1、取新 `rev`（同步拉得到），`image_source=kuainiao`。
+        内容和当前图相同时不升版本、直接回当前 `image_ver`（重发幂等）。商品不存在或已归档、条码不属于这个商品、候选没了都 404；
+        图片开关关着 404；演示店 403；收银员 403。必须等这个商品的 `product_upsert` 被服务器确认后再发。
+      x-permission: POST /v1/images/{product_id}/select
+      parameters:
+        - { $ref: "#/components/parameters/ProductId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [barcode, candidate_id]
+              properties:
+                barcode: { $ref: "#/components/schemas/Barcode" }
+                candidate_id: { $ref: "#/components/schemas/CandidateId" }
+      responses:
+        "200":
+          description: 换好了（或本来就是这张）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImageVer" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/images/{product_id}:
     get:
       tags: [查询]
@@ -237,6 +315,34 @@ paths:
               schema: { type: string, contentEncoding: binary }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+    put:
+      tags: [查询]
+      operationId: uploadImage
+      summary: 拍照上传商品图（S22d）
+      description: >-
+        请求体是 JPEG 裸字节（`Content-Type: image/jpeg`），上限 1 MB（超了 413）；只收 JPEG（按文件头认，PNG、伪装文件头 400 invalid）。
+        服务器按 EXIF 转正、去掉全部元数据（含 GPS），存长边 200px。`image_ver` +1、取新 `rev`，`image_source=upload`；内容相同不升版本。
+        手机端先压到长边不超过 1024px、不超过 400 KB。商品不存在或已归档 404；图片开关关着 404；演示店 403；收银员 403。
+        「重新拍照」就是再 PUT 一次。必须等这个商品的 `product_upsert` 被服务器确认后再发。
+      x-permission: PUT /v1/images/{product_id}
+      parameters:
+        - { $ref: "#/components/parameters/ProductId" }
+      requestBody:
+        required: true
+        content:
+          image/jpeg:
+            schema: { type: string, contentEncoding: binary, maxLength: 1048576 }
+      responses:
+        "200":
+          description: 换好了（或本来就是这张）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImageVer" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/reports/today:
     get:
       tags: [查询]
@@ -700,7 +806,6 @@ components:
         - not_delete_pending
         - recovery_disabled
         - lookup_quota_exceeded
-        - lookup_unavailable
         - unavailable
     Error:
       type: object
@@ -714,10 +819,15 @@ components:
     Config:
       type: object
       additionalProperties: false
-      required: [min_build, demo_login_enabled, privacy_url, support_url]
+      required: [min_build, demo_login_enabled, privacy_url, support_url, product_images_enabled]
       properties:
         min_build: { type: integer, minimum: 0 }
         demo_login_enabled: { type: boolean }
+        product_images_enabled:
+          type: boolean
+          description: >-
+            商品图总开关（T11、S22d；服务器总开关开且配了对象存储才是 true）。false 时手机不显示也不请求商品图、清掉本地图片缓存，
+            选图和拍照入口不出现。
         privacy_url: { type: string, format: uri }
         support_url: { type: string, format: uri }
         api_base:
@@ -979,7 +1089,7 @@ components:
       type: object
       additionalProperties: false
       required: [found]
-      description: 收银员只有 found、name、spec、has_image（另加 retry_later）
+      description: 收银员只有 found、name、spec、has_image（另加 retry_later），没有 image_candidates
       properties:
         found: { type: boolean }
         retry_later:
@@ -987,9 +1097,35 @@ components:
           description: 只在 found=false 时出现且为 true：这次没能问到外部条码库（超时、出错、没配 AppCode），不是明确没查到；客户端不要记住这个结果，下次扫还要再查
         name: { type: string }
         spec: { type: string }
-        has_image: { type: boolean }
+        has_image:
+          type: boolean
+          description: 等于 image_candidates.state != none（收银员也按同一口径算）
         brand: { type: string }
-        image_url: { type: string, format: uri }
+        image_candidates: { $ref: "#/components/schemas/ImageCandidates" }
+    ImageCandidates:
+      type: object
+      additionalProperties: false
+      required: [state, ids]
+      description: >-
+        商品图候选（S22d）。none：没有可用的（没图、全失败、开关关着、演示店）；pending：还在转存，ids 是已经好了的；
+        ready：转存完了。ids 按快鸟给的顺序，最多 6 个；图片地址是 `/v1/barcode-lookup/{barcode}/images/{cid}`。
+      properties:
+        state: { enum: [none, pending, ready] }
+        ids:
+          type: array
+          maxItems: 6
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/CandidateId" }
+    CandidateId:
+      type: string
+      pattern: "^[0-9a-f]{16}$"
+      description: 候选缩图内容 sha256 的前 16 位
+    ImageVer:
+      type: object
+      additionalProperties: false
+      required: [image_ver]
+      properties:
+        image_ver: { type: integer, minimum: 1 }
     ProductAmount:
       type: object
       additionalProperties: false

@@ -16,8 +16,9 @@ import { readZip } from "./helpers/zip.ts";
 import { parseCsv } from "../src/export/csv.ts";
 import { EXPORT_FILES, MONTH_HEADER, writeStoreExport } from "../src/export/store-export.ts";
 import { reportMonth } from "../src/reports/month.ts";
-import { AliOssObjectStore, LocalDirObjectStore, MemoryObjectStore, archiveStoreFromConfig, objectStoreFromConfig, deletionKey, imageKey, storePrefix } from "../src/lookup/oss.ts";
+import { AliOssObjectStore, LocalDirObjectStore, MemoryObjectStore, archiveStoreFromConfig, objectStoreFromConfig, candidateKey, deletionKey, imageKey, storePrefix } from "../src/lookup/oss.ts";
 import { loadConfig, type Config } from "../src/config.ts";
+import { barcodeDir } from "../src/lookup/candidates.ts";
 import { clearPurgedObjects, purgeStore, runAccountPurges, runExportJobs, type AccountJobDeps } from "../src/jobs/account-purge.ts";
 import { authenticate } from "../src/auth/authenticate.ts";
 import { Guard } from "../src/auth/guard.ts";
@@ -727,6 +728,28 @@ describe("满 7 天删除", () => {
     // 再跑一次：幂等，什么都不做
     expect(mine(await runAccountPurges(d))).toEqual({ purged: [], cleared: [] });
     for (const s of [yh, keep, back]) await s.app.close();
+  });
+
+  it("S22d：清除一家店不碰商品图候选（images/_catalog/ 的对象和 catalog_image_candidates 的行都留着），店前缀下的正式图照删", async () => {
+    const clock = new TestClock(T0);
+    const s = await shopWithBooks(clock, "候选不随店删");
+    const d = deps(clock);
+    await plantObjects(d, s.storeId, s.productIds);
+    const code = newBarcode();
+    await tdb.kysely.insertInto("barcode_catalog").values({ barcode: code, found: true, name: "x", source: "kuainiao" }).execute();
+    const ck = candidateKey(barcodeDir(code), "9".repeat(16));
+    await tdb.kysely.insertInto("catalog_image_candidates").values({ barcode: code, idx: 0, source_url: "https://x/y", state: "ready", cid: "9".repeat(16), object_key: ck }).execute();
+    await d.images.put(ck, Buffer.from("jpg"), "image/jpeg");
+    const t = await login(s.app, s.username);
+    await s.app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(t.token), payload: { password: PASSWORD } });
+    clock.advance(DELETE_GRACE_MS + 1);
+    expect((await runAccountPurges(d)).purged).toContain(s.storeId);
+    clock.advance(60 * 60_000);
+    expect((await runAccountPurges(d)).cleared).toContain(s.storeId);
+    expect(await d.images.list(storePrefix("images", s.storeId))).toEqual([]);
+    expect(d.images.objects.has(ck)).toBe(true);
+    expect(await tdb.kysely.selectFrom("catalog_image_candidates").select("state").where("barcode", "=", code).execute()).toEqual([{ state: "ready" }]);
+    await s.app.close();
   });
 
   it("并发：三轮同时跑只删一次、没有报错；删除和同一家店的同步请求同时到也没有 500", async () => {

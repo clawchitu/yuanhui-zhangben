@@ -53,6 +53,8 @@ export interface RateLimits {
   accountPassword: RateLimitRule;
   /** GET /v1/barcode-lookup：按设备，每分钟 20 次（§7） */
   barcodeLookup: RateLimitRule;
+  /** GET /v1/barcode-lookup/:barcode/images（S22d 轮询候选）：按设备，每分钟 60 次 */
+  barcodeImages: RateLimitRule;
 }
 
 // 店里几台手机常常共用一个出口 IP（店里的 Wi-Fi），所以按 IP 的上限不能太紧；防撞库主要靠账号锁定。
@@ -62,4 +64,5 @@ export const DEFAULT_RATE_LIMITS: RateLimits = {
   demo: { limit: 30, windowMs: 15 * 60_000 },
   accountPassword: { limit: 5, windowMs: 15 * 60_000 },
   barcodeLookup: { limit: 20, windowMs: 60_000 },
+  barcodeImages: { limit: 60, windowMs: 60_000 },
 };

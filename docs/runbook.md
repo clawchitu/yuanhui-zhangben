@@ -267,14 +267,15 @@ unset A S K
 
 ## 关掉商品图开关时清第三方图（T12）
 1. `.env` 里 `PRODUCT_IMAGES_ENABLED=0`，用当前标签跑 `deploy.sh --execute` 重启 api。
-2. 用部署账号列举并删除 `yuanhui-img` 的 `images/` 前缀（`ossutil rm -r oss://yuanhui-img/images/ -f`）。
+2. 用部署账号列举并删除 `yuanhui-img` 的 `images/` 前缀（`ossutil rm -r oss://yuanhui-img/images/ -f`）。这一步同时清掉商品图候选 `images/_catalog/`（S22d，第三方图转存的缩图）和拍照上传的图（单开关，§14 S22d-4：关掉后自拍图也不显示）。只清候选、保留正式图时用 `ossutil rm -r oss://yuanhui-img/images/_catalog/ -f`，第 3 步跳过、第 4 步只跑 `DELETE FROM catalog_image_candidates;`（不要动 `products` 和 `image_jobs`，否则正式图在桶里、库里却当成没图）。
 3. `rm -rf /data/img/*`（本机缓存）。
 4. 清掉库里的图片状态（不然以后再开开关，库里认为有图、桶里没有）：
    ```sh
    docker exec -i yuanhui-postgres-1 psql -U yuanhui -d yuanhui -v ON_ERROR_STOP=1 <<'SQL'
    BEGIN;
    DELETE FROM image_jobs;
-   UPDATE products SET image_key = NULL, image_source = NULL, image_ver = 0 WHERE image_ver <> 0 OR image_key IS NOT NULL;
+   DELETE FROM catalog_image_candidates;
+   UPDATE products SET image_key = NULL, image_sha256 = NULL, image_source = NULL, image_ver = 0 WHERE image_ver <> 0 OR image_key IS NOT NULL;
    COMMIT;
    SQL
    ```

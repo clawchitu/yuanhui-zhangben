@@ -129,6 +129,11 @@ const PLAN_6_1: Record<string, string> = {
   "sync:pull": "AAAD",
   "GET /v1/barcode-lookup/{barcode}": "AAAD",
   "GET /v1/images/{product_id}": "AAAD",
+  // S22d：候选、选图、拍照上传。收银员拒；审核能（演示店里接口自己回 none / 404 / 403）
+  "GET /v1/barcode-lookup/{barcode}/images": "ADAD",
+  "GET /v1/barcode-lookup/{barcode}/images/{cid}": "ADAD",
+  "POST /v1/images/{product_id}/select": "ADAD",
+  "PUT /v1/images/{product_id}": "ADAD",
   "GET /v1/reports/today": "ADAD",
   "GET /v1/reports/month": "ADAD",
   "GET /v1/entries": "ADAD",

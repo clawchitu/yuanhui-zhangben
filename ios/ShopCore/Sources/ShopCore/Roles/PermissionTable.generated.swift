@@ -70,6 +70,30 @@ extension PermissionTable {
             .review: PermissionCell(.allow, conditions: []),
             .revoked: PermissionCell(.deny, conditions: [])
         ]),
+        PermissionRule(id: "GET /v1/barcode-lookup/{barcode}/images", kind: "http", cells: [
+            .family: PermissionCell(.allow, conditions: []),
+            .cashier: PermissionCell(.deny, conditions: []),
+            .review: PermissionCell(.allow, conditions: []),
+            .revoked: PermissionCell(.deny, conditions: [])
+        ]),
+        PermissionRule(id: "GET /v1/barcode-lookup/{barcode}/images/{cid}", kind: "http", cells: [
+            .family: PermissionCell(.allow, conditions: []),
+            .cashier: PermissionCell(.deny, conditions: []),
+            .review: PermissionCell(.allow, conditions: []),
+            .revoked: PermissionCell(.deny, conditions: [])
+        ]),
+        PermissionRule(id: "POST /v1/images/{product_id}/select", kind: "http", cells: [
+            .family: PermissionCell(.allow, conditions: []),
+            .cashier: PermissionCell(.deny, conditions: []),
+            .review: PermissionCell(.allow, conditions: []),
+            .revoked: PermissionCell(.deny, conditions: [])
+        ]),
+        PermissionRule(id: "PUT /v1/images/{product_id}", kind: "http", cells: [
+            .family: PermissionCell(.allow, conditions: []),
+            .cashier: PermissionCell(.deny, conditions: []),
+            .review: PermissionCell(.allow, conditions: []),
+            .revoked: PermissionCell(.deny, conditions: [])
+        ]),
         PermissionRule(id: "GET /v1/reports/today", kind: "http", cells: [
             .family: PermissionCell(.allow, conditions: []),
             .cashier: PermissionCell(.deny, conditions: []),

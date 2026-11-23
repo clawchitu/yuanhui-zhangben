@@ -5,12 +5,14 @@
 // 在 withStoreLock 里确认商品还没图、取一个新号，写回 image_key / image_ver（+1）/ rev。
 // 图片任务和商品保存是两件事：商品早已在同步时保存，这里失败只记 last_error，商品照常可用（显示首字）。
 // 总开关 product_images_enabled 关着时什么都不做；演示店不抓第三方图。
+// S22d：商品条码有已转存好的候选（lookup/candidates.ts）时，优先复制序号最小的 ready 候选（通常就是 idx 0、即 image_url 那张），没有才自己下载。
+// 「只有一张默认用」由这里完成；用户选图或拍照（routes/product-images.ts）会覆盖它。
 // 和注销清除（jobs/account-purge.ts）的协调（PR #20 Codex 2）：清除删掉这家店的 image_jobs；在途的那个上传前复查店还在，
 // 传完在店铺锁里再查，店没了就删掉刚传的图，删不掉把 store_purges 重新标成没清完（dropLateObject）。
 import { sql, type Kysely } from "kysely";
 import type { Database } from "../db.ts";
 import { withStoreLock } from "../sync/lock.ts";
-import { imageKey, type ObjectStore } from "../lookup/oss.ts";
+import { imageKey, isCandidateKey, type ObjectStore } from "../lookup/oss.ts";
 import { dropLateObject, storeGone } from "./account-purge.ts";
 import { ImageRejected, fetchImage as defaultFetch, makeThumbnail, sha256 } from "../lookup/images.ts";
 
@@ -18,7 +20,7 @@ export const MAX_ATTEMPTS = 3;
 /** 第 1、2 次失败后隔多久再试 */
 export const RETRY_DELAYS_MS = [5 * 60_000, 60 * 60_000];
 /** 这些原因重试也没用，直接放弃 */
-const PERMANENT = new Set(["bad_url", "bad_scheme", "bad_port", "private_address", "too_large", "bad_format", "too_small", "too_big_dimensions", "empty", "bad_type"]);
+export const PERMANENT = new Set(["bad_url", "bad_scheme", "bad_port", "private_address", "too_large", "bad_format", "too_small", "too_big_dimensions", "empty", "bad_type"]);
 
 export interface ImageJobDeps {
   db: Kysely<Database>;
@@ -114,8 +116,8 @@ async function processJob(d: ImageJobDeps, store: ObjectStore, job: Claimed): Pr
   // 这一步本身失败也不要紧，清除之后隔满 1 小时的复扫会按前缀删掉它（T17，PR #20 Codex 2 第二轮）
   let uploading: string | null = null;
   try {
-    const raw = await (d.fetchImage ?? defaultFetch)(job.source_url);
-    const thumb = await makeThumbnail(raw);
+    const copied = await readyCandidateBytes(d, store, job);
+    const thumb = copied ?? (await makeThumbnail(await (d.fetchImage ?? defaultFetch)(job.source_url)));
     const ver = before.image_ver + 1;
     const key = imageKey(job.store_id, job.product_id, ver, sha256(thumb));
     // 下载期间店可能被注销清除了（PR #20 Codex 2）：传之前先复查，省一次上传
@@ -138,7 +140,7 @@ async function processJob(d: ImageJobDeps, store: ObjectStore, job: Claimed): Pr
       if (!cur || cur.image_ver !== before.image_ver || cur.archived_at) return false;
       await tx.trx
         .updateTable("products")
-        .set({ image_key: key, image_source: "kuainiao", image_ver: ver, rev: await tx.nextRev(), updated_at: d.clock() })
+        .set({ image_key: key, image_sha256: sha256(thumb), image_source: "kuainiao", image_ver: ver, rev: await tx.nextRev(), updated_at: d.clock() })
         .where("store_id", "=", tx.storeId)
         .where("id", "=", job.product_id)
         .execute();
@@ -172,6 +174,25 @@ async function processJob(d: ImageJobDeps, store: ObjectStore, job: Claimed): Pr
     d.log?.warn({ store_id: job.store_id, product_id: job.product_id, reason, attempt: job.attempts, permanent }, "商品图抓取失败");
     return "failed";
   }
+}
+
+/** 这个商品的条码里有 ready 的候选：取它的缩图字节（已经过 makeThumbnail），没有或取不到返回 null */
+async function readyCandidateBytes(d: ImageJobDeps, store: ObjectStore, job: Claimed): Promise<Buffer | null> {
+  const row = await d.db
+    .selectFrom("catalog_image_candidates as c")
+    .innerJoin("product_barcodes as b", "b.barcode", "c.barcode")
+    .select("c.object_key")
+    .where("b.store_id", "=", job.store_id)
+    .where("b.product_id", "=", job.product_id)
+    .where("b.deleted_at", "is", null)
+    .where("c.state", "=", "ready")
+    .orderBy("b.pack_qty")
+    .orderBy("b.barcode")
+    .orderBy("c.idx")
+    .limit(1)
+    .executeTakeFirst();
+  if (!row?.object_key || !isCandidateKey(row.object_key)) return null;
+  return store.get(row.object_key);
 }
 
 async function finish(d: ImageJobDeps, job: Claimed, err: string | null) {

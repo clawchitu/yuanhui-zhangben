@@ -29,7 +29,7 @@ Haoqiang 11/21 定：所有段和功能按原计划做，不砍、不推迟、�
 | 收银员的实现 | 收银员不是带密码的账号，而是家用号名下的一类**设备**：由家用号手机出「收银员码」，扫了就是收银员手机（设计稿 17b 就是这样画的；Chitu 默认值，待 Haoqiang 确认） |
 | 服务器 | 阿里云上海 ECS 2C2G Ubuntu 24.04，`47.117.184.253`，`ssh huang-shop`。域名 `yuanhuishop.cn`，`api.yuanhuishop.cn` 已解析，备案 11/20 提交，预计 1–3 周 |
 | 条码库 | 阿里云云市场「快鸟」(cmapi00067757)，只在登记新商品时由服务器调用；备选聚美智数 (cmapi00049717) |
-| 商品图 | 服务器下载 → 压成长边 200px → 存 OSS；App 只从自家服务器取图；没图显示名称首字；不做拍照换图 |
+| 商品图 | 服务器下载 → 压成长边 200px → 存 OSS；App 只从自家服务器取图；没图显示名称首字。S22d 起：查码时服务器把快鸟的前 6 张转存成候选，多张时让人选；也可拍照上传换图（收银员不能，演示店不能），见 §14 S22d |
 | 字体 | 「大字模式」开关，默认开，按手机保存；价格、总价、主按钮、键盘、步进器不随开关变 |
 | 利润口径 | 赚了 = 实收 − 卖掉的货的进价。**不扣**盘亏和过期损耗，损耗单独列（D5） |
 | 开发流程 | GitHub 私有仓库 `clawchitu/yuanhui-zhangben` + PR + CI；每个 PR 由 Chitu 触发 Codex 和 Fable 评审，意见以 PR 评论留下，两方都通过才合；执行者是 Opus 子代理 |
@@ -141,7 +141,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 
 | 表 | 字段 | 约束 / 说明 |
 |---|---|---|
-| `products` | `id, store_id, name, base_unit, price_fen, stock_qty int, stock_value_fen bigint, last_cost_fen null, cost_known bool, stock_ver bigint, last_count_at null, low_at int null, stock_known bool, track_expiry bool, expiry_warn_days int=7, shelf_life_months int null, needs_review bool, image_key null, image_source null, image_ver int=0, archived_at null, created_by_device, rev, updated_at` | 平均进价不存，等于 `stock_value_fen / stock_qty`；`cost_known` = 进价是否已知，用来区分「真的零成本」和「没填」（§5.2）；`stock_ver` 每次库存变动 +1，`last_count_at` 是最近一次盘点或期初的时间（§5.6）；`needs_review` = 等家用号补全（`quick` 登记不论角色一律为真，卖出引用未知商品时自动建的也是，§14 S04-5、S05-9）；`image_ver` 是单独一列，`image_key` 每变一次 +1，0 = 没图（§14 S02-1）；`price_fen >= 0` |
+| `products` | `id, store_id, name, base_unit, price_fen, stock_qty int, stock_value_fen bigint, last_cost_fen null, cost_known bool, stock_ver bigint, last_count_at null, low_at int null, stock_known bool, track_expiry bool, expiry_warn_days int=7, shelf_life_months int null, needs_review bool, image_key null, image_sha256 null, image_source null, image_ver int=0, archived_at null, created_by_device, rev, updated_at` | 平均进价不存，等于 `stock_value_fen / stock_qty`；`cost_known` = 进价是否已知，用来区分「真的零成本」和「没填」（§5.2）；`stock_ver` 每次库存变动 +1，`last_count_at` 是最近一次盘点或期初的时间（§5.6）；`needs_review` = 等家用号补全（`quick` 登记不论角色一律为真，卖出引用未知商品时自动建的也是，§14 S04-5、S05-9）；`image_ver` 是单独一列，`image_key` 每变一次 +1，0 = 没图（§14 S02-1）；`image_sha256` 是当前图内容的 sha256，选图 / 拍照按它判「同一张不升版本」（S22d，迁移 0006）；`price_fen >= 0` |
 | `product_barcodes` | `store_id, barcode, product_id, pack_qty int, unit_name, pack_price_fen, rev, deleted_at` | 主键 `(store_id, barcode)`；`pack_qty >= 1`；**单件码（`pack_qty=1`）的 `pack_price_fen` 必须为空，卖价一律读 `products.price_fen`**（CHECK 约束），只有整件码存自己的价，整件码的价也可以为空，表示按「单件卖价 × 换算数量」算（§14 S02-5、S12-1）；一个商品可以有多个单件码；单件码的 `unit_name` 就是商品的基本单位，只有一处口径：挂单件码时服务器写 `products.base_unit`、不看 payload 的 `unit_name`，改基本单位时该商品所有单件码的 `unit_name` 跟着改、各取一个新号，整件码不动（§14 S04-5） |
 | `product_aliases` | `store_id, alias_id, product_id` | 两台手机离线时各自登记了同一个条码：先到的赢，后到的商品 id 记成别名，之后引用别名的 op 一律改写到赢家 |
 | `barcode_catalog` | `barcode, found bool, name, spec, brand, image_url, image_urls text[], source, raw jsonb, fetched_at` | 全局缓存，不分店；查不到也缓存（7 天后可重查）。`image_urls` 是快鸟返回的全部图片地址（0004，旧行空数组），`image_url` = 第一张 |
@@ -486,6 +486,8 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `POST /v1/sync` 拉 | 全店 | 裁剪版（§4.2） | 演示店全店 | 不返回数据 |
 | `GET /v1/barcode-lookup/:code` | 能 | 能（只返回名称、规格、有没有图） | 能（演示店返回内置假数据，**不调付费接口**） | 拒 |
 | `GET /v1/images/:product_id` | 能 | 能 | 能 | 拒 |
+| `GET /v1/barcode-lookup/:code/images`、`/images/:cid`（候选，S22d） | 能 | **拒** | 能（演示店恒为空 / 404） | 拒 |
+| `POST /v1/images/:product_id/select`、`PUT /v1/images/:product_id`（选图、拍照，S22d） | 能 | **拒** | 演示店 403 | 拒 |
 | `GET /v1/reports/*`、`GET /v1/entries*` | 能 | **拒** | 能 | 拒 |
 | `POST /v1/pairing-tokens`、`GET /v1/pairing-tokens/:id` | 能 | 拒 | 能 | 拒 |
 | `GET /v1/devices`、`POST /v1/devices/:id/revoke`、`/revoke-others` | 能 | 拒 | 能 | 拒 |
@@ -529,7 +531,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | 方法 路径 | 用途 | 备注 |
 |---|---|---|
 | `GET /healthz` | 存活检查（查一次数据库） | 无鉴权，监控用。路径不带 `/v1`（不随接口版本变）；S00 骨架里的 `/v1/health` 在 S02 改成它 |
-| `GET /v1/config` | `min_build, demo_login_enabled, privacy_url, support_url`；S21 起加可选的 `api_base`（服务器地址下发，11/21） | 无鉴权 | App 只采用白名单内的主机，见 S21。
+| `GET /v1/config` | `min_build, demo_login_enabled, privacy_url, support_url, product_images_enabled`（T11，S22d 落地）；S21 起加可选的 `api_base`（服务器地址下发，11/21） | 无鉴权 | App 只采用白名单内的主机，见 S21。
 | `POST /v1/auth/login` | `{username, password, device_id, label?}` → `{token, role, store, label, epoch, delete_pending_until?}` | 连错 5 次锁 15 分钟（25c）：第 5 次输错本身就返回 `423 locked`（带 `locked_until`）；锁定期内再输错不计数、不延长；上锁时计数清零，成功登录清零；并发也要守住（验对密码后在事务里重查锁，已锁返回 423 且不清锁）。按 IP 限速：每 IP 15 分钟 30 次，超了 `429 rate_limited` 带 `retry_after_s`（§14 S03-3）。错误信息不区分「账号不存在」和「密码错」 |
 | `POST /v1/auth/pair/redeem` | `{code, device_id}` → 同上 | 码用过 → `410 pairing_used`；过期、或出码的手机已被撤销 → `410 pairing_expired`（25d）；账号在注销申请期间 → `403 delete_pending`（先判 410 再判 403；申请注销时未用的码已作废，403 只是兜底）。按 IP 限速同登录，单独计数（§14 S03-1、S03-3、S03-5） |
 | `POST /v1/auth/demo` | 一键进演示小店（「看看演示」，受 `demo_login_enabled` 开关控制，**默认关**，被打回再开） | 发的是演示店的家用设备令牌，响应同登录（带 `epoch`）。进最早建的演示店的审核号；没有演示店 → `404 demo_disabled`。每次新建一行设备，由 S09 每日重置清理。按 IP 限速同登录，单独计数（§14 S03-3、S03-9）。审核号在注销申请中时：照样建设备，响应带 `delete_pending_until`，写账整批不应用，每日重置撤回申请（§14 S09-16） |
@@ -538,6 +540,10 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `POST /v1/sync` | 推 op + 拉变更（§4） | 平时唯一的写账入口。请求体超过 1 MiB → `413 invalid`；本店排队超过上限 → `503 unavailable` 带 `retry_after_s`；`epoch` 不一致 → `409 epoch_mismatch`；账号注销申请期间 op 不应用、`results` 为空、响应带 `delete_pending_until`（§4.2） |
 | `GET /v1/barcode-lookup/:barcode` | 查名称（先查 `barcode_catalog`，没有再调快鸟，2 秒超时） | 每设备每分钟 20 次；每店每天 1000 次上限（11/23 由 300 改为 1000），防止刷掉付费额度 |
 | `GET /v1/images/:product_id?v=` | 200px 小图 | 强缓存；本地磁盘缓存，缺了回源 OSS |
+| `GET /v1/barcode-lookup/:barcode/images` | 商品图候选 `{state: none\|pending\|ready, ids}`（S22d） | 只读库、不调快鸟，供轮询；每设备每分钟 60 次。查码响应（家用 / 审核）同样带 `image_candidates`，`has_image = state != none` |
+| `GET /v1/barcode-lookup/:barcode/images/:cid` | 一张候选缩图 | 强缓存一年，`nosniff` + CSP |
+| `POST /v1/images/:product_id/select` | `{barcode, candidate_id}` → `{image_ver}` | 条码须在本店挂在这个商品上、候选 ready；复制成正式图，`image_ver`+1、取新 `rev`；内容相同不升版本 |
+| `PUT /v1/images/:product_id` | JPEG 裸体（≤ 1 MB）→ `{image_ver}` | 只收 JPEG，按 EXIF 转正、去全部元数据，存 200px；超 1 MB 413、格式不对 400 |
 | `GET /v1/reports/today?date=` | 09：卖了、赚了、优惠、卖得最好、快没货、快过期 | 在线才能看 |
 | `GET /v1/reports/month?month=` | 10：三张卡、优惠和过期损耗、每日柱状图、对账各行 | |
 | `GET /v1/entries?date=` | 07a 某一天的流水（超出手机本地 35 天时用） | |
@@ -1397,8 +1403,8 @@ S09 的 PR（#20）提了 16 条，Fable 审核裁定如下（按评论原文；
 | T8 | `products.stock_known` 没有定义，也没有任何代码写它。要么给出定义并在记账时维护（然后快没货改用它），要么删掉这一列 | PR #18 Fable | S23 之前定 |
 | T9 | S08 延期的人工项，做完前生产不配 `KUAINIAO_APPCODE`、图片开关不开：① 跑 `barcode-trial.ts --record` 测 20 个真实条码（含 5 条香烟、5 个本地品牌），命中率和有图率写进 PR，有图率 < 50% 则商品图降级到第二版；② 用真实录制件替换手写夹具，定下「成功」「明确没查到」的判别字段，只有明确没查到才写负缓存，候选字段表收紧；核对请求格式和网关报错的形态；③ 登录阿里云把图片相关条款原文摘进 `docs/image-rights.md`，按 S08 的规则下结论；④ 确认计费是预付次数包、用完即停（S08-3 的条件），不是的话先把每日计数挪进数据库；⑤ 真实 OSS 往返读写一次，RAM 子账号只能读写 `images/` 前缀；⑥ 定条码格式过滤（只对 8 / 12 / 13 / 14 位数字调外部）做不做 | PR #19 Fable、Codex | S10a |
 | T10 | sharp 进镜像和内存：见下面「sharp 对镜像的要求」；在 512 MB 的 `api` 容器里，一边跑 3 个并发登录一边缩一张 5000×5000 隔行 16 位 PNG，不被 OOM 杀掉才算过，否则把上限降到单边 4096 | PR #19 Fable | S10a |
-| T11 | `GET /v1/config` 加 `product_images_enabled`（契约 + 服务器）；手机见 false 不显示、不请求商品图并清本地图片缓存；同一次契约改动里删掉 `BarcodeLookup.image_url` 和错误码 `lookup_unavailable` | PR #19 Fable（S08-1、S08-2、S08-5） | S22c |
-| T12 | ~~注销删除时删这家店在 OSS 的 `images/<店>/` 和本机图片缓存目录里的文件，先删 `image_jobs` 再删商品（有外键）；`ObjectStore` 加列举和删除~~ **删除部分已完成（PR #20，`jobs/account-purge.ts`、`test/account-purge.test.ts`）**。剩下：运维手册写一条：因条款关掉图片开关时，怎么清掉 OSS 和本机缓存里已有的第三方图 | PR #19 Fable | S09（删除）、S10a（手册） |
+| T11 | ~~`GET /v1/config` 加 `product_images_enabled`（契约 + 服务器）；同一次契约改动里删掉 `BarcodeLookup.image_url` 和错误码 `lookup_unavailable`~~ **契约和服务器部分已在 S22d-server（PR #42）完成**。剩下：手机见 false 不显示、不请求商品图并清本地图片缓存 | PR #19 Fable（S08-1、S08-2、S08-5） | S22c / S22d-iOS |
+| T12 | ~~注销删除时删这家店在 OSS 的 `images/<店>/` 和本机图片缓存目录里的文件，先删 `image_jobs` 再删商品（有外键）；`ObjectStore` 加列举和删除~~ **删除部分已完成（PR #20，`jobs/account-purge.ts`、`test/account-purge.test.ts`）**。剩下：运维手册写一条：因条款关掉图片开关时，怎么清掉 OSS 和本机缓存里已有的第三方图（已写进 `docs/runbook.md`「关掉商品图开关时清第三方图（T12）」，S22d 补了清 `images/_catalog/` 和候选表） | PR #19 Fable | S09（删除）、S10a（手册） |
 | T13 | 存档桶分开：加第二个桶的配置，`server.ts` 的 `archive` 接 `yuanhui-backup`；RAM 子账号对商品图桶只有 `images/`，对备份桶只有 `exports/`、`deletions/` 和备份前缀；配了商品图桶没配存档桶时不许把导出包写进商品图桶。真实 OSS 上把列举、删除各实测一次 | PR #20 Fable（S09-11） | S10a |
 | ~~T14~~ | ~~`restore.sh` 重放删除记录要列举 `deletions/`，现在 `ObjectStore.list` 只认 `images/<店>/`、`exports/<店>/` 两种前缀，要加；重放后这些店的旧令牌和重传按 401 处理~~ **已完成（PR #23）** | PR #20 Fable | S10b |
 | T15 | 演示店 16:00 重置后，过北京时间 0 点「今天」页没有卖出。上架演练时在美国西岸白天的时段看一遍，决定要不要改重置时间或种子的日期 | PR #20 Fable | S30 |
@@ -1419,6 +1425,7 @@ S09 的 PR（#20）提了 16 条，Fable 审核裁定如下（按评论原文；
 | ~~T30~~ | ~~PR #31 Fable 建议 2：直接填到期日时年份默认今年，忘改年会记成已过期的日子。到期日早于今天、或生产日期晚于今天时出一句提醒再确认~~ **已在 S20 实现**（`StockInModel.dateWarning`，「日子对吗？」确认后照记；`AppTests/S20Tests` 两条） | PR #31 Fable | S19 之后的进货小改（S27 前） |
 | T31 | PR #31 Fable 建议 3：点年份格不清空而月、日格清空，行为不一致；年份填满 4 位再按数字没反应。改成点年份格也从头填，或给一句提示 | PR #31 Fable | 同 T30 |
 | T32 | PR #31 Fable 建议 5：最大辅助字号下 06b 的「算出来到期」要往下滚才看得到。记进货前滚进视野，或把算出的到期日并进「记好了」那句话 | PR #31 Fable | 同 T30 |
+| T34 | 活店换图（S22d 选图、拍照）后删旧对象失败只记日志 `image_discard_failed`，`images/<店>/` 下这些旧对象暂无清扫（店被注销清除时会按前缀一起删）。要不要加按「没有商品引用」定期清扫，待定 | S22d-server 方案③ | 待排 |
 | T33 | PR #31 Codex 建议：04b 进价填 0 直接保存，补上和进货页一样的 0 元二次确认，保留「没填」和「明确为 0」的区别 | PR #31 Codex | S25 商品编辑前 |
 
 T2 的 PR（#15）定了 4 条，Fable 审核裁定如下：
@@ -1495,3 +1502,14 @@ S10 部署实测的 PR（#27）Fable 审核的裁定如下（按评论原文；�
 | S10r-10 | `ledger.late`、`ledger.lots` 两条测试本机挂、CI 过 | 另开一项查清是测试还是代码和日期 / 时区有关；查清前不发 TestFlight | 新 PR |
 | S10r-11 | 对象清理失败不告警；图片桶失败挡住 `exports/` 删除 | `store_purges.attempts` ≥ 3 打 `alert`；各桶分开处理 | `server/src/jobs/account-purge.ts`（T 项，S32 前） |
 | S10r-12 | 其余小项 | 手工回滚那句改对；ECS 旧镜像清理说明；`image.yml` 基础镜像按 digest 固定；runbook 时间统一时区；T24 那天看 `backup_lifecycle_stale` 是否误报，误报则阈值改 37 天（注：已在 PR #27 定为 38 天，`LIFECYCLE_GRACE_DAYS`，不要改回 37） | runbook、`image.yml`（S32 前） |
+
+S22d-server 的 PR（#42）按 Fable 方案实现，负责人四点暂按默认（11/24 02:30 CST），裁定如下：
+
+| # | 问题 | 裁定 | 改在哪里 |
+|---|---|---|---|
+| S22d-1 | 候选要不要按时间过期 | 不过期：ready 候选与 `barcode_catalog` 行同寿。快鸟链接过期后重取要再花一次付费查询，每码最多 6 张、每张约 10 KB。failed 行保留，防止反复重试。每周清扫 `images/_catalog/`，只删没有对应行且落地超过 1 小时的对象。备选（负责人坚持过期时）：按 `fetched_at` 满 N 天删行删对象，之后再扫这个码只能拍照 | `lookup/candidates.ts`、迁移 0005 |
+| S22d-2 | 收银员能不能选图、拍照 | 不能：四个新接口收银员 403，查码响应不带 `image_candidates`（scope 不变）。收银员只能 `quick` 登记，它登记的商品由兜底任务落第一张，家用补全时再选或拍。要放宽为「仅 `image_ver=0` 且是本机建的商品」需负责人定 | `permissions.json`、§6.1 |
+| S22d-3 | 演示店能不能上传 | 不能：演示店公用，不放用户图，也不用第三方图。候选恒为 `none`，缩图 404，选图和上传 403 | `routes/lookup.ts`、`routes/product-images.ts` |
+| S22d-4 | 开关几个 | 单开关 `PRODUCT_IMAGES_ENABLED`：关掉后候选、选图、上传、读图全部 404，`/v1/config.product_images_enabled=false`，连自拍图也不显示。若条款只禁第三方图又想保留拍照，要拆成两个开关，另开一段、需负责人定 | `config.ts`、`routes/config.ts` |
+| S22d-5 | 转存怎么做 | 异步：查码只插行、立刻唤醒进程内 worker（并发 1），不等下载（查码 2.5 秒预算，单图最长 8 秒）。重试共 3 次，隔 30 秒、5 分钟；永久性失败沿用 `PERMANENT`。下载和校验全部复用 `fetchImage` / `makeThumbnail`。键 `images/_catalog/<sha256(条码)前 32 位>/<cid>.jpg`，仍在 `images/` 下，RAM 不用改；不属于任何店，注销清除碰不到它。`last_error` 只记原因代码，`source_url` 不进日志、不下发。兜底任务（只在 `image_ver=0` 时落第一张）优先复制已 ready 的候选，没有才下载 | `lookup/candidates.ts`、`jobs/image-fetch.ts`、`jobs/scheduler.ts` |
+| S22d-6 | 选图、上传的写回 | 都在 `withStoreLock` 里：`image_ver`+1、`nextRev()`、`image_source` 记 `kuainiao` / `upload`；内容哈希与当前图相同不升版本。上传前查 `storeGone`、锁内复查，店没了走 `dropLateObject`。换图后尽力删旧对象和本机缓存，删不掉记 `image_discard_failed`（T34） | `routes/product-images.ts` |
