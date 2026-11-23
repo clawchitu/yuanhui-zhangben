@@ -169,9 +169,9 @@ public struct SyncStatus: Equatable, Sendable {
 }
 
 public enum SyncError: Error, Equatable, Sendable {
-    /// 409 `epoch_mismatch`：S22b 处理（握手、重建投影、重传）
+    /// 409 `epoch_mismatch`：引擎已握手两次仍不一致（正常情况下握手后接着同步，不抛）
     case epochMismatch(UUID)
-    /// 设备已被踢：S22b 处理（25b / 25f）
+    /// 设备已被踢：结果已记、会话已退役（25b / 25f）；`discardOutbox` = 演示店重置，outbox 已丢
     case revoked(discardOutbox: Bool)
 }
 
@@ -475,6 +475,26 @@ extension LocalDB {
         }
     }
 
+    /// 设备已被踢（§4.5）：这批 op 的结果照记（卖出已入账、别的 held）；会话退役、清投影，没传的留在 outbox 成为恢复队列，
+    /// 之后用同一个旧令牌补传。演示店重置（`discard_outbox`）：丢弃这家店的 outbox 和恢复队列，不重放（§4.5）。
+    func handleRevoked(_ r: SyncResponse, sent: PushBatch?) throws {
+        guard let s = try currentSession() else { return }
+        if r.device.discardOutbox == true {
+            try endSession(reason: .demoReset, revoked: true)
+            try discardOutbox(storeId: s.storeId)
+            return
+        }
+        if let sent, r.deletePendingUntil == nil {
+            let results = r.results.compactMap { x -> OpResult? in
+                guard let st = OutboxItem.Status(rawValue: x.status) else { return nil }
+                return try? OpResult(id: x.id, status: st, code: x.code)
+            }
+            try recordResults(results, storeId: sent.storeId)
+            try addRecoveryRejected(results.filter { $0.status == .rejected }.count)
+        }
+        try endSession(reason: .kicked(s.role), revoked: true)
+    }
+
     /// 本机有几样商品（首次同步进度「194 / 312 样」的分子；强杀重开后接着数）
     public func productCount() throws -> Int {
         try writer.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM product") ?? 0 }
@@ -517,10 +537,18 @@ public final class SyncEngine: Sendable {
 
     /// 同步一轮：先把 outbox 推完（注销期间不推），再把两条流拉到底。每页一个事务。
     /// `progress` 每页回调一次；`catalogDone` 为真时界面就能进首页开卖，ledger 继续。最多 `maxRounds` 次请求。
+    ///
+    /// S22b：每趟先补做没做成的压缩（`compactionBusy` 就下次同步再试）；409 `epoch_mismatch` → 握手（`resetForEpoch`：
+    /// 重建投影、重传保留的 op）后接着同步，一趟最多握手 2 次；设备被踢 → 记下这批 op 的结果、会话退役（未传的进恢复队列），
+    /// 抛 `SyncError.revoked`；演示店重置（`discard_outbox`）→ 丢弃这家店的 outbox 和恢复队列，不重放。
     @discardableResult
     public func sync(maxRounds: Int = 200, progress: (@Sendable (SyncProgress) -> Void)? = nil) throws -> SyncStatus {
+        do { try db.compactIfNeeded() } catch LocalDBError.compactionBusy {
+            // 被读事务挡住：标记保留，下次同步再试（§3.4）
+        }
         var products = 0
         var lastCursors: SyncResponse.Cursors? = nil
+        var handshakes = 0
         for _ in 0..<maxRounds {
             let status = try db.syncStatus()
             let batch = status.deletePendingUntil == nil ? try db.nextPushBatch() : nil
@@ -528,11 +556,18 @@ public final class SyncEngine: Sendable {
             let (code, data) = try transport(body)
             if code == 409, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let e = (obj["epoch"] as? String).flatMap(UUID.init(uuidString:)) {
-                throw SyncError.epochMismatch(e)
+                guard handshakes < 2 else { throw SyncError.epochMismatch(e) }
+                handshakes += 1
+                try db.resetForEpoch(e)
+                lastCursors = nil
+                continue
             }
             guard code == 200 else { throw invalid("同步失败：HTTP \(code)") }
             let r = try SyncResponse.decode(data)
-            if r.device.revoked { throw SyncError.revoked(discardOutbox: r.device.discardOutbox ?? false) }
+            if r.device.revoked {
+                try db.handleRevoked(r, sent: batch)
+                throw SyncError.revoked(discardOutbox: r.device.discardOutbox ?? false)
+            }
             try db.applySyncResponse(r, sent: r.deletePendingUntil == nil ? batch : nil)
             // 分子取本机商品数：强杀重开后接着数，不从 0 起
             products = (try? db.productCount()) ?? products + r.changes.products.count

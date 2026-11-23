@@ -1,0 +1,117 @@
+import Foundation
+
+// S22b 恢复队列的上传（§4.5）：以前的会话留下的未确认 op，用**它自己的旧令牌**单独调 `/v1/sync`（只推不拉），
+// 每次打开 App、每次同步、兑码成功后第一次拉取之前都试一遍，传不完不拦。
+//
+// - 结果按**发送那批 op 的旧会话的店**记（`recordResults(storeId: 旧店)`，op id 只在店内唯一，§8 S22b）。
+// - 当前会话是收银员时，旧会话的 op 一拿到结果就删（`recordResults` 里做），之后读不回结果；被拒的笔数按**当次响应**累加。
+// - 409：旧会话那家店换了 epoch，记下新的再发（op 按 id 幂等）。401：旧令牌已经不认了（店清除了等），这组停下、留着。
+// - `discard_outbox`（演示店重置）：丢弃这家店的 outbox 和恢复队列，不重放。
+// - 一个旧会话传完：主动退出时推迟的 `logout` 这时用旧令牌调（被踢的不用调）；然后删钥匙串里的旧令牌、删会话行。
+//
+// 方法同步阻塞（会开写事务、压缩），不许在主线程调。
+
+/// 恢复队列要发的请求
+public enum RecoveryCall: Sendable, Equatable {
+    case sync(token: String, body: Data)
+    case logout(token: String)
+}
+
+/// 一趟恢复上传的结果（调用方据此刷新笔数、首页提示）
+public struct RecoveryReport: Equatable, Sendable {
+    /// 拿到结果的笔数
+    public var resolved = 0
+    /// 这趟里被拒的笔数（来自响应）
+    public var rejected = 0
+    /// 这趟里暂存待确认的笔数（被踢设备的进货等）
+    public var held = 0
+    /// 传完、删了令牌的旧会话
+    public var finished: [UUID] = []
+    /// 有店的 outbox 因演示店重置被丢弃
+    public var discarded = false
+    /// 还剩几笔没传
+    public var remaining = 0
+    public init() {}
+}
+
+public final class RecoveryUploader: Sendable {
+    public typealias Send = @Sendable (RecoveryCall) throws -> (Int, Data)
+    let db: LocalDB
+    let tokens: any TokenStore
+    let appBuild: Int
+    let send: Send
+
+    public init(db: LocalDB, tokens: any TokenStore, appBuild: Int, send: @escaping Send) {
+        self.db = db; self.tokens = tokens; self.appBuild = appBuild; self.send = send
+    }
+
+    /// 传一遍。连不上（`send` 抛错）就停下抛出，已经拿到的结果已提交；调用方不因此拦任何东西。
+    @discardableResult
+    public func run(maxRounds: Int = 50) throws -> RecoveryReport {
+        var report = RecoveryReport()
+        defer { report.remaining = (try? db.recoveryPendingCount()) ?? 0 }
+        for g in try db.recoveryQueue() {
+            try upload(g, report: &report, maxRounds: maxRounds)
+        }
+        try finishDrained(&report)
+        report.remaining = try db.recoveryPendingCount()
+        return report
+    }
+
+    func upload(_ g: RecoveryGroup, report: inout RecoveryReport, maxRounds: Int) throws {
+        // 钥匙串里没有旧令牌（重装、换机恢复）：传不上去，留着（不删，不丢账）
+        guard let token = try tokens.token(ref: g.tokenRef) else { return }
+        var epoch = try db.retiredSession(deviceId: g.deviceId)?.epoch
+        var handshakes = 0
+        for _ in 0..<maxRounds {
+            guard let batch = try db.nextRecoveryBatch(deviceId: g.deviceId, storeId: g.storeId) else { return }
+            let (code, data) = try send(.sync(token: token, body: LocalDB.recoveryRequestBody(batch, epoch: epoch, appBuild: appBuild)))
+            if code == 409 {
+                guard handshakes < 2, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let e = (obj["epoch"] as? String).flatMap(UUID.init(uuidString:)) else { return }
+                handshakes += 1
+                epoch = e
+                try db.setRetiredEpoch(deviceId: g.deviceId, e)
+                continue
+            }
+            guard code == 200 else { return }  // 401（旧令牌不认了）、5xx：这组先停
+            let r = try SyncResponse.decode(data)
+            if r.device.discardOutbox == true {
+                try db.discardOutbox(storeId: g.storeId)
+                tokens.delete(ref: g.tokenRef)
+                report.discarded = true
+                return
+            }
+            if r.device.revoked { try db.markRetiredRevoked(deviceId: g.deviceId) }
+            // 注销期间：一个都不应用、results 为空，留着等撤回（§14 S04-2）
+            guard r.deletePendingUntil == nil, !r.results.isEmpty else { return }
+            let results = r.results.compactMap { x -> OpResult? in
+                guard let st = OutboxItem.Status(rawValue: x.status) else { return nil }
+                return try? OpResult(id: x.id, status: st, code: x.code)
+            }
+            // 店 = 发送这批 op 的旧会话的店，不是当前会话的店
+            try db.recordResults(results, storeId: g.storeId)
+            // 提示用这次响应里的数（收银员会话下这些 op 已经删了，读不回）
+            let rejected = results.filter { $0.status == .rejected }.count
+            try db.addRecoveryRejected(rejected)
+            report.resolved += results.count
+            report.rejected += rejected
+            report.held += results.filter { $0.status == .held }.count
+        }
+    }
+
+    /// 恢复队列清空的旧会话：推迟的 `logout` 现在调，然后删旧令牌、删会话行（§4.5「恢复队列清空后才删除对应的旧令牌」）
+    func finishDrained(_ report: inout RecoveryReport) throws {
+        for s in try db.retiredSessionsWithoutPendingOps() {
+            let info = try db.retiredSession(deviceId: s.deviceId)
+            if info?.logoutPending == true, info?.revoked != true, let token = try tokens.token(ref: s.tokenRef) {
+                let (code, _) = try send(.logout(token: token))
+                // 204 = 注销了；401 = 令牌已经不认了。别的（5xx）下次再试，令牌先留着
+                guard code == 204 || code == 200 || code == 401 else { continue }
+            }
+            tokens.delete(ref: s.tokenRef)
+            try db.forgetSession(deviceId: s.deviceId)
+            report.finished.append(s.deviceId)
+        }
+    }
+}
