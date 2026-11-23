@@ -151,4 +151,35 @@ final class ScanLayoutTests: XCTestCase {
         m.setPackCount(0)
         XCTAssertNil(m.packCount)
     }
+
+    /// PR #40 Codex 必须修 1、2，接上真的扫码层：卡片在时 B 一直在镜头里，确认后 B 立刻收；
+    /// 填数（相机停）超过 1.5 秒再确认，A 还在镜头里不重新弹卡、不挡下一件
+    func testCameraAfterConfirmTakesTheNextItemNotTheOldOne() throws {
+        let m = try stockModel()
+        var now: TimeInterval = 1000
+        let hub = ScanHub(clock: { now })
+        hub.handler = { m.handle($0) }
+        func frames(_ codes: [String], seconds: Double) {
+            for _ in 0..<Int(seconds * 10) { for c in codes { hub.receive(c, from: .camera) }; now += 0.1 }
+        }
+        // 1：A 的卡在，B 也进了画面
+        XCTAssertEqual(hub.receive(Self.colaPack, from: .camera), .known)
+        frames([Self.colaPack, Self.erguotou], seconds: 3)
+        XCTAssertEqual(m.product?.name, "可口可乐 330ml")
+        m.fill(cost: "25")
+        XCTAssertTrue(m.commit())
+        XCTAssertNil(hub.receive(Self.colaPack, from: .camera), "A 还在镜头里不重复算")
+        XCTAssertEqual(hub.receive(Self.erguotou, from: .camera), .known, "确认后 B 下一帧就收")
+        XCTAssertEqual(m.product?.name, "牛栏山二锅头 500ml")
+        // 2：B 的卡 → 填进价（相机停 3 秒）→ 相机再开 → 确认；B 还在镜头里，不重新弹卡
+        m.focus(.cost)
+        now += 3
+        m.doneEditing()
+        hub.cameraResumed()
+        m.fill(cost: "18")
+        XCTAssertTrue(m.commit())
+        frames([Self.erguotou], seconds: 2)
+        XCTAssertNil(m.conversion, "旧商品没重新弹卡")
+        XCTAssertEqual(hub.receive(Self.colaPack, from: .camera), .known, "下一件不被挡")
+    }
 }

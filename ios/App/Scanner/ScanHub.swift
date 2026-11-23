@@ -69,8 +69,45 @@ final class ScanHub {
     @discardableResult
     func receive(_ code: String, from source: ScanSource) -> ScanOutcome? {
         guard Self.isAcceptable(code) else { return nil }
-        if source == .camera, !deduper.accept(code, at: clock()) { return nil }
-        return deliver(Scan(code: code, source: source))
+        guard source == .camera else { return deliver(Scan(code: code, source: source)) }
+        let now = clock()
+        if heldOver(code, at: now) { return nil }
+        if !deduper.accept(code, at: now) { return nil }
+        let outcome = deliver(Scan(code: code, source: source))
+        if outcome == .ignored, code != lastCameraCode {
+            // 页面没收（进货页商品卡在 / 页面被盖住）：这个码没处理过，不占去重窗口，
+            // 否则它一直在镜头里就一直刷新计时，恢复后也扫不进去（PR #40 Codex 必须修 1）。
+            // 已经处理过的那个码照旧留着计时：还在镜头里就不重复算
+            deduper.forget(code)
+        } else if let outcome, outcome != .ignored {
+            lastCameraCode = code
+        }
+        return outcome
+    }
+
+    /// 相机上一次处理过的码（页面收了的）
+    private var lastCameraCode: String?
+    /// 相机停过再开（进货页填数时相机区收起）：上一次处理过的码先挡着，直到它离开镜头满一个去重窗口
+    private var holdOver: (code: String, since: TimeInterval, lastSeen: TimeInterval?)?
+    /// 相机开起来之前的宽限（会话重启要一会儿）：过了这么久都没再看见它，就不挡了
+    static let resumeGrace: TimeInterval = 1.0
+
+    /// 相机停过、要重新开：不重放上一次处理过的码（PR #40 Codex 必须修 2）。停的这段时间去重计时过期了，
+    /// 那件货还在镜头里的话，一开相机就会被当成新扫的一次，把刚确认完的商品又弹回来、挡住下一件
+    func cameraResumed() {
+        guard let code = lastCameraCode else { return }
+        holdOver = (code, clock(), nil)
+    }
+
+    private func heldOver(_ code: String, at now: TimeInterval) -> Bool {
+        guard let h = holdOver else { return false }
+        let window = deduper.window
+        // 离开镜头满一个窗口、或开了相机后一直没再看见：不再挡
+        if let seen = h.lastSeen, now - seen >= window { holdOver = nil; return false }
+        if h.lastSeen == nil, now - h.since >= window + Self.resumeGrace { holdOver = nil; return false }
+        guard code == h.code else { return false }
+        holdOver?.lastSeen = now
+        return true
     }
 
     /// 扫码枪的一个按键（`HIDKeyCaptureView` 交来；时间用 UIPress.timestamp，与 `clock` 同一个时基：开机以来的秒数）

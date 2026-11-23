@@ -227,4 +227,58 @@ final class ScanHubTests: XCTestCase {
         XCTAssertNil(hub.receive("6921168509256-", from: .camera))
         XCTAssertEqual(hub.receive("6921168509256", from: .camera), .known, "被挡掉的码不占去重的计时")
     }
+
+    // MARK: PR #40 Codex 必须修：进货页商品卡在时被忽略的码、相机停过再开
+
+    /// 1：A 的卡在时 B 一直在镜头里（页面返回 .ignored）；确认 A 后 B 下一帧就收，不用拿开 1.5 秒；A 还在镜头里照旧不重复算
+    func testIgnoredCameraCodeDoesNotHoldTheDedupeWindow() {
+        let hub = ScanHub(feedback: recorder, clock: { [unowned self] in now })
+        var holding = false
+        hub.handler = { [unowned self] scan in
+            scans.append(scan)
+            return holding ? .ignored : .known
+        }
+        let a = "6921168509256", b = "6901028075831"
+        XCTAssertEqual(hub.receive(a, from: .camera), .known)
+        holding = true
+        for _ in 0..<30 {   // 3 秒：A、B 都在画面里
+            hub.receive(a, from: .camera)
+            hub.receive(b, from: .camera)
+            now += 0.1
+        }
+        XCTAssertEqual(scans.filter { $0.code == a }.count, 1, "处理过的 A 一直在镜头里，不重复交给页面")
+        holding = false   // 确认 A
+        XCTAssertNil(hub.receive(a, from: .camera), "A 还在镜头里：照旧挡着")
+        XCTAssertEqual(hub.receive(b, from: .camera), .known, "B 没处理过：确认后下一帧就收")
+        XCTAssertEqual(recorder.played, [.known, .known])
+    }
+
+    /// 2：扫 A → 相机停（填数）超过 1.5 秒 → 再开，A 还在镜头里：不重放；A 离开满 1.5 秒后再对上照常算；B 不受影响
+    func testResumedCameraDoesNotReplayTheLastCode() {
+        let hub = makeHub(known: ["6921168509256", "6901028075831"])
+        let a = "6921168509256", b = "6901028075831"
+        XCTAssertEqual(hub.receive(a, from: .camera), .known)
+        now += 5   // 相机停着
+        hub.cameraResumed()
+        now += 0.6  // 会话起来
+        for _ in 0..<20 {
+            XCTAssertNil(hub.receive(a, from: .camera), "A 还在镜头里，不重放")
+            now += 0.1
+        }
+        XCTAssertEqual(hub.receive(b, from: .camera), .known, "下一件照常收")
+        now += 1.6  // A 离开满 1.5 秒
+        XCTAssertEqual(hub.receive(a, from: .camera), .known, "拿开再对上算新的一次")
+        XCTAssertEqual(scans.map(\.code), [a, b, a])
+    }
+
+    /// 2（续）：再开相机后一直没看见 A（已经拿走了）：过了宽限就不挡，下次对上 A 照常算
+    func testResumeHoldExpiresWhenTheCodeNeverShowsUp() {
+        let hub = makeHub()
+        let a = "6921168509256"
+        XCTAssertEqual(hub.receive(a, from: .camera), .known)
+        now += 5
+        hub.cameraResumed()
+        now += CameraDeduper.defaultWindow + ScanHub.resumeGrace + 0.1
+        XCTAssertEqual(hub.receive(a, from: .camera), .known)
+    }
 }
