@@ -37,12 +37,19 @@ final class SyncCoordinator {
     private var timer: Task<Void, Never>?
     private var monitor: NWPathMonitor?
     static let interval: Duration = .seconds(15)
+    /// 定时同步的间隔（正常 15 秒；测试缩短）
+    let interval: Duration
     nonisolated static let logger = Logger(subsystem: "cn.yuanhuishop.zhangben", category: "sync")
+    /// 本进程一共建过几个（热修回归：一个会话只该有一个；测试和 Debug 探针看）
+    private(set) static var created = 0
 
-    init(db: LocalDB, build: Int, transport: @escaping SyncEngine.Transport) {
+    init(db: LocalDB, build: Int, interval: Duration = SyncCoordinator.interval, transport: @escaping SyncEngine.Transport) {
         self.db = db
         self.build = build
-        self.transport = transport
+        self.interval = interval
+        Self.created += 1
+        let stats = SyncStats.shared
+        self.transport = { body in stats.sent(); return try transport(body) }
         let st = try? db.syncStatus()
         status = st
         catalogDone = st?.catalogDone ?? false
@@ -84,10 +91,12 @@ final class SyncCoordinator {
     /// 开始定时（每 15 秒）和网络监听；会话结束时 `stop()`
     func start() {
         guard timer == nil else { return }
+        let interval = interval
         timer = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                self?.kick()
-                try? await Task.sleep(for: Self.interval)
+                // 协调器没了就停，不留一个空转的定时任务（不在睡眠期间强持有 self）
+                guard self?.kick() != nil else { return }
+                try? await Task.sleep(for: interval)
             }
         }
         if simulatedOffline { offline = true; return }
@@ -168,6 +177,15 @@ final class SyncCoordinator {
         let done = (try? db.productCount()) ?? 0
         return (max(done, progress?.products ?? 0), progress?.totalProducts)
     }
+}
+
+/// 发出去的 `/v1/sync` 请求数（整个进程、所有协调器合计；热修回归测试和 Debug 探针看）
+final class SyncStats: @unchecked Sendable {
+    static let shared = SyncStats()
+    private let lock = NSLock()
+    private var n = 0
+    var requests: Int { lock.lock(); defer { lock.unlock() }; return n }
+    func sent() { lock.lock(); n += 1; lock.unlock() }
 }
 
 /// 强杀验收（plan-v2 §8 S22a 崩溃注入）：Debug 包带 `-uiCrashAt <点>` 启动时，同步走到这个点就整个进程退出，

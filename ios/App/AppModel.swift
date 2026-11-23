@@ -192,6 +192,12 @@ final class AppModel {
     /// 网络服务（正常启动才有；夹具为 nil，改名只改本机）
     var services: AppServices?
 
+    /// 04a 查名称用哪个：正常启动问服务器（真机热修），夹具 / Debug 的 `-uiOffline` 用桩
+    func nameLookup(offline: Bool) -> any ProductNameLookup {
+        if let services, !offline { return ServerNameLookup(api: services.api, tokens: services.tokens, tokenRef: session.tokenRef) }
+        return StubNameLookup(offline: offline)
+    }
+
     /// 改手机名（§14 S15-2）：先改本机，再报服务器（`PATCH /v1/devices/me`），名字以服务器返回的为准（重名会加序号）。
     /// 报不上就留在 `pendingDeviceLabel`，回前台再报。收银员本机拒改（`renameCurrentDevice` 里拦）。
     func rename(_ name: String) throws {

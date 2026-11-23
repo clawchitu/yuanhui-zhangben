@@ -113,6 +113,8 @@ export interface BarcodeCatalogTable {
   spec: string | null;
   brand: string | null;
   image_url: string | null;
+  /** 0004：完整图片地址列表（第一张 = image_url）；旧行是空数组 */
+  image_urls: ColumnType<string[], string[] | undefined, string[]>;
   source: string;
   raw: Json | null;
   fetched_at: TsDefault;

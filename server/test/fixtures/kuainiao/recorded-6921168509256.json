@@ -1,0 +1,54 @@
+{
+  "status": "200",
+  "message": "查询成功！",
+  "Barcode": "6921168509256",
+  "ItemName": "农夫山泉 饮用天然水550ml",
+  "ItemClassCode": "10000594",
+  "ItemClassName": "",
+  "BrandName": "农夫山泉",
+  "ItemSpecification": "550ml",
+  "ItemWidth": "",
+  "ItemHeight": "",
+  "ItemDepth": "",
+  "codeSource": "china",
+  "FirmName": "农夫山泉股份有限公司",
+  "ItemGrossWeight": "",
+  "Batch": "",
+  "branch_code": null,
+  "FirmAddress": "浙江省杭州市西湖区葛衙庄181号",
+  "FirmStatus": "有效",
+  "gpc": "",
+  "gpcname": "",
+  "saledate": null,
+  "import_importers_name": null,
+  "remark": "",
+  "Source": "",
+  "Image": [
+    {
+      "Imageurl": "http://www.api-yun.cn/getPic/getPics/6921168509256/1795414922/cbebf251/0"
+    },
+    {
+      "Imageurl": "http://www.api-yun.cn/getPic/getPics/6921168509256/1795414922/7a70d8ef/1"
+    },
+    {
+      "Imageurl": "http://www.api-yun.cn/getPic/getPics/6921168509256/1795414922/2f30fe09/2"
+    },
+    {
+      "Imageurl": "http://www.api-yun.cn/getPic/getPics/6921168509256/1795414922/e3308091/3"
+    }
+  ],
+  "ImageStream": [
+    {
+      "Imageurl": "http://www.api-yun.cn/getPicStream/getPics/6921168509256/1795414922/cbebf251/0"
+    },
+    {
+      "Imageurl": "http://www.api-yun.cn/getPicStream/getPics/6921168509256/1795414922/7a70d8ef/1"
+    },
+    {
+      "Imageurl": "http://www.api-yun.cn/getPicStream/getPics/6921168509256/1795414922/2f30fe09/2"
+    },
+    {
+      "Imageurl": "http://www.api-yun.cn/getPicStream/getPics/6921168509256/1795414922/e3308091/3"
+    }
+  ]
+}

@@ -2,10 +2,8 @@
 //
 // - 只有服务器调，AppCode 只从环境变量来（config.kuainiao.appCode），不进仓库、不进日志、不进错误信息。
 // - 请求：GET <endpoint>?Code=<条码>，请求头 `Authorization: APPCODE <AppCode>`（旧计划 design/plan.md 记下的格式）。
-// - 响应格式没有实测过（S08 不调真实付费接口）。名称、规格等按下面的成功形态白名单认，测试用 test/fixtures/kuainiao/ 里的手写样例。
-//   往安全的方向收（PR #19 审核，§14 S08-6）：用成功形态白名单（SUCCESS_SHAPES），响应不严格匹配其中一种就抛 format
-//   （调用方不写缓存），不当「没查到」。所以真实接口上查不到的条码每次都会重查，有每日额度兜着。「成功」「明确没查到」各凭哪个字段认，
-//   由 T9（S10a）用 scripts/barcode-trial.ts --record 录到的真实响应定下，再校准白名单、加上「没查到」的负缓存。
+// - 响应解析按真实录制件校准（test/fixtures/kuainiao/recorded-*.json，PR #39）：「查到」「明确没查到」各凭 status + message 认，
+//   其余一律 format（调用方不写缓存），不把业务错误当「没查到」（PR #19 审核，§14 S08-6）。见 parseKuainiao。
 // - 网关报错头 X-Ca-Error-Message 不可信（可能回显 AppCode），只拿来归成固定分类，内容不进错误信息、不进日志。
 // - 外部服务做成接口（BarcodeSource），测试和演示店都不碰真实接口。
 import type { Config } from "../config.ts";
@@ -14,7 +12,10 @@ export interface CatalogHit {
   name: string;
   spec?: string;
   brand?: string;
+  /** 第一张图（= imageUrls[0]）：图片任务只下这一张 */
   imageUrl?: string;
+  /** 全部图片地址（去重、只有 http/https）；以后多图选择用，不下发给手机（§14 S08-1） */
+  imageUrls?: string[];
 }
 
 export type SourceResult = { kind: "found"; hit: CatalogHit; raw: unknown } | { kind: "not_found"; raw: unknown };
@@ -50,53 +51,6 @@ export function gatewayErrorClass(header: string | null): "auth" | "quota" | "ot
 /** 响应体上限：正常一条记录几百字节，超过就当格式不对，不往内存里读 */
 export const MAX_RESPONSE_BYTES = 256 * 1024;
 
-/**
- * 成功形态白名单（PR #19 第二轮审核）。快鸟的真实格式没核对过，这里只收手写样例（test/fixtures/kuainiao/found*.json）
- * 的三种形态，而且是**严格匹配**：顶层和嵌套体的键必须都在列表里（多一个、少一个必需键都不行），
- * 成功码只认 0 / "0"，msg 只认几个固定的成功文字，商品字段只能是字符串（价格可以是数字）。
- * 其余一切形态（含未知字段组合、嵌套里的 status / success / errCode / error 等）一律 format，调用方不写缓存。
- * 待 T9（S10a）用真实录制件校准：成功形态只留实际出现的那一种，错误响应都补成「不是商品」的测试。
- */
-interface SuccessShape {
-  /** 顶层：成功码字段 → 必须是成功码 */
-  topCodes: string[];
-  /** 顶层可选的文字字段：出现就必须是成功文字（showapi_res_error 必须是空串） */
-  topMsg?: string;
-  topEmptyError?: string;
-  /** 嵌套体所在的键 */
-  body: string;
-  /** 嵌套体里的成功码字段（必须有，必须是成功码） */
-  bodyCodes: string[];
-  /** 嵌套体里的商品字段 */
-  name: string;
-  spec?: string;
-  brand?: string;
-  image?: string;
-  /** 嵌套体里允许出现、但不用的字段（值必须是字符串，条码字段必须像条码） */
-  barcodeKey?: string;
-  ignored: string[];
-}
-const SUCCESS_SHAPES: SuccessShape[] = [
-  // found.json：{code:"0", msg, data:{code:<条码>, goodsName, spec, trademark, img, manuName, price}}
-  { topCodes: ["code"], topMsg: "msg", body: "data", bodyCodes: [], name: "goodsName", spec: "spec", brand: "trademark", image: "img", barcodeKey: "code", ignored: ["manuName", "price"] },
-  // found-no-image.json：{status:0, msg, result:{barcode, name, specification, brand, images}}
-  { topCodes: ["status"], topMsg: "msg", body: "result", bodyCodes: [], name: "name", spec: "specification", brand: "brand", image: "images", barcodeKey: "barcode", ignored: [] },
-  // found-image-list.json：{showapi_res_code:0, showapi_res_error:"", showapi_res_body:{ret_code:0, goodsName, spec, trademark, img, imgList, manuName, price, code}}
-  {
-    topCodes: ["showapi_res_code"],
-    topEmptyError: "showapi_res_error",
-    body: "showapi_res_body",
-    bodyCodes: ["ret_code"],
-    name: "goodsName",
-    spec: "spec",
-    brand: "trademark",
-    image: "img",
-    barcodeKey: "code",
-    ignored: ["imgList", "manuName", "price"],
-  },
-];
-const SUCCESS_MSGS = new Set(["ok", "success", "成功", "查询成功"]);
-
 // 控制字符、零宽字符、行分隔符、双向控制符
 const CONTROL_CHARS = new RegExp("[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2066-\\u2069\\ufeff]", "g");
 
@@ -108,73 +62,85 @@ export function cleanText(v: unknown, max: number): string | undefined {
   return [...s].slice(0, max).join("");
 }
 
-function firstImage(v: unknown): string | undefined {
-  const pick = (x: unknown): string | undefined => {
-    if (typeof x !== "string") return undefined;
-    for (const part of x.split(/[,;\s]+/)) if (/^https?:\/\//i.test(part) && part.length <= 2048) return part;
-    return undefined;
-  };
-  if (Array.isArray(v)) {
-    for (const x of v) {
-      const u = pick(x);
-      if (u) return u;
+/** 一条商品最多留几张图、单个地址最长多少 */
+export const MAX_IMAGE_URLS = 10;
+const MAX_URL_LEN = 2048;
+
+/**
+ * 快鸟的 Image：`[{Imageurl: "http://..."}]`，没图是 `[]` 或 null。只收 http/https、能解析的地址，去重、保序、限个数。
+ * 形态不对（不是数组、元素不是对象、Imageurl 不是字符串）返回 null，调用方按 format。
+ * 注意：真实地址是 http、路径里带时间戳签名，可能过期（下载失败走 image_jobs 的重试，见 jobs/image-fetch.ts）。
+ */
+function imageUrls(v: unknown): string[] | null {
+  if (v === null || v === undefined) return [];
+  if (!Array.isArray(v)) return null;
+  const out: string[] = [];
+  for (const x of v) {
+    if (!isObject(x)) return null;
+    const u = x.Imageurl;
+    if (u === null || u === undefined || u === "") continue;
+    if (typeof u !== "string") return null;
+    const s = u.replace(CONTROL_CHARS, "").trim();
+    if (s.length > MAX_URL_LEN || !/^https?:\/\//i.test(s)) continue;
+    try {
+      new URL(s);
+    } catch {
+      continue;
     }
-    return undefined;
+    if (!out.includes(s)) out.push(s);
+    if (out.length >= MAX_IMAGE_URLS) break;
   }
-  return pick(v);
+  return out;
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
-const isSuccessCode = (v: unknown) => v === 0 || v === "0";
-const isText = (v: unknown) => typeof v === "string";
+const isTextOrNull = (v: unknown) => v === null || v === undefined || typeof v === "string";
+/** 快鸟的业务状态是字符串（"200" / "400"），数字也认 */
+const statusIs = (v: unknown, code: number) => v === code || v === String(code);
 
-/** 严格匹配一种成功形态；匹配不上返回 null（不说为什么，调用方统一按 format） */
-function matchShape(top: Record<string, unknown>, sh: SuccessShape): CatalogHit | null {
-  const topAllowed = new Set([...sh.topCodes, sh.body, ...(sh.topMsg ? [sh.topMsg] : []), ...(sh.topEmptyError ? [sh.topEmptyError] : [])]);
-  if (!Object.keys(top).every((k) => topAllowed.has(k))) return null;
-  if (!sh.topCodes.every((k) => isSuccessCode(top[k]))) return null;
-  if (sh.topMsg && sh.topMsg in top && !(isText(top[sh.topMsg]) && SUCCESS_MSGS.has(String(top[sh.topMsg]).trim().toLowerCase()))) return null;
-  if (sh.topEmptyError && sh.topEmptyError in top && top[sh.topEmptyError] !== "") return null;
-  const body = top[sh.body];
-  if (!isObject(body)) return null;
-  const fields = [sh.name, sh.spec, sh.brand, sh.image].filter((k): k is string => !!k);
-  const bodyAllowed = new Set([...sh.bodyCodes, ...fields, ...(sh.barcodeKey ? [sh.barcodeKey] : []), ...sh.ignored]);
-  if (!Object.keys(body).every((k) => bodyAllowed.has(k))) return null;
-  if (!sh.bodyCodes.every((k) => isSuccessCode(body[k]))) return null;
-  // 文字字段只能是字符串（价格可以是数字）；图片字段可以是字符串数组
-  for (const k of [sh.name, sh.spec, sh.brand, ...sh.ignored].filter((k): k is string => !!k)) {
-    if (!(k in body)) continue;
-    const v = body[k];
-    if (!(isText(v) || (k === "price" && typeof v === "number" && Number.isFinite(v)))) return null;
-  }
-  if (sh.image && sh.image in body) {
-    const v = body[sh.image];
-    if (!(isText(v) || (Array.isArray(v) && v.every(isText)))) return null;
-  }
-  if (sh.barcodeKey && sh.barcodeKey in body) {
-    const v = body[sh.barcodeKey];
-    if (!(isText(v) && /^\d{6,14}$/.test(v))) return null;
-  }
-  const name = cleanText(body[sh.name], 200);
-  if (!name) return null;
-  const spec = sh.spec ? cleanText(body[sh.spec], 100) : undefined;
-  const brand = sh.brand ? cleanText(body[sh.brand], 100) : undefined;
-  const imageUrl = sh.image ? firstImage(body[sh.image]) : undefined;
-  return { name, ...(spec ? { spec } : {}), ...(brand ? { brand } : {}), ...(imageUrl ? { imageUrl } : {}) };
-}
+/** 明确没查到的文案（录制件：「经查，暂无该条码相关信息。」）；只认「暂无该条码」，免得「暂无权限 / 暂无可用次数」之类被负缓存 */
+const NOT_FOUND_TEXT = "暂无该条码";
+
+const format = (why: string, json: unknown) => new SourceError("format", `快鸟响应认不出（${why}）`, json);
 
 /**
- * 从快鸟的 JSON 里认出名称、规格、品牌、图片：只有严格匹配 SUCCESS_SHAPES 里某一种的才是商品。
- * 其余一切 → 抛 SourceError("format")（原始响应放 raw，不进 message），不返回 not_found（见文件头；T9 定下判别字段前不做负缓存）。
+ * 解析快鸟响应（按 test/fixtures/kuainiao/recorded-*.json 的真实格式校准，PR #39）。真实格式是扁平的：
+ *   查到：{status:"200", message:"查询成功！", Barcode, ItemName, BrandName, ItemSpecification, Image:[{Imageurl}], ...}
+ *   没查到：{status:"400", message:"经查，暂无该条码相关信息。", Barcode:null, ItemName:null, Image:null, ...}
+ * 判别：
+ *   - status 200 且 message 含「成功」且 ItemName 清洗后非空 → found（名称 ItemName、规格 ItemSpecification、品牌 BrandName、
+ *     图片 Image[].Imageurl 的列表，imageUrl = 第一张）；传了 barcode 时 Barcode 必须等于所查的码；
+ *   - status 400 且 message 含「暂无该条码」且 ItemName 为空 → not_found（调用方负缓存 7 天）；
+ *   - 其余一切（别的状态码、message 对不上、字段类型不对、名称为空、条码对不上）→ 抛 format，调用方不缓存，下次重查。
+ *     不把业务错误（额度、系统繁忙、参数错等）当「没查到」负缓存（PR #19 审核，§14 S08-6）。
+ * format 错误的 message 只有固定文字，原始响应只放在 SourceError.raw（不进日志）。
  */
-export function parseKuainiao(json: unknown): SourceResult {
-  if (isObject(json)) {
-    for (const sh of SUCCESS_SHAPES) {
-      const hit = matchShape(json, sh);
-      if (hit) return { kind: "found", hit, raw: json };
-    }
+export function parseKuainiao(json: unknown, barcode?: string): SourceResult {
+  if (!isObject(json)) throw format("不是对象", json);
+  const { status, message, ItemName } = json;
+  if (typeof message !== "string") throw format("没有 message", json);
+  if (!isTextOrNull(ItemName)) throw format("ItemName 类型不对", json);
+  const name = cleanText(ItemName, 200);
+
+  if (statusIs(status, 400) && message.includes(NOT_FOUND_TEXT)) {
+    if (name) throw format("没查到却带名称", json);
+    return { kind: "not_found", raw: json };
   }
-  throw new SourceError("format", "快鸟响应认不出（不是已知的成功形态）", json);
+  if (!statusIs(status, 200) || !message.includes("成功")) throw format("业务状态不是成功", json);
+  if (!name) throw format("没有名称", json);
+  if (!isTextOrNull(json.ItemSpecification) || !isTextOrNull(json.BrandName)) throw format("字段类型不对", json);
+  if (barcode !== undefined && json.Barcode !== barcode) throw format("条码对不上", json);
+  const urls = imageUrls(json.Image);
+  if (urls === null) throw format("Image 形态不对", json);
+  const spec = cleanText(json.ItemSpecification, 100);
+  const brand = cleanText(json.BrandName, 100);
+  const hit: CatalogHit = {
+    name,
+    ...(spec ? { spec } : {}),
+    ...(brand ? { brand } : {}),
+    ...(urls.length ? { imageUrl: urls[0], imageUrls: urls } : {}),
+  };
+  return { kind: "found", hit, raw: json };
 }
 
 /** 读响应体，超过上限就中止（不信 Content-Length） */
@@ -243,7 +209,7 @@ export class KuainiaoClient implements BarcodeSource {
     } catch {
       throw new SourceError("format", "快鸟响应不是 JSON");
     }
-    return parseKuainiao(json);
+    return parseKuainiao(json, barcode);
   }
 }
 

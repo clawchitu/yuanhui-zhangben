@@ -3,6 +3,7 @@
 // - 条码查询：每设备每分钟 20 次（超了 429 rate_limited），每店每天调外部 1000 次（超了 429 lookup_quota_exceeded）。
 //   收银员只拿到 found、name、spec、has_image（§6.1）；家用 / 审核另有 brand。
 //   第三方图片地址不下发给任何人（App 只从自家服务器取图，§0），所以 image_url 不出现。
+//   没查到分两种：明确没查到 {found:false}；外部这次没问到 {found:false, retry_later:true}（手机不记，下次再查）。
 //   has_image = 图片总开关开着且条码库里有图（演示店永远 false：不用第三方图）。
 // - 商品图：总开关关着一律 404（手机显示首字）；带的 v 等于当前 image_ver 时强缓存一年，否则不缓存。
 import type { FastifyInstance } from "fastify";
@@ -46,7 +47,8 @@ export async function lookupRoutes(app: FastifyInstance): Promise<void> {
         if (e instanceof LookupQuotaExceeded) return sendError(reply, 429, "lookup_quota_exceeded", { retry_after_s: e.retryAfterS });
         throw e;
       }
-      if (!r.found || !r.hit) return { found: false };
+      // 外部没问到（超时、出错、没配 AppCode）：告诉手机别记住，下次扫再查（PR #39 Fable 可选 1）
+      if (!r.found || !r.hit) return r.origin === "unavailable" ? { found: false, retry_later: true } : { found: false };
       const hasImage = config.productImagesEnabled && !auth.store.isDemo && !!r.hit.imageUrl;
       const body: Record<string, unknown> = { found: true, name: r.hit.name };
       if (r.hit.spec) body.spec = r.hit.spec;

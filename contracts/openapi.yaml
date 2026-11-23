@@ -201,7 +201,7 @@ paths:
       tags: [查询]
       operationId: barcodeLookup
       summary: 查条码对应的商品名
-      description: 先查 `barcode_catalog`，没有再调快鸟（2 秒超时）。每设备每分钟 20 次，每店每天 300 次。演示店返回内置假数据、不调付费接口。收银员只拿到 name、spec、has_image。
+      description: 先查 `barcode_catalog`，没有再调快鸟（2 秒超时）。每设备每分钟 20 次，每店每天 300 次。演示店返回内置假数据、不调付费接口。收银员只拿到 name、spec、has_image。外部没问到时回 `{found:false, retry_later:true}`（不缓存），明确没查到回 `{found:false}`。
       x-permission: GET /v1/barcode-lookup/{barcode}
       parameters:
         - name: barcode
@@ -979,9 +979,12 @@ components:
       type: object
       additionalProperties: false
       required: [found]
-      description: 收银员只有 found、name、spec、has_image
+      description: 收银员只有 found、name、spec、has_image（另加 retry_later）
       properties:
         found: { type: boolean }
+        retry_later:
+          type: boolean
+          description: 只在 found=false 时出现且为 true：这次没能问到外部条码库（超时、出错、没配 AppCode），不是明确没查到；客户端不要记住这个结果，下次扫还要再查
         name: { type: string }
         spec: { type: string }
         has_image: { type: boolean }
