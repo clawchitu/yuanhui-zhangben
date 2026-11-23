@@ -11,6 +11,8 @@ protocol CameraRunning: AnyObject {
     func stop()
     /// 一帧认出的所有码（主线程；识别区内的，可能多个，带码制）
     var onFrame: (([CameraCode]) -> Void)? { get set }
+    /// 会话被系统打断 / 出错（true），恢复（false）（主线程）。页面没让它停，但相机实际停过
+    var onSuspended: ((Bool) -> Void)? { get set }
 }
 
 /// 识别结果输出端（正式是 `AVCaptureMetadataOutput`，测试换成记录器）。只在会话队列上用。
@@ -56,6 +58,7 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     @MainActor private(set) var epoch = 0
     @MainActor private var acceptedEpoch: Int?
     @MainActor var onFrame: (([CameraCode]) -> Void)?
+    @MainActor var onSuspended: ((Bool) -> Void)?
     private var observers: [NSObjectProtocol] = []
 
     /// 这台机器有没有后置相机（模拟器没有）
@@ -74,12 +77,8 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
         types = Self.productTypes + (includeQR ? [.qr] : [])
         drivesSession = true
         super.init()
+        observeInterruptions()
         let center = NotificationCenter.default
-        for name in [AVCaptureSession.runtimeErrorNotification, AVCaptureSession.interruptionEndedNotification] {
-            observers.append(center.addObserver(forName: name, object: session, queue: nil) { [weak self] _ in
-                self?.resumeIfWanted()
-            })
-        }
         // 点按对焦后画面一变（换了个商品）：回到取景框中心连续对焦
         observers.append(center.addObserver(forName: AVCaptureDevice.subjectAreaDidChangeNotification, object: nil,
                                             queue: nil) { [weak self] note in
@@ -94,6 +93,30 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
         super.init()
         output = testOutput
         configured = true
+        observeInterruptions()
+    }
+
+    /// 会话被打断（来电、别的 App 占用相机、系统压力）或出错：按「相机停过」处理（PR #40 Codex 重写版 3）——
+    /// 先告诉扫码层停了（有效时钟不走），打断结束 / 出错后重启时再告诉它开了（冻结到首个识别回调、清空资格）
+    private func observeInterruptions() {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: AVCaptureSession.wasInterruptedNotification, object: session,
+                                            queue: nil) { [weak self] _ in self?.suspendIfWanted() })
+        observers.append(center.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: session,
+                                            queue: nil) { [weak self] _ in
+            self?.suspendIfWanted()
+            self?.resumeIfWanted()
+        })
+        observers.append(center.addObserver(forName: AVCaptureSession.interruptionEndedNotification, object: session,
+                                            queue: nil) { [weak self] _ in self?.resumeIfWanted() })
+    }
+
+    /// 会话队列上排：还该开着的话，回主线程告诉扫码层「停过」
+    nonisolated private func suspendIfWanted() {
+        queue.async { [self] in
+            guard wantsRunning else { return }
+            DispatchQueue.main.async { [self] in MainActor.assumeIsolated { onSuspended?(true) } }
+        }
     }
 
     deinit {
@@ -130,9 +153,12 @@ final class CameraSession: NSObject, CameraRunning, @unchecked Sendable {
     /// 重启有上限：1 秒内最多一次（相机坏了或一直被别的 App 占着时不连续重启转圈，PR #17 Fable 第二轮）
     nonisolated private func resumeIfWanted() {
         queue.async { [self] in
-            guard wantsRunning, configured, drivesSession, !session.isRunning,
-                  restartLimiter.allow(at: ProcessInfo.processInfo.systemUptime) else { return }
-            session.startRunning()
+            guard wantsRunning, configured else { return }
+            if drivesSession, !session.isRunning {
+                guard restartLimiter.allow(at: ProcessInfo.processInfo.systemUptime) else { return }
+                session.startRunning()
+            }
+            DispatchQueue.main.async { [self] in MainActor.assumeIsolated { onSuspended?(false) } }
         }
     }
 
@@ -336,6 +362,11 @@ final class CameraController {
         self.runner = runner
         self.permission = permission
         runner?.onFrame = { [weak self] codes in self?.receive(codes) }
+        // 会话自己被打断 / 出错再恢复：和页面让相机停、开一样告诉扫码层
+        runner?.onSuspended = { [weak self] suspended in
+            guard let self, running else { return }
+            if suspended { onPause?() } else { onResume?() }
+        }
     }
 
     func update(visible: Bool, sceneActive: Bool, paused: Bool = false) {

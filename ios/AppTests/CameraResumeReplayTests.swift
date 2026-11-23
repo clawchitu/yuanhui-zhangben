@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import ShopCore
 import XCTest
 @testable import YuanhuiZhangben
@@ -68,6 +69,7 @@ final class CameraResumeReplayTests: XCTestCase {
         let m = SellModel(db: try makeDB(), registration: registration)
         wire { m.handle($0) }
         hub.onSeveralCodes = { [unowned self] in notices += 1; m.showOneAtATime() }
+        m.onRegistered = { [unowned self] in hub.markRecorded($0) }   // 同 SellView
         return m
     }
 
@@ -86,6 +88,7 @@ final class CameraResumeReplayTests: XCTestCase {
                              defaults: UserDefaults(suiteName: "CameraResumeReplayTests-\(UUID().uuidString)")!)
         wire { m.handle($0) }
         m.onCardClosed = { [unowned self] in hub.inputResumed() }   // 同 StockInView
+        m.onRegistered = { [unowned self] in hub.markRecorded($0) }
         return m
     }
 
@@ -183,6 +186,59 @@ final class CameraResumeReplayTests: XCTestCase {
         now += 2   // 已记过的码：拿开 2 秒不够
         frames([Self.erguotou], seconds: 0.5)
         XCTAssertEqual(count(m, Self.erguotou), 2, "已记过的码离开不满 2.5 秒：当漏帧，不重记")
+    }
+
+    // MARK: 重写版 Codex 复审三条
+
+    /// 1：Code128 / ITF-14 的 B 记过、一直在画面里；EAN 的 A 同框（A 记 1 次）再拿走：B 不重新得资格
+    func testCodeSeenBeforeTheFilterKeepsItsLastSeen() throws {
+        for b in [CameraCode("ABC123456", kind: .code128), CameraCode("16901234500018", kind: .itf14)] {
+            var taken: [String] = []
+            wire { taken.append($0.code); return .known }
+            frames([b], seconds: 1)
+            frames([Self.erguotou, b], seconds: 3)
+            frames([b], seconds: 3)
+            XCTAssertEqual(taken, [b.value, Self.erguotou.value], "\(b.kind)：B 一直在画面里，不重记")
+        }
+    }
+
+    /// 2：扫到新码 X → 登记页存好进篮（算本页已记过）→ 回来 X 在镜头里，识别断档 1.6 秒再认出：不重记（阈值 2.5 秒）；
+    /// 拿开满 2.5 秒再对上：记第二件
+    func testRegisteredCodeUsesTheRecordedThreshold() throws {
+        let m = try sell(.full)
+        frames([Self.newCode], seconds: 0.5)
+        cover(m, true)
+        let reg = NewProductModel(db: m.db, barcode: Self.newCode.value, mode: .sell, quick: false, canLinkPack: true)
+        reg.applyLookup(.found(name: "乐事薯片 原味 70g", unit: "包"))
+        for c in "7.5" { reg.priceKey(c == "." ? .dot : .digit(c.wholeNumberValue!)) }
+        m.finishRegistration(.registered(try XCTUnwrap(reg.saveBasic()), quick: false))
+        cover(m, false)
+        frames([Self.newCode], seconds: 0.5)
+        now += 1.6   // 识别断档
+        frames([Self.newCode], seconds: 0.5)
+        XCTAssertEqual(count(m, Self.newCode), 1, "本页已记过：断档 1.6 秒不算拿开")
+        now += ScanHub.recordedWindow + 0.1
+        frames([Self.newCode], seconds: 0.5)
+        XCTAssertEqual(count(m, Self.newCode), 2)
+    }
+
+    /// 3：页面没停相机，但会话被系统打断（或出错自动重启）10 秒、恢复后首回调晚 3 秒，A 还在：不重记；新的一件照记
+    func testSessionInterruptionCountsAsACameraPause() throws {
+        for (begin, end) in [(AVCaptureSession.wasInterruptedNotification, AVCaptureSession.interruptionEndedNotification),
+                             (AVCaptureSession.runtimeErrorNotification, nil)] {
+            let m = try sell()
+            frames([Self.erguotou], seconds: 1)
+            NotificationCenter.default.post(name: begin, object: session.session)
+            flush()
+            now += 10
+            if let end { NotificationCenter.default.post(name: end, object: session.session) }
+            flush()
+            now += 3
+            frames([Self.erguotou], seconds: 2)
+            XCTAssertEqual(count(m, Self.erguotou), 1, "\(begin.rawValue)：打断期间不算离开")
+            frames([Self.cola], seconds: 0.5)
+            XCTAssertEqual(count(m, Self.cola), 1)
+        }
     }
 
     // MARK: 卖出页其余恢复路径

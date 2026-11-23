@@ -88,6 +88,7 @@ struct SellView: View {
             let model = model
             hub.handler = { model.handle($0) }
             hub.onSeveralCodes = { model.showOneAtATime() }
+            model.onRegistered = { [weak hub] in hub?.markRecorded($0) }
             model.accepting = !covered
         }
         .onChange(of: covered) { _, c in model.accepting = !c }

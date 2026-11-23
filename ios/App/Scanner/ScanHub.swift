@@ -135,6 +135,13 @@ final class ScanHub {
         inputResumed()
     }
 
+    /// 不经相机记账、但记的是相机扫到的码（扫到新码 → 登记页存好后进篮 / 入库）：同样算本页已记过（2.5 秒阈值，
+    /// PR #40 Codex 重写版 2）
+    func markRecorded(_ code: String) {
+        recorded.insert(code)
+        eligible.remove(code)
+    }
+
     /// 页面从「不收」转回「收」（进货商品卡关掉等）：所有码的资格清空，还在画面里的要拿开再扫
     func inputResumed() {
         eligible = []
@@ -174,13 +181,15 @@ final class ScanHub {
     func receiveFrame(_ frame: [CameraCode]) -> ScanOutcome? {
         if runningSince == nil, cameraOn { runningSince = clock() }
         let now = effectiveNow
-        let codes = Self.productCodes(in: frame)
         if lastSeen.count > 64 { lastSeen = lastSeen.filter { now >= $0.value && now - $0.value < Self.recordedWindow } }
-        for c in codes {
+        // 「最后看见」和资格按识别区内的全部原始码算（码制过滤之前）：一直在画面里的 Code128 / ITF-14，
+        // 同框的 EAN 拿走后也不会重新得资格（PR #40 Codex 重写版 1）。过滤只决定这一帧选哪个来记
+        for c in Set(frame.map(\.value).filter(Self.isAcceptable)) {
             let window = recorded.contains(c) ? Self.recordedWindow : cameraWindow
             if let seen = lastSeen[c], now >= seen, now - seen < window {} else { eligible.insert(c) }
             lastSeen[c] = now
         }
+        let codes = Self.productCodes(in: frame)
         guard codes.count == 1, let code = codes.first else {
             if codes.count > 1, lastSeveralNotice.map({ now - $0 >= 2 || now < $0 }) ?? true {
                 lastSeveralNotice = now

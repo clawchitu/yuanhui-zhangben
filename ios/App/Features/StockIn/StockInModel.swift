@@ -62,6 +62,8 @@ final class StockInModel {
     }
     /// 商品卡关掉（确认入库、重新扫）：页面转回收相机码，接 `ScanHub.inputResumed`（PR #40 Fable 补洞 c）
     var onCardClosed: (() -> Void)?
+    /// 扫到的新码登记好（04b 已入库 / 挂整件码）：接 `ScanHub.markRecorded`（算本页已记过）
+    var onRegistered: ((String) -> Void)?
     private(set) var baseline: ProductPrivate?
     private(set) var stockBefore: Int64?
     /// 这一样在本机有没上传的库存变动（§14 S19-1）
@@ -241,8 +243,10 @@ final class StockInModel {
     /// 登记页关掉：挂了整件码（05）就接着进这一箱；登记了新商品：04b 记了数量（> 0）出「库存已记上」，
     /// 没记数量就接着在进货页填这一批（这时不会重复入账）；返回什么都不做
     func finishRegistration(_ outcome: RegistrationOutcome?) {
+        let code = registerCode?.code
         registerCode = nil
         guard let outcome else { return }
+        if let code { onRegistered?(code) }
         switch outcome {
         case .linked(let conv): load(conv)
         case .registered(let conv, _):

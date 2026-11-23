@@ -10,6 +10,7 @@ final class CameraLifecycleTests: XCTestCase {
     final class FakeRunner: CameraRunning {
         var calls: [String] = []
         var onFrame: (([CameraCode]) -> Void)?
+        var onSuspended: ((Bool) -> Void)?
         func start() { calls.append("start") }
         func stop() { calls.append("stop") }
     }

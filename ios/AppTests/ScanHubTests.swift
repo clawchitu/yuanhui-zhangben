@@ -230,31 +230,6 @@ final class ScanHubTests: XCTestCase {
         XCTAssertEqual(hub.receive("6921168509256", from: .camera), .known, "被挡掉的码不占去重的计时")
     }
 
-    // MARK: PR #40 Codex 必须修：进货页商品卡在时被忽略的码、相机停过再开
-
-    /// 1：A 的卡在时 B 一直在镜头里（页面返回 .ignored）；确认 A 后 B 下一帧就收，不用拿开 1.5 秒；A 还在镜头里照旧不重复算
-    func testIgnoredCameraCodeDoesNotHoldTheDedupeWindow() {
-        let hub = ScanHub(feedback: recorder, clock: { [unowned self] in now })
-        var holding = false
-        hub.handler = { [unowned self] scan in
-            scans.append(scan)
-            return holding ? .ignored : .known
-        }
-        let a = "6921168509256", b = "6901028075831"
-        XCTAssertEqual(hub.receive(a, from: .camera), .known)
-        holding = true
-        for _ in 0..<30 {   // 3 秒：A、B 都在画面里
-            hub.receive(a, from: .camera)
-            hub.receive(b, from: .camera)
-            now += 0.1
-        }
-        XCTAssertEqual(scans.filter { $0.code == a }.count, 1, "处理过的 A 一直在镜头里，不重复交给页面")
-        holding = false   // 确认 A
-        XCTAssertNil(hub.receive(a, from: .camera), "A 还在镜头里：照旧挡着")
-        XCTAssertEqual(hub.receive(b, from: .camera), .known, "B 没处理过：确认后下一帧就收")
-        XCTAssertEqual(recorder.played, [.known, .known])
-    }
-
     // MARK: PR #40 第三轮重写：有效时钟 + 资格 + 一次只认一件（相机整帧交来，`receiveFrame`）
 
     private let a = "6921168509256", b = "6901028075831"

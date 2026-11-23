@@ -73,6 +73,8 @@ final class SellModel {
     /// 记账次数（测试、调试探针用）
     private(set) var commitCount = 0
     private var committing = false
+    /// 扫到的新码登记好、放进了篮子：接 `ScanHub.markRecorded`（算本页已记过）
+    var onRegistered: ((String) -> Void)?
     /// 待传笔数变了（首页顶栏跟着变）
     var onPendingChange: ((Int) -> Void)?
 
@@ -161,8 +163,10 @@ final class SellModel {
     /// 登记页关掉：存好了就把它放进购物篮（04a「存好，接着卖」、05 存好后按整箱算）；返回的什么都不加。
     /// 收银员临时登记存好后出一句「已记下，回头让家里人补全」（04c）
     func finishRegistration(_ outcome: RegistrationOutcome?) {
+        let code = registerCode?.code
         registerCode = nil
         guard let outcome else { return }
+        if let code { onRegistered?(code) }
         done = nil
         notice = nil
         let added = add(outcome.conversion)

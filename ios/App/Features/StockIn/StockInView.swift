@@ -101,6 +101,7 @@ struct StockInView: View {
             let model = model
             hub.handler = { model.handle($0) }
             hub.onSeveralCodes = { model.showOneAtATime() }
+            model.onRegistered = { [weak hub] in hub?.markRecorded($0) }
             model.onCardClosed = { [weak hub] in hub?.inputResumed() }
             model.accepting = !covered
         }
