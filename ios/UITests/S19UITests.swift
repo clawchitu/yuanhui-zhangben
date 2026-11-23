@@ -51,6 +51,9 @@ final class S19UITests: XCTestCase {
         let app = launch(["-uiScan", Self.colaPack])
         XCTAssertTrue(el(app, "stockIn.qty").waitForExistence(timeout: 10))
         XCTAssertEqual(el(app, "stockIn.badge").label, "整箱码　1 箱 = 24 罐")
+        // 扫到后是商品卡（扫码页布局方案）：点数量旁的键盘填
+        el(app, "stockIn.qty").tap()
+        XCTAssertTrue(app.buttons["1"].waitForExistence(timeout: 3))
         XCTAssertFalse(app.buttons["点"].exists, "数量键盘没有小数点")
         keys(app, "5")
         el(app, "stockIn.cost").tap()
@@ -58,7 +61,7 @@ final class S19UITests: XCTestCase {
         keys(app, "48")
         XCTAssertEqual(el(app, "stockIn.total").label, "¥240.00")
         XCTAssertEqual(el(app, "stockIn.entryLine").label, "入账 120 罐，每罐进价 ¥2.00")
-        XCTAssertTrue(el(app, "stockIn.commit").isHittable, "记进货固定在底部可见")
+        XCTAssertTrue(el(app, "stockIn.commit").isHittable, "确认入库固定在底部可见")
         XCTAssertEqual(el(app, "stockIn.cardName").label, "可口可乐 330ml", "大字下蓝卡上带商品名（Fable 建议 1）")
         el(app, "stockIn.commit").tap()
         wait("记上一笔进货") { ledger(app)["stockIns"] == "1" }

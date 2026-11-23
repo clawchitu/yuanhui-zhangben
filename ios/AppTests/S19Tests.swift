@@ -30,7 +30,12 @@ final class S19Tests: XCTestCase {
         for c in s { m.key(c == "." ? .dot : .digit(c.wholeNumberValue!)) }
     }
 
-    private func scan(_ m: StockInModel, _ code: String) -> ScanOutcome { m.handle(Scan(code: code, source: .gun)) }
+    /// 扫一个码；扫到了就像点了数量旁的键盘那样开始填数量（扫码页布局方案：扫到后先出商品卡，键盘不自己出来）
+    private func scan(_ m: StockInModel, _ code: String) -> ScanOutcome {
+        let outcome = m.handle(Scan(code: code, source: .gun))
+        if m.conversion != nil, m.active == nil { m.focus(.qty) }
+        return outcome
+    }
 
     private func lastStockIn(_ db: LocalDB) throws -> [String: Any] {
         let item = try XCTUnwrap(try db.allOutbox().last { $0.type == .stockIn })
@@ -42,12 +47,14 @@ final class S19Tests: XCTestCase {
     func testColaCaseBlueCard() throws {
         let db = try makeDB()
         let m = try model(db)
-        XCTAssertEqual(scan(m, Self.colaPack), .known)
+        XCTAssertEqual(m.handle(Scan(code: Self.colaPack, source: .gun)), .known)
         XCTAssertEqual(m.qtyLabel, "进了几箱")
         XCTAssertEqual(m.costLabel, "每箱多少钱")
         XCTAssertEqual(m.packBadge, "整箱码　1 箱 = 24 罐")
         XCTAssertEqual(m.cardSubtitle, "单罐卖 ¥3.00　店里还有 30 罐")
-        XCTAssertEqual(m.active, .qty)
+        XCTAssertNil(m.active, "扫到后先出商品卡，键盘不出来（扫码页布局方案）")
+        XCTAssertEqual(m.qtyText, "1", "步进器从 1 箱起")
+        m.focus(.qty)
         XCTAssertFalse(m.keypadShowsDot, "数量键盘没有小数点")
         type(m, "5")
         m.key(.dot)
@@ -257,6 +264,7 @@ final class S19Tests: XCTestCase {
             XCTAssertFalse(m.notice?.text.contains("库存已记上") ?? false, "库存没记，不能说记上了")
             XCTAssertEqual(m.notice?.text, "登记好了：\(conv.product.name)，库存还没记，接着填这一批")
             XCTAssertEqual(m.cardSubtitle, "单个卖 ¥7.00　店里还有 0 个")
+            m.focus(.qty)
             type(m, "3"); m.focus(.cost); type(m, "5")
             XCTAssertTrue(m.commit())
             XCTAssertEqual(try XCTUnwrap(db.displayStock(conv.product.id)).qty, 3, "只记这一次，不重复")
