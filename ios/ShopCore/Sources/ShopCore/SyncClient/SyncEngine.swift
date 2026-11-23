@@ -249,6 +249,22 @@ extension LocalDB {
                     UPDATE outbox SET status = ?, reject_code = ?, result_json = ?, confirmed_at = ?
                     WHERE store_id = ? AND id = ? AND status = 'pending'
                     """, arguments: [st.rawValue, res.code, raw, ts, store.uuidString, res.id.uuidString])
+                // 被拒：本机临时流水行（seq 为空）不再当成正常的账（PR #36 Fable 可选 2）。被拒的 void 把原行的撤销标记和
+                // 临时冲销行一并退掉（服务器上这笔没撤）；别的被拒 op 的行留着给卡片标「没记上」，打 rejected 标记，
+                // 合计不算它，outbox 14 天清理后也认得出
+                if st == .rejected, db.changesCount > 0 {
+                    try db.execute(sql: """
+                        UPDATE entry SET voided_at = NULL, voided_by_device = NULL
+                        WHERE id IN (SELECT reverses_entry_id FROM entry WHERE op_id = ?1 AND seq IS NULL AND reverses_entry_id IS NOT NULL)
+                          AND NOT EXISTS (SELECT 1 FROM entry r WHERE r.reverses_entry_id = entry.id AND r.seq IS NOT NULL)
+                        """, arguments: [res.id.uuidString])
+                    try db.execute(sql: "DELETE FROM entry WHERE op_id = ? AND seq IS NULL AND reverses_entry_id IS NOT NULL",
+                                   arguments: [res.id.uuidString])
+                    try db.execute(sql: """
+                        UPDATE entry SET flags = json_set(COALESCE(flags, '{}'), '$.rejected', json('true'))
+                        WHERE op_id = ? AND seq IS NULL
+                        """, arguments: [res.id.uuidString])
+                }
                 // 确认了、但商品流还没拉到底：增减先留着，等这些商品的新基线（见第 3 步之后）
                 if st == .applied, db.changesCount > 0, r.hasMore.catalog {
                     try db.execute(sql: """

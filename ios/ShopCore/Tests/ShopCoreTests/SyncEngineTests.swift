@@ -160,6 +160,43 @@ final class SyncEngineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try db.writer.read { try Int64.fetchOne($0, sql: "SELECT SUM(amount_fen) FROM entry WHERE \(cond)") }, 0, "合计 ¥0.00")
     }
 
+    /// Fable 可选 2：被拒的卖出，本机临时行留着标「没记上」，但「更早」的合计不算它；outbox 14 天清掉后仍认得出
+    func testRejectedSaleRowsMarkedAndNotCounted() throws {
+        let db = try makeDB()
+        let at = Date().addingTimeInterval(-3 * 86400)
+        var b = Basket()
+        try b.add(try XCTUnwrap(try db.lookup(barcode: "6901035600016")))
+        try db.recordSale(b, at: at)
+        let day = LocalDB.shanghaiDay(at)
+        XCTAssertNotEqual(try db.ledgerDays().first { $0.day == day }?.saleFen ?? 0, 0)
+        let e = SyncEngine(db: db, appBuild: 1) { body in (200, try self.response(ops: self.ops(body), status: "rejected", code: "forbidden")) }
+        try e.sync()
+        XCTAssertNil(try db.ledgerDays().first { $0.day == day }, "被拒的卖出不进当天合计")
+        XCTAssertEqual(try db.recordCards(on: day).first?.rejected, true)
+        XCTAssertEqual(try db.purgeConfirmed(now: Date().addingTimeInterval(20 * 86400)), 1)
+        XCTAssertEqual(try db.recordCards(on: day).first?.rejected, true, "outbox 清掉后靠流水上的标记认")
+    }
+
+    /// Fable 可选 2 / 已知偏差：被拒的 void，原行的撤销标记和本机临时冲销行一并退掉（服务器上这笔没撤），还能再撤
+    func testRejectedVoidRestoresOriginal() throws {
+        let db = try makeDB()
+        let (batchId, pid) = try sell(db)
+        let cond = "batch_id = '\(batchId.uuidString)'"
+        let sale = try serverEntries(db, where: cond, seq: 1)
+        let b1 = try XCTUnwrap(try db.nextPushBatch())
+        try db.applySyncResponse(try SyncResponse.decode(try response(ops: ops(try db.syncRequestBody(b1, appBuild: 1)), entries: sale)), sent: b1)
+        let qty = try db.displayStock(pid)?.qty
+        guard case .voided = try db.void(.batch(batchId)) else { return XCTFail() }
+        let b2 = try XCTUnwrap(try db.nextPushBatch())
+        try db.applySyncResponse(try SyncResponse.decode(try response(ops: ops(try db.syncRequestBody(b2, appBuild: 1)),
+                                                                         status: "rejected", code: "void_window")), sent: b2)
+        XCTAssertEqual(try db.writer.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM entry WHERE seq IS NULL") }, 0, "临时冲销行删掉")
+        XCTAssertEqual(try db.writer.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM entry WHERE \(cond) AND voided_at IS NOT NULL") }, 0)
+        XCTAssertEqual(try db.displayStock(pid)?.qty, qty, "库存回到没撤时")
+        let card = try XCTUnwrap(try db.recordCards(on: LocalDB.shanghaiDay(Date())).first { $0.batchId == batchId })
+        XCTAssertTrue(try db.canVoid(card), "服务器上没撤，还能再撤")
+    }
+
     /// 可选 3：服务器对 op 不回结果时，一趟不空转 200 次
     func testNoProgressStopsRound() throws {
         let db = try makeDB()

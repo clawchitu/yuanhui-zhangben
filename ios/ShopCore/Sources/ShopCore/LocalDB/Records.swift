@@ -307,8 +307,16 @@ extension LocalDB {
                               occurredAt: first["occurred_at"], deviceId: device, deviceLabel: label,
                               batchId: try (first["batch_id"] as String?).map(parseUUID), listTotalFen: first["b_list"],
                               paidTotalFen: first["b_paid"], lines: lines,
-                              rejected: (first["o_status"] as String?) == OutboxItem.Status.rejected.rawValue)
+                              rejected: (first["o_status"] as String?) == OutboxItem.Status.rejected.rawValue
+                                  || Self.isRejectedFlag(first["flags"]))
         }
+    }
+
+    /// 被拒 op 的本机临时行：同步时打的 `{"rejected":true}`（outbox 那条清掉之后靠它认）
+    static func isRejectedFlag(_ flags: String?) -> Bool {
+        guard let flags, let d = flags.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return false }
+        return (o["rejected"] as? Bool) == true
     }
 
     /// 07c「更早」：前天往前、本地有的天（家用本地 35 天，§3.4），每天一行，只列笔数 > 0 或金额非零的日子（§14 S07-7）。
@@ -328,6 +336,7 @@ extension LocalDB {
                   COUNT(DISTINCT CASE WHEN reverses_entry_id IS NULL AND type <> 'cost_adjust' THEN COALESCE(op_id, id) END) AS n,
                   COALESCE(SUM(CASE WHEN type = 'sale' THEN amount_fen ELSE 0 END), 0) AS fen
                 FROM entry WHERE occurred_at BETWEEN ? AND ?
+                  AND (flags IS NULL OR COALESCE(json_extract(flags, '$.rejected'), 0) = 0)
                 GROUP BY d ORDER BY d DESC
                 """, arguments: [from, to])
             return try rows.compactMap { r in
