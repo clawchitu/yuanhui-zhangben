@@ -141,6 +141,8 @@ final class HotfixLookupTests: XCTestCase {
             case "/v1/barcode-lookup/6921168509256": (200, ["found": true, "name": "农夫山泉 饮用天然水550ml", "spec": "550ml", "has_image": false])
             case "/v1/barcode-lookup/6920152400777": (200, ["found": true, "name": "康师傅红烧牛肉面碗装", "spec": "面饼+配料106克", "has_image": false])
             case "/v1/barcode-lookup/6911111111111": (429, ["code": "lookup_quota_exceeded", "retry_after_s": 60])
+            case "/v1/barcode-lookup/6922222222222": (200, ["found": false, "retry_later": true])
+            case "/v1/barcode-lookup/6933333333333": (503, ["code": "unavailable"])
             default: (200, ["found": false])
             }
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!,
@@ -186,12 +188,31 @@ final class HotfixLookupTests: XCTestCase {
         XCTAssertEqual(offline, .offline, "连不上 → 25e，照样能手填登记")
         let quota = await l.lookup("6911111111111")
         XCTAssertEqual(quota, .notFound, "额度用完 / 限速 → 当没查到，手填")
+        let later = await l.lookup("6922222222222")
+        XCTAssertEqual(later, .notFound, "服务器这次没问到外部（retry_later）→ 手填")
+        let down = await l.lookup("6933333333333")
+        XCTAssertEqual(down, .notFound, "服务器 5xx → 手填")
         _ = await l.lookup("6900000000000")
         _ = await l.lookup("6911111111111")
-        XCTAssertEqual(LookupStub.paths.count, 5, "没网、出错不记，下次进来再查")
+        _ = await l.lookup("6922222222222")
+        _ = await l.lookup("6933333333333")
+        XCTAssertEqual(LookupStub.paths.count, 9, "没网、429、5xx、retry_later 都不记，下次扫还会再查")
         let bad = await l.lookup("69 01/..")
         XCTAssertEqual(bad, .notFound)
-        XCTAssertEqual(LookupStub.paths.count, 5, "不合法的码不发请求")
+        XCTAssertEqual(LookupStub.paths.count, 9, "不合法的码不发请求")
+    }
+
+    /// 记忆按登录分开：同一个码在另一个登录（例如先进演示店、再进真实店）下会重新问服务器（Fable 可选 3）
+    func testMemoIsPerLogin() async throws {
+        let l = try lookup()
+        _ = await l.lookup("6999999999999")
+        _ = await l.lookup("6999999999999")
+        XCTAssertEqual(LookupStub.paths.count, 1, "同一登录下明确没查到只问一次")
+        try l.tokens.save("tok2", ref: "ref2")
+        let other = ServerNameLookup(api: l.api, tokens: l.tokens, tokenRef: "ref2", memo: l.memo)
+        _ = await other.lookup("6999999999999")
+        XCTAssertEqual(LookupStub.paths.count, 2, "换了登录重新问")
+        XCTAssertEqual(LookupStub.auth.last, "Bearer tok2")
     }
 
     /// 正常启动（有网络服务）用真实查码；夹具和 -uiOffline 用桩

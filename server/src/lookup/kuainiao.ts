@@ -98,6 +98,9 @@ const isTextOrNull = (v: unknown) => v === null || v === undefined || typeof v =
 /** 快鸟的业务状态是字符串（"200" / "400"），数字也认 */
 const statusIs = (v: unknown, code: number) => v === code || v === String(code);
 
+/** 明确没查到的文案（录制件：「经查，暂无该条码相关信息。」）；只认「暂无该条码」，免得「暂无权限 / 暂无可用次数」之类被负缓存 */
+const NOT_FOUND_TEXT = "暂无该条码";
+
 const format = (why: string, json: unknown) => new SourceError("format", `快鸟响应认不出（${why}）`, json);
 
 /**
@@ -107,7 +110,7 @@ const format = (why: string, json: unknown) => new SourceError("format", `快鸟
  * 判别：
  *   - status 200 且 message 含「成功」且 ItemName 清洗后非空 → found（名称 ItemName、规格 ItemSpecification、品牌 BrandName、
  *     图片 Image[].Imageurl 的列表，imageUrl = 第一张）；传了 barcode 时 Barcode 必须等于所查的码；
- *   - status 400 且 message 含「暂无」且 ItemName 为空 → not_found（调用方负缓存 7 天）；
+ *   - status 400 且 message 含「暂无该条码」且 ItemName 为空 → not_found（调用方负缓存 7 天）；
  *   - 其余一切（别的状态码、message 对不上、字段类型不对、名称为空、条码对不上）→ 抛 format，调用方不缓存，下次重查。
  *     不把业务错误（额度、系统繁忙、参数错等）当「没查到」负缓存（PR #19 审核，§14 S08-6）。
  * format 错误的 message 只有固定文字，原始响应只放在 SourceError.raw（不进日志）。
@@ -119,7 +122,7 @@ export function parseKuainiao(json: unknown, barcode?: string): SourceResult {
   if (!isTextOrNull(ItemName)) throw format("ItemName 类型不对", json);
   const name = cleanText(ItemName, 200);
 
-  if (statusIs(status, 400) && message.includes("暂无")) {
+  if (statusIs(status, 400) && message.includes(NOT_FOUND_TEXT)) {
     if (name) throw format("没查到却带名称", json);
     return { kind: "not_found", raw: json };
   }

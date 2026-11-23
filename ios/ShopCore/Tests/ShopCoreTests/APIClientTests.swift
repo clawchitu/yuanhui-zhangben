@@ -117,4 +117,60 @@ import Testing
         #expect(a.count("/v1/config") >= 1)  // GET 断连时 URLSession 自己会重试几次，数不定
         #expect(b.count("/v1/config") == 1)
     }
+
+    // MARK: 查码总时限（PR #39 Fable 可选 2）
+
+    static let lookupBody = #"{"found":true,"name":"x","has_image":false}"#
+
+    /// 下发地址 A 一直不回：到总时限就放弃，不再拿同样长的时间去问默认地址 B（总耗时不翻倍）
+    @Test func fallbackSharesOneBudget() async throws {
+        let a = try LocalStub(delay: 3) { _ in .init(status: 200, body: Self.lookupBody) }
+        defer { a.stop() }
+        let b = try LocalStub { _ in .init(status: 200, body: Self.lookupBody) }
+        defer { b.stop() }
+        let bases = APIBaseStore(defaultBase: "http://localhost:\(b.port)", policy: debug, defaults: freshDefaults())!
+        _ = bases.adopt(a.base)
+        let api = APIClient(bases: bases)
+        let clock = ContinuousClock()
+        let start = clock.now
+        await #expect {
+            let _: BarcodeLookupResult = try await api.send("GET", "/v1/barcode-lookup/690", body: nil as [String: String]?, token: "t", timeoutMs: 800)
+        } throws: { e in
+            if case APIError.transport = e { true } else { false }
+        }
+        let spent = APIClient.millis(clock.now - start)
+        #expect(spent < 1_500, "总耗时 \(spent) 毫秒，应在 800 毫秒时限附近")
+        #expect(b.requests.isEmpty, "时限用完了，不再问默认地址")
+    }
+
+    /// 下发地址连不上（立刻失败）：用剩下的时间退回默认地址，照样查到
+    @Test func fallbackUsesRemainingBudget() async throws {
+        let dead = try LocalStub { _ in .init(status: 200) }
+        let deadBase = dead.base
+        dead.stop()
+        try await Task.sleep(for: .milliseconds(100))
+        let b = try LocalStub { _ in .init(status: 200, body: Self.lookupBody) }
+        defer { b.stop() }
+        let bases = APIBaseStore(defaultBase: "http://localhost:\(b.port)", policy: debug, defaults: freshDefaults())!
+        _ = bases.adopt(deadBase)
+        let r = try await APIClient(bases: bases).barcodeLookup("6901028075831", token: "t")
+        #expect(r == BarcodeLookupResult(found: true, name: "x", hasImage: false))
+        #expect(b.count("/v1/barcode-lookup/6901028075831") == 1)
+        #expect(APIClient.lookupBudgetMs == 5_000)
+    }
+
+    @Test func millisRoundsUp() {
+        #expect(APIClient.millis(.seconds(2)) == 2_000)
+        #expect(APIClient.millis(.milliseconds(1)) == 1)
+        #expect(APIClient.millis(.nanoseconds(1)) == 1)
+        #expect(APIClient.millis(.zero) == 0)
+    }
+
+    /// 服务器的 retry_later（这次没问到外部）解得出来；旧响应没有这个字段是 nil
+    @Test func decodesRetryLater() throws {
+        let a = try JSONDecoder().decode(BarcodeLookupResult.self, from: Data(#"{"found":false,"retry_later":true}"#.utf8))
+        #expect(a.retryLater == true && !a.found)
+        let b = try JSONDecoder().decode(BarcodeLookupResult.self, from: Data(#"{"found":false}"#.utf8))
+        #expect(b.retryLater == nil)
+    }
 }

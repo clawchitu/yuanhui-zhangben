@@ -51,6 +51,9 @@ async function shop(app: FastifyInstance, o: { demo?: boolean } = {}) {
   return { ...s, token: fam.token, deviceId: fam.deviceId };
 }
 
+/** 外部这次没问到（超时、出错、没配 AppCode）：不是明确没查到，手机别记（PR #39 Fable 可选 1） */
+const UNAVAILABLE = { found: false, retry_later: true };
+
 const get = (app: FastifyInstance, token: string, code: string) =>
   app.inject({ method: "GET", url: `/v1/barcode-lookup/${encodeURIComponent(code)}`, headers: bearer(token) });
 
@@ -120,7 +123,7 @@ describe("超时与失败降级", () => {
     const r = await get(app, a.token, code);
     const ms = performance.now() - t0;
     expect(r.statusCode).toBe(200);
-    expect(r.json()).toEqual({ found: false });
+    expect(r.json()).toEqual(UNAVAILABLE);
     expect(ms).toBeGreaterThanOrEqual(1990);
     expect(ms).toBeLessThan(2500);
     expect(await tdb.kysely.selectFrom("barcode_catalog").select("barcode").where("barcode", "=", code).executeTakeFirst()).toBeUndefined();
@@ -143,7 +146,7 @@ describe("超时与失败降级", () => {
     const app = mk({ source: src, config: { barcodeLookupTimeoutMs: 2000 } });
     const a = await shop(app);
     const t0 = performance.now();
-    expect((await get(app, a.token, newBarcode())).json()).toEqual({ found: false });
+    expect((await get(app, a.token, newBarcode())).json()).toEqual(UNAVAILABLE);
     expect(performance.now() - t0).toBeLessThan(2500);
     expect(aborted).toBe(true);
     await app.close();
@@ -157,8 +160,8 @@ describe("超时与失败降级", () => {
     const app = mk({ source: src });
     const a = await shop(app);
     const code = newBarcode();
-    expect((await get(app, a.token, code)).json()).toEqual({ found: false });
-    expect((await get(app, a.token, code)).json()).toEqual({ found: false });
+    expect((await get(app, a.token, code)).json()).toEqual(UNAVAILABLE);
+    expect((await get(app, a.token, code)).json()).toEqual(UNAVAILABLE);
     expect(src.calls).toHaveLength(2);
     await app.close();
   });
@@ -166,7 +169,9 @@ describe("超时与失败降级", () => {
   it("没配 AppCode：不调外部，返回没查到（缓存里有的照样返回）", async () => {
     const app = mk({ source: null });
     const a = await shop(app);
-    expect((await get(app, a.token, newBarcode())).json()).toEqual({ found: false });
+    const r = await get(app, a.token, newBarcode());
+    expect(r.json()).toEqual(UNAVAILABLE);
+    await expectContract("BarcodeLookup", r.json());
     await app.close();
   });
 
@@ -180,7 +185,7 @@ describe("超时与失败降级", () => {
       logStream: { write: (l) => void lines.push(l) },
     });
     const a = await shop(app);
-    expect((await get(app, a.token, newBarcode())).json()).toEqual({ found: false });
+    expect((await get(app, a.token, newBarcode())).json()).toEqual(UNAVAILABLE);
     await app.close();
     expect(lines.some((l) => l.includes("外部条码库查询失败"))).toBe(true);
     expect(lines.join("\n")).not.toContain(APPCODE);
@@ -197,7 +202,7 @@ describe("AppCode 不进日志、业务错误不进缓存（PR #19 审核）", (
       logStream: { write: (l) => void lines.push(l) },
     });
     const a = await shop(app);
-    expect((await get(app, a.token, newBarcode())).json()).toEqual({ found: false });
+    expect((await get(app, a.token, newBarcode())).json()).toEqual(UNAVAILABLE);
     await app.close();
     const failed = lines.filter((l) => l.includes("外部条码库查询失败"));
     expect(failed).toHaveLength(1);
@@ -253,7 +258,9 @@ describe("AppCode 不进日志、业务错误不进缓存（PR #19 审核）", (
     const app = mk({ source, clock });
     const a = await shop(app);
     const code = newBarcode();
-    expect((await get(app, a.token, code)).json()).toEqual({ found: false });
+    const r = await get(app, a.token, code);
+    expect(r.json()).toEqual({ found: false }); // 明确没查到：没有 retry_later，手机可以记住
+    await expectContract("BarcodeLookup", r.json());
     expect(await tdb.kysely.selectFrom("barcode_catalog").selectAll().where("barcode", "=", code).executeTakeFirst()).toMatchObject({ found: false, image_urls: [] });
     clock.advance(NOT_FOUND_TTL_MS - 60_000);
     expect((await get(app, a.token, code)).json()).toEqual({ found: false });
@@ -306,8 +313,8 @@ describe("AppCode 不进日志、业务错误不进缓存（PR #19 审核）", (
       const app = mk({ source: new KuainiaoClient({ appCode: "x", endpoint: "https://h.example/getBarcode", fetch: f }) });
       const a = await shop(app);
       const code = newBarcode();
-      expect((await get(app, a.token, code)).json()).toEqual({ found: false });
-      expect((await get(app, a.token, code)).json()).toEqual({ found: false });
+      expect((await get(app, a.token, code)).json()).toEqual(UNAVAILABLE);
+      expect((await get(app, a.token, code)).json()).toEqual(UNAVAILABLE);
       expect(calls).toBe(2);
       expect(await tdb.kysely.selectFrom("barcode_catalog").selectAll().where("barcode", "=", code).executeTakeFirst()).toBeUndefined();
       await app.close();

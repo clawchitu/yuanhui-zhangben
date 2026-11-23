@@ -46,18 +46,27 @@ struct ServerNameLookup: ProductNameLookup {
     var memo: NameLookupMemo = .shared
 
     func lookup(_ barcode: String) async -> NameLookupResult {
-        if let hit = await memo.get(barcode) { return hit }
+        // 按登录（令牌引用）分开记：演示店里记下的「没查到」换到真实店不沿用（Fable 可选 3）
+        let key = "\(tokenRef)|\(barcode)"
+        if let hit = await memo.get(key) { return hit }
         guard let token = try? tokens.token(ref: tokenRef) else { return .notFound }
-        let r: NameLookupResult
+        let b: BarcodeLookupResult
         do {
-            r = Self.result(try await api.barcodeLookup(barcode, token: token))
+            b = try await api.barcodeLookup(barcode, token: token)
         } catch APIError.transport {
             return .offline
         } catch {
             return .notFound   // 429（额度、限速）、服务器错：不记，下次进来再查
         }
-        await memo.put(barcode, r)
+        let r = Self.result(b)
+        // 只记查到和明确没查到；服务器这次没问到外部（retry_later）也当没查到手填，但不记，下次扫还会再查
+        if Self.memoizable(b) { await memo.put(key, r) }
         return r
+    }
+
+    /// 能记到进程结束的结果：查到，或明确没查到（不带 retry_later）
+    static func memoizable(_ b: BarcodeLookupResult) -> Bool {
+        b.found || b.retryLater != true
     }
 
     /// 服务器结果 → 预填：名称 + 规格（名称里已经含规格就不再拼）；单位不从规格猜（「550ml」「20支」不是卖的单位）
@@ -69,7 +78,7 @@ struct ServerNameLookup: ProductNameLookup {
     }
 }
 
-/// 本进程里查过的码（只记查到和明确没查到；没网、出错不记）
+/// 本进程里查过的码（键 = 登录 + 码；只记查到和明确没查到；没网、出错、服务器暂时查不了都不记）
 actor NameLookupMemo {
     static let shared = NameLookupMemo()
     private var items: [String: NameLookupResult] = [:]

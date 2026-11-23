@@ -40,9 +40,11 @@ public struct BarcodeLookupResult: Decodable, Equatable, Sendable {
     public let spec: String?
     public let brand: String?
     public let hasImage: Bool?
-    enum CodingKeys: String, CodingKey { case found, name, spec, brand, hasImage = "has_image" }
-    public init(found: Bool, name: String? = nil, spec: String? = nil, brand: String? = nil, hasImage: Bool? = nil) {
-        self.found = found; self.name = name; self.spec = spec; self.brand = brand; self.hasImage = hasImage
+    /// found=false 时服务器这次没问到外部条码库（超时、出错、没配 AppCode）：不是明确没查到，别记住，下次再查
+    public let retryLater: Bool?
+    enum CodingKeys: String, CodingKey { case found, name, spec, brand, hasImage = "has_image", retryLater = "retry_later" }
+    public init(found: Bool, name: String? = nil, spec: String? = nil, brand: String? = nil, hasImage: Bool? = nil, retryLater: Bool? = nil) {
+        self.found = found; self.name = name; self.spec = spec; self.brand = brand; self.hasImage = hasImage; self.retryLater = retryLater
     }
 }
 
@@ -126,11 +128,14 @@ public final class APIClient: Sendable {
     }
 
     /// `GET /v1/barcode-lookup/:barcode`（真机热修：S21 起就该接，之前一直是桩）。服务器先查自家缓存、没有再调快鸟（2 秒超时），
-    /// 所以这里 5 秒就不等了：超时按连不上处理，界面让人手填。码不合法直接当没查到，不发请求
+    /// 所以这里 5 秒就不等了：超时按连不上处理，界面让人手填。下发地址连不上、退回默认地址重发时，两次加起来也不超过 5 秒。
+    /// 码不合法直接当没查到，不发请求
     public func barcodeLookup(_ code: String, token: String) async throws -> BarcodeLookupResult {
         guard Self.isLookupBarcode(code) else { return BarcodeLookupResult(found: false) }
-        return try await send("GET", "/v1/barcode-lookup/\(code)", body: nil as [String: String]?, token: token, timeout: 5)
+        return try await send("GET", "/v1/barcode-lookup/\(code)", body: nil as [String: String]?, token: token, timeoutMs: Self.lookupBudgetMs)
     }
+    /// 查码的总时限（毫秒），含退回默认地址的那一次
+    public static let lookupBudgetMs = 5_000
 
     /// `PATCH /v1/devices/me`（§14 S15-2）。返回服务器定下的名字（重名会加序号）
     public func renameDevice(_ label: String, token: String) async throws -> String {
@@ -164,20 +169,32 @@ public final class APIClient: Sendable {
         return (http.statusCode, data)
     }
 
-    /// `fallback`：下发地址连不上时是否退回默认地址重发一次。一次性的写请求（兑码）传 false
+    /// `fallback`：下发地址连不上时是否退回默认地址重发一次。一次性的写请求（兑码）传 false。
+    /// `timeoutMs`：总时限（整数毫秒，ShopCore 不用浮点类型），退回默认地址那一次只用剩下的时间；剩下不到 1 毫秒就不再发
     func send<B: Encodable, T: Decodable>(_ method: String, _ path: String, body: B?, token: String?,
-                                          fallback: Bool = true, timeout: TimeInterval = 15) async throws -> T {
+                                          fallback: Bool = true, timeoutMs: Int = 15_000) async throws -> T {
         let primary = bases.current
+        let clock = ContinuousClock()
+        let start = clock.now
         do {
-            return try await sendOnce(method, base: primary, path, body: body, token: token, timeout: timeout)
-        } catch APIError.transport where fallback && primary != bases.defaultBase {
-            return try await sendOnce(method, base: bases.defaultBase, path, body: body, token: token, timeout: timeout)
+            return try await sendOnce(method, base: primary, path, body: body, token: token, timeoutMs: timeoutMs)
+        } catch let APIError.transport(why) where fallback && primary != bases.defaultBase {
+            let left = timeoutMs - Self.millis(clock.now - start)
+            guard left > 0 else { throw APIError.transport(why) }
+            return try await sendOnce(method, base: bases.defaultBase, path, body: body, token: token, timeoutMs: left)
         }
     }
 
+    /// Duration → 整数毫秒（向上取整，宁可少给后一次时间）
+    static func millis(_ d: Duration) -> Int {
+        let (s, atto) = d.components
+        return Int(s) * 1000 + Int((atto + 999_999_999_999_999) / 1_000_000_000_000_000)
+    }
+
     func sendOnce<B: Encodable, T: Decodable>(_ method: String, base: URL, _ path: String, body: B?, token: String?,
-                                              timeout: TimeInterval = 15) async throws -> T {
-        var req = URLRequest(url: APIBase.url(base, path: path), timeoutInterval: timeout)
+                                              timeoutMs: Int = 15_000) async throws -> T {
+        var req = URLRequest(url: APIBase.url(base, path: path))
+        req.timeoutInterval = .init(timeoutMs) / 1000
         req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {

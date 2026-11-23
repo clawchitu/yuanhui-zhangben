@@ -75,7 +75,7 @@ describe("parseKuainiao（真实录制件）", () => {
     });
     expect(JSON.stringify(r.kind === "found" && r.hit)).not.toContain("getPicStream");
   });
-  it("不存在的码：status 400 + 「暂无」 + ItemName null → 明确没查到（调用方负缓存 7 天）", () => {
+  it("不存在的码：status 400 + 「暂无该条码」 + ItemName null → 明确没查到（调用方负缓存 7 天）", () => {
     expect(parseKuainiao(rec(REC.missing), REC.missing)).toEqual({ kind: "not_found", raw: rec(REC.missing) });
   });
   it("五个录制件全都认得出（没有一个是 format）", () => {
@@ -123,6 +123,9 @@ describe("parseKuainiao（其余一律 format，不缓存）", () => {
     expect(formatError(missingWith({ status: "401", message: "暂无权限" }))).toBe("format");
     expect(formatError(missingWith({ message: "参数错误" }))).toBe("format"); // 400 但不是「暂无」
     expect(formatError(missingWith({ message: "次数已用完" }))).toBe("format");
+    // 只认「暂无该条码」：同为 400 的「暂无权限 / 暂无可用次数」不是没查到（Fable 可选 4）
+    expect(formatError(missingWith({ message: "暂无可用次数" }))).toBe("format");
+    expect(formatError(missingWith({ message: "暂无权限" }))).toBe("format");
     expect(formatError(foundWith({ status: "201" }))).toBe("format");
     expect(formatError(foundWith({ status: "0" }))).toBe("format");
   });
