@@ -68,17 +68,19 @@ export async function ensureCandidates(d: CandidateDeps, barcode: string, urls: 
  * 这个条码的候选现状：还有能重试的 pending → pending（ids 是已经好了的）；否则有 ready → ready；否则 none。
  * ids 按 idx 保序，最多 6 个。开关关着一律 none
  */
-export async function candidateView(d: Pick<CandidateDeps, "db" | "enabled" | "store">, barcode: string): Promise<CandidateView> {
+export async function candidateView(d: Pick<CandidateDeps, "db" | "enabled" | "store" | "clock">, barcode: string): Promise<CandidateView> {
   if (!d.enabled || !d.store) return { state: "none", ids: [] };
   const rows = await d.db
     .selectFrom("catalog_image_candidates")
-    .select(["idx", "state", "cid", "attempts"])
+    .select(["idx", "state", "cid", "attempts", "next_try_at"])
     .where("barcode", "=", barcode)
     .orderBy("idx")
     .execute();
   const ids = rows.filter((r) => r.state === "ready" && r.cid).map((r) => r.cid!);
-  // 领满 3 次还停在 pending 的（第 3 次领取后进程退出，PR #42 可选）不算 pending，免得手机空等；runCandidateJobs 会把它收成 failed
-  if (rows.some((r) => r.state === "pending" && r.attempts < CANDIDATE_MAX_ATTEMPTS)) return { state: "pending", ids };
+  // 领满 3 次还停在 pending 的：第 3 次的租约（next_try_at）没到期 = 还在下载，算 pending；到期了 = 领取后进程退出的遗留行，
+  // 不算 pending，免得手机空等，runCandidateJobs 会把它收成 failed（PR #42 第二轮 Codex 可选 2）
+  const now = d.clock().getTime();
+  if (rows.some((r) => r.state === "pending" && (r.attempts < CANDIDATE_MAX_ATTEMPTS || new Date(r.next_try_at).getTime() > now))) return { state: "pending", ids };
   return ids.length ? { state: "ready", ids } : { state: "none", ids: [] };
 }
 
@@ -128,6 +130,7 @@ async function processCandidate(d: CandidateDeps, store: ObjectStore, c: Claimed
     }
     const key = candidateKey(barcodeDir(c.barcode), cid);
     try {
+      // 持着事务等对象存储上传（客户端 10 秒超时）：worker 并发 1，最多占一条连接，可接受（PR #42 第二轮 Fable 可选 1）。
       // 上传和写成 ready 在同一个按键的咨询锁里做（PR #42 必须改 2）：清扫删对象前拿同一把锁、再查一次有没有行，
       // 两边按键串行，不会出现「刚写成 ready、对象被清扫删掉」的悬空行
       const n = await d.db.transaction().execute(async (trx) => {
@@ -181,7 +184,7 @@ async function markFailed(d: CandidateDeps, c: Claimed, reason: string) {
 }
 
 /** 一个对象键的咨询锁（事务级）：候选转存写对象 + 写行、清扫查行 + 删对象，都在它里面 */
-async function lockKey(trx: Kysely<Database>, key: string) {
+export async function lockKey(trx: Kysely<Database>, key: string) {
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`candidate:${key}`}, 0))`.execute(trx);
 }
 

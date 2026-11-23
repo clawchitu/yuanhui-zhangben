@@ -275,7 +275,7 @@ unset A S K
    BEGIN;
    DELETE FROM image_jobs;
    DELETE FROM catalog_image_candidates;
-   UPDATE products SET image_key = NULL, image_source = NULL, image_ver = 0 WHERE image_ver <> 0 OR image_key IS NOT NULL;
+   UPDATE products SET image_key = NULL, image_sha256 = NULL, image_source = NULL, image_ver = 0 WHERE image_ver <> 0 OR image_key IS NOT NULL;
    COMMIT;
    SQL
    ```

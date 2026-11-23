@@ -81,6 +81,8 @@ export interface ProductsTable {
   shelf_life_months: number | null;
   needs_review: Generated<boolean>;
   image_key: string | null;
+  /** 0006：当前商品图内容的 sha256（选图 / 上传的幂等判断用）；旧行为空 */
+  image_sha256: string | null;
   image_source: string | null;
   image_ver: Generated<number>;
   archived_at: Ts | null;

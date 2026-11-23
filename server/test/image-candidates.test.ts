@@ -16,7 +16,7 @@ import type { Config } from "../src/config.ts";
 import type { BarcodeSource } from "../src/lookup/kuainiao.ts";
 import { DEFAULT_FETCH_POLICY, fetchImage, makeThumbnail, sha256, type FetchPolicy } from "../src/lookup/images.ts";
 import { MemoryObjectStore, candidateKey } from "../src/lookup/oss.ts";
-import { barcodeDir, claimCandidate, sweepCandidateObjects, ORPHAN_GRACE_MS } from "../src/lookup/candidates.ts";
+import { barcodeDir, lockKey, claimCandidate, sweepCandidateObjects, ORPHAN_GRACE_MS } from "../src/lookup/candidates.ts";
 import { enqueueImageJobs, runImageJobs } from "../src/jobs/image-fetch.ts";
 import { createTestDb, testConfig, type TestDb } from "./helpers/db.ts";
 import { TestClock, bearer, login, makeLoginShop, pair } from "./helpers/auth.ts";
@@ -122,7 +122,8 @@ describe("转存", () => {
     const t0 = performance.now();
     const r1 = await lookup(app, a.token, code);
     expect(performance.now() - t0).toBeLessThan(1000);
-    expect(r1.json()).toMatchObject({ found: true, has_image: true, image_candidates: { state: "pending", ids: [] } });
+    // worker 是查码当下就唤醒的，本机假图床很快，返回时可能已经好了一两张：只断言还在 pending（PR #42 第二轮 Codex 测试观察）
+    expect(r1.json()).toMatchObject({ found: true, has_image: true, image_candidates: { state: "pending" } });
     await expectContract("BarcodeLookup", r1.json());
     await app.candidates.drain();
     const want = [await cidOf(imgs[0]!), await cidOf(imgs[1]!), await cidOf(imgs[2]!), await cidOf(imgs[4]!), await cidOf(imgs[5]!)];
@@ -290,14 +291,40 @@ describe("清扫与开关", () => {
     const key = candidateKey(barcodeDir(code), "4".repeat(16));
     await store.put(key, Buffer.from("jpg"), "image/jpeg");
     store.objects.get(key)!.at = new Date(now.getTime() - 2 * ORPHAN_GRACE_MS);
-    const list = store.listWithTimes.bind(store);
-    store.listWithTimes = async (p) => {
-      const r = await list(p);
-      // 快照拿到之后，worker 重新转存了同一张并写成 ready
-      await tdb.kysely.insertInto("catalog_image_candidates").values({ barcode: code, idx: 0, source_url: "https://x/y", state: "ready", cid: "4".repeat(16), object_key: key }).execute();
-      return r;
+    // 注入点在引用快照读完之后（清扫读完行才取钟算截止时间，PR #42 第二轮可选）：这时 worker 开始重新转存同一张——
+    // 照真实 worker 的做法拿按键的咨询锁、写 ready、稍后提交。清扫要删，必须等这把锁、再查到行
+    let locked!: () => void;
+    const workerLocked = new Promise<void>((r) => (locked = r));
+    let worker: Promise<void> | null = null;
+    const clock = () => {
+      worker ??= tdb.kysely.transaction().execute(async (trx) => {
+        await lockKey(trx, key);
+        locked();
+        await trx.insertInto("catalog_image_candidates").values({ barcode: code, idx: 0, source_url: "https://x/y", state: "ready", cid: "4".repeat(16), object_key: key }).execute();
+        await new Promise((r) => setTimeout(r, 50));
+      });
+      return now;
     };
-    expect(await sweepCandidateObjects({ db: tdb.kysely, store, enabled: true, clock: () => now })).toEqual([]);
+    // 清扫开自己的事务之前先等 worker 拿到锁，让交错固定下来（没有锁内复查的旧实现不开事务，直接删）
+    const db = new Proxy(tdb.kysely, {
+      get(t, prop) {
+        if (prop !== "transaction") {
+          const v = Reflect.get(t, prop, t);
+          return typeof v === "function" ? v.bind(t) : v;
+        }
+        return () => {
+          const tb = t.transaction();
+          return { execute: async <T,>(fn: (trx: never) => Promise<T>) => (await workerLocked, tb.execute(fn as never)) };
+        };
+      },
+    });
+    const realDelete = store.delete.bind(store);
+    store.delete = async (k) => {
+      await worker; // 旧实现：删除落在 worker 提交之后，留下悬空 ready 行
+      return realDelete(k);
+    };
+    expect(await sweepCandidateObjects({ db, store, enabled: true, clock })).toEqual([]);
+    await worker;
     expect(store.objects.has(key)).toBe(true);
   });
 

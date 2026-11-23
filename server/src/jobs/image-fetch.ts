@@ -140,7 +140,7 @@ async function processJob(d: ImageJobDeps, store: ObjectStore, job: Claimed): Pr
       if (!cur || cur.image_ver !== before.image_ver || cur.archived_at) return false;
       await tx.trx
         .updateTable("products")
-        .set({ image_key: key, image_source: "kuainiao", image_ver: ver, rev: await tx.nextRev(), updated_at: d.clock() })
+        .set({ image_key: key, image_sha256: sha256(thumb), image_source: "kuainiao", image_ver: ver, rev: await tx.nextRev(), updated_at: d.clock() })
         .where("store_id", "=", tx.storeId)
         .where("id", "=", job.product_id)
         .execute();

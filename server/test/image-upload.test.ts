@@ -13,6 +13,7 @@ import { buildApp } from "../src/app.ts";
 import type { BarcodeSource } from "../src/lookup/kuainiao.ts";
 import { MemoryObjectStore, isImageKey } from "../src/lookup/oss.ts";
 import { purgeStore } from "../src/jobs/account-purge.ts";
+import { STORE_QUEUE_LIMIT, withStoreLock } from "../src/sync/lock.ts";
 import { createTestDb, testConfig, type TestDb } from "./helpers/db.ts";
 import { bearer, login, makeLoginShop, pair } from "./helpers/auth.ts";
 import { expectContract, newBarcode, pullAll, syncOk, upsertFull } from "./helpers/sync.ts";
@@ -142,6 +143,56 @@ describe("选图与拍照", () => {
     expect(store.objects.has(p2.image_key!)).toBe(true);
     expect(store.objects.has(p1.image_key!)).toBe(false); // 换图后旧的照删
     expect((await app.inject({ method: "GET", url: `/v1/images/${s.productId}?v=2`, headers: bearer(s.token) })).statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("同内容两路并发、一路排队满拿到 503（PR #42 第二轮必须改）：另一路 200，对象还在、GET 200；503 那一路只删了自己的键，不留孤儿", async () => {
+    const store = new MemoryObjectStore();
+    const { app } = mk(store);
+    const s = await setup(app);
+    const photo = await jpeg("#a5a");
+    // 占满这家店的写入队列：1 个拿着锁、30 个排队，留 1 个空位给甲
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const blockers = Array.from({ length: STORE_QUEUE_LIMIT - 1 }, () => withStoreLock(tdb.kysely, s.storeId, () => gate));
+    const realPut = store.put.bind(store);
+    let firstPut!: () => void;
+    const aUploaded = new Promise<void>((r) => (firstPut = r));
+    let n = 0;
+    store.put = async (k, b, t) => {
+      await realPut(k, b, t);
+      if (k.startsWith(`images/${s.storeId}/`) && ++n === 1) firstPut();
+    };
+    const a = put(app, s.token, s.productId, photo);
+    await aUploaded;
+    await new Promise((r) => setTimeout(r, 30)); // 甲进了队列
+    const b = await put(app, s.token, s.productId, photo);
+    expect([b.statusCode, b.json().code, b.json().retry_after_s]).toEqual([503, "unavailable", 2]);
+    release();
+    await Promise.all(blockers);
+    const ra = await a;
+    expect([ra.statusCode, ra.json()]).toEqual([200, { image_ver: 1 }]);
+    const p = await product(s.storeId, s.productId);
+    expect(store.objects.has(p.image_key!)).toBe(true);
+    expect((await app.inject({ method: "GET", url: `/v1/images/${s.productId}?v=1`, headers: bearer(s.token) })).statusCode).toBe(200);
+    expect([...store.objects.keys()].filter((k) => k.startsWith(`images/${s.storeId}/${s.productId}/`))).toEqual([p.image_key]);
+    // 重发：命中幂等，不升版本
+    expect((await put(app, s.token, s.productId, photo)).json()).toEqual({ image_ver: 1 });
+    await app.close();
+  });
+
+  it("同内容重复 PUT（并发、先后）：不升版本、rev 不变，不留孤儿对象", async () => {
+    const store = new MemoryObjectStore();
+    const { app } = mk(store);
+    const s = await setup(app);
+    const photo = await jpeg("#3c9");
+    const rs = await Promise.all([1, 2, 3].map(() => put(app, s.token, s.productId, photo)));
+    expect(rs.map((r) => r.json())).toEqual([{ image_ver: 1 }, { image_ver: 1 }, { image_ver: 1 }]);
+    const p = await product(s.storeId, s.productId);
+    expect((await put(app, s.token, s.productId, photo)).json()).toEqual({ image_ver: 1 });
+    expect((await product(s.storeId, s.productId)).rev).toBe(p.rev);
+    expect([...store.objects.keys()].filter((k) => k.startsWith(`images/${s.storeId}/${s.productId}/`))).toEqual([p.image_key]);
+    expect(p.image_sha256).toMatch(/^[0-9a-f]{64}$/);
     await app.close();
   });
 

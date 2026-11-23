@@ -8,6 +8,7 @@
 // - 和注销清除的协调照 image-fetch：上传前查 storeGone，锁内复查，店没了走 dropLateObject。
 // - 换图后尽力删旧对象和本机缓存文件，删不掉记日志 image_discard_failed（活店换图删不掉的旧对象暂无清扫，§14 跨段待办）。
 import { rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import type { FastifyBaseLogger, FastifyInstance } from "fastify";
 import { authOf } from "../auth/plugin.ts";
 import { ImageRejected, makeThumbnail, sha256, sniffFormat } from "../lookup/images.ts";
@@ -19,8 +20,6 @@ import { sendError } from "./errors.ts";
 
 /** 拍照上传的请求体上限（手机端压到长边 ≤ 1024px、≤ 400 KB；服务器硬上限 1 MB） */
 export const UPLOAD_LIMIT = 1024 * 1024;
-/** 写回时商品的 image_ver 被别人改了（同时两路换图）：重来几次 */
-const MAX_TRIES = 3;
 
 const UUID = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 const PARAMS = { type: "object", required: ["product_id"], properties: { product_id: { type: "string", pattern: UUID } } } as const;
@@ -36,86 +35,86 @@ export async function productImageRoutes(app: FastifyInstance): Promise<void> {
   app.addContentTypeParser(/^image\/.*/, { parseAs: "buffer", bodyLimit: UPLOAD_LIMIT }, (_req, body, done) => done(null, body));
   app.addContentTypeParser("application/octet-stream", { parseAs: "buffer", bodyLimit: UPLOAD_LIMIT }, (_req, body, done) => done(null, body));
 
-  /** 把一张已经是 200px JPEG 的缩图设成商品图 */
+  /**
+   * 把一张已经是 200px JPEG 的缩图设成商品图（PR #42 第二轮返修）。
+   * - 对象键每次请求独有（带随机后缀），任何两路请求不共用键：出错、503、冲突、幂等命中时删的只是本次自己写的键，别人不可能引用它。
+   * - 幂等按库里的 image_sha256 判（锁外先判一次省上传，锁内再判一次），不比对键。
+   * - 写回在锁内：版本 = 锁内读到的 image_ver + 1（键里的 ver 只是候选号，不要求相等）；提交后只删「刚被本次替换掉的那个旧键」。
+   */
   async function promote(storeId: string, productId: string, thumb: Buffer, source: "kuainiao" | "upload", log: FastifyBaseLogger): Promise<Promoted> {
     const store = app.deps.objectStore as ObjectStore;
     const hash = sha256(thumb);
-    for (let i = 0; i < MAX_TRIES; i++) {
-      const cur = await kysely
-        .selectFrom("products")
-        .select(["image_ver", "image_key", "archived_at"])
-        .where("store_id", "=", storeId)
-        .where("id", "=", productId)
-        .executeTakeFirst();
-      if (!cur || cur.archived_at) return { kind: "not_found" };
-      // 幂等：内容和当前图一样（重发、重复选同一张）就不升版本
-      if (cur.image_ver > 0 && cur.image_key && isImageKey(cur.image_key) && cur.image_key.endsWith(`-${hash.slice(0, 16)}.jpg`)) return { kind: "ok", imageVer: cur.image_ver };
-      if (await storeGone(kysely, storeId)) return { kind: "not_found" };
-      const ver = cur.image_ver + 1;
-      const key = imageKey(storeId, productId, ver, hash);
-      try {
-        await store.put(key, thumb, "image/jpeg");
-      } catch (e) {
-        // 上传报错时对象可能其实写进去了：店已被清除就顺手删（删不掉交给清除的复扫）
-        if (await storeGone(kysely, storeId).catch(() => false)) await dropLateObject(kysely, storeId, () => store.delete(key), log);
-        throw e;
-      }
-      let out: "gone" | { miss: "missing" | "changed"; current: string | null } | { old: string | null };
-      try {
-        out = await withStoreLock(kysely, storeId, async (tx) => {
-          if (await storeGone(tx.trx, storeId)) return "gone" as const;
-          const now = await tx.trx
-            .selectFrom("products")
-            .select(["image_ver", "image_key", "archived_at"])
-            .where("store_id", "=", tx.storeId)
-            .where("id", "=", productId)
-            .executeTakeFirst();
-          if (!now || now.archived_at) return { miss: "missing" as const, current: now?.image_key ?? null };
-          if (now.image_ver !== cur.image_ver) return { miss: "changed" as const, current: now.image_key };
-          await tx.trx
-            .updateTable("products")
-            .set({ image_key: key, image_source: source, image_ver: ver, rev: await tx.nextRev(), updated_at: app.deps.clock() })
-            .where("store_id", "=", tx.storeId)
-            .where("id", "=", productId)
-            .execute();
-          return { old: now.image_key };
-        });
-      } catch (e) {
-        // 拿店铺锁时店已经没了（锁那边报店不存在）等：店被清除就删掉刚传的，按商品不存在回 404
-        if (await storeGone(kysely, storeId).catch(() => false)) {
-          await dropLateObject(kysely, storeId, () => store.delete(key), log);
-          return { kind: "not_found" };
-        }
-        // 没写回（排队满了、库出错）：刚传的对象只在确认没被引用时删（PR #42 Fable 可选 4）
-        await discardIfUnreferenced(store, key, storeId, productId, log);
-        if (e instanceof StoreBusy) return { kind: "busy" };
-        throw e;
-      }
-      if (out === "gone") {
-        await dropLateObject(kysely, storeId, () => store.delete(key), log);
-        return { kind: "not_found" };
-      }
-      if ("miss" in out) {
-        // 没写回。同内容的另一路先提交了同一个键（PR #42 必须改 1）：这个键正被商品引用，绝不删，按成功处理（下一轮命中幂等）
-        if (out.current !== key) await discardIfUnreferenced(store, key, storeId, productId, log);
-        if (out.miss === "missing") return { kind: "not_found" };
-        continue;
-      }
-      if (out.old && out.old !== key && isImageKey(out.old)) await discardIfUnreferenced(store, out.old, storeId, productId, log);
-      log.info({ store_id: storeId, product_id: productId, image_ver: ver, source }, "商品图已更换");
-      return { kind: "ok", imageVer: ver };
+    const cur = await kysely
+      .selectFrom("products")
+      .select(["image_ver", "image_sha256", "archived_at"])
+      .where("store_id", "=", storeId)
+      .where("id", "=", productId)
+      .executeTakeFirst();
+    if (!cur || cur.archived_at) return { kind: "not_found" };
+    if (cur.image_ver > 0 && cur.image_sha256 === hash) return { kind: "ok", imageVer: cur.image_ver };
+    if (await storeGone(kysely, storeId)) return { kind: "not_found" };
+    const key = imageKey(storeId, productId, cur.image_ver + 1, hash, randomBytes(8).toString("hex"));
+    /** 删本次自己写的键（店已被清除时走 dropLateObject，删不掉交给清除的复扫） */
+    const dropOwn = async () => {
+      if (await storeGone(kysely, storeId).catch(() => false)) await dropLateObject(kysely, storeId, () => store.delete(key), log);
+      else await discard(store, key, storeId, productId, log);
+    };
+    try {
+      await store.put(key, thumb, "image/jpeg");
+    } catch (e) {
+      await dropOwn(); // 上传报错时对象可能其实写进去了
+      throw e;
     }
-    return { kind: "busy" };
+    let out: "gone" | "missing" | { same: number } | { ver: number; old: string | null };
+    try {
+      out = await withStoreLock(kysely, storeId, async (tx) => {
+        if (await storeGone(tx.trx, storeId)) return "gone" as const;
+        const now = await tx.trx
+          .selectFrom("products")
+          .select(["image_ver", "image_key", "image_sha256", "archived_at"])
+          .where("store_id", "=", tx.storeId)
+          .where("id", "=", productId)
+          .executeTakeFirst();
+        if (!now || now.archived_at) return "missing" as const;
+        if (now.image_ver > 0 && now.image_sha256 === hash) return { same: now.image_ver };
+        const ver = now.image_ver + 1;
+        await tx.trx
+          .updateTable("products")
+          .set({ image_key: key, image_sha256: hash, image_source: source, image_ver: ver, rev: await tx.nextRev(), updated_at: app.deps.clock() })
+          .where("store_id", "=", tx.storeId)
+          .where("id", "=", productId)
+          .execute();
+        return { ver, old: now.image_key };
+      });
+    } catch (e) {
+      // 没写回（排队满、库出错、锁那边报店不存在）：只删本次自己写的键
+      await dropOwn();
+      if (e instanceof StoreBusy) return { kind: "busy" };
+      if (await storeGone(kysely, storeId).catch(() => false)) return { kind: "not_found" };
+      throw e;
+    }
+    if (out === "gone") {
+      await dropLateObject(kysely, storeId, () => store.delete(key), log);
+      return { kind: "not_found" };
+    }
+    if (out === "missing") {
+      await discard(store, key, storeId, productId, log);
+      return { kind: "not_found" };
+    }
+    if ("same" in out) {
+      // 同一张已经是当前图（并发重发）：本次写的键没人引用，删掉，回当前版本
+      await discard(store, key, storeId, productId, log);
+      return { kind: "ok", imageVer: out.same };
+    }
+    // 提交之后删刚被替换掉的旧键：它已经不被这个商品引用，键又是写它的那一次请求独有的
+    if (out.old && out.old !== key && isImageKey(out.old)) await discard(store, out.old, storeId, productId, log);
+    log.info({ store_id: storeId, product_id: productId, image_ver: out.ver, source }, "商品图已更换");
+    return { kind: "ok", imageVer: out.ver };
   }
 
-  /**
-   * 尽力删一个商品图对象和它在本机缓存里的文件：只在提交之后、再查一次确认没有任何商品引用这个键时才删（PR #42 必须改 1）。
-   * 键里带着 image_ver：版本一旦越过它，就再没有请求能把这个键写进商品（锁内要求读到的版本没变），所以「查过没引用」之后不会再被引用
-   */
-  async function discardIfUnreferenced(store: ObjectStore, key: string, storeId: string, productId: string, log: FastifyBaseLogger) {
+  /** 尽力删一个商品图对象和它在本机缓存里的文件；删不掉记 image_discard_failed */
+  async function discard(store: ObjectStore, key: string, storeId: string, productId: string, log: FastifyBaseLogger) {
     try {
-      const ref = await kysely.selectFrom("products").select("id").where("image_key", "=", key).executeTakeFirst();
-      if (ref) return;
       await store.delete(key);
       await rm(safeJoin(config.imageCacheDir, key), { force: true });
     } catch (e) {
@@ -125,7 +124,7 @@ export async function productImageRoutes(app: FastifyInstance): Promise<void> {
 
   function reply(r: Promoted, rep: Parameters<typeof sendError>[0]) {
     if (r.kind === "ok") return { image_ver: r.imageVer };
-    if (r.kind === "busy") return sendError(rep, 503, "unavailable", { retry_after_s: 1 });
+    if (r.kind === "busy") return sendError(rep, 503, "unavailable", { retry_after_s: 2 });
     return sendError(rep, 404, "not_found");
   }
 

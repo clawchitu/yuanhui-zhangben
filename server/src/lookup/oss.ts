@@ -57,7 +57,8 @@ export function pendingUploadOf(e: unknown): PendingUpload | null {
 }
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-const KEY_RE = new RegExp(`^images/${UUID}/${UUID}/[1-9][0-9]{0,9}-[0-9a-f]{16}\\.jpg$`);
+// 商品图键；S22d 起选图 / 拍照的键多一段每次请求独有的随机后缀（任何两路请求不共用键）
+const KEY_RE = new RegExp(`^images/${UUID}/${UUID}/[1-9][0-9]{0,9}-[0-9a-f]{16}(?:-[0-9a-f]{16})?\\.jpg$`);
 const EXPORT_RE = new RegExp(`^exports/${UUID}/[0-9]{13}-[0-9a-f]{16}\\.zip$`);
 const DELETION_RE = new RegExp(`^deletions/${UUID}\\.json$`);
 const BACKUP_RE = /^backups\/[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}\.(dump|manifest)\.enc$/;
@@ -133,9 +134,12 @@ export function assertStorePrefix(p: string): void {
   if (!PREFIX_RE.test(p)) throw new Error("前缀格式不对：只能是 images/<店>/、exports/<店>/、deletions/、backups/ 或 images/_catalog/");
 }
 
-/** 商品图的键：images/<店>/<商品>/<image_ver>-<内容哈希前 16 位>.jpg */
-export function imageKey(storeId: string, productId: string, ver: number, sha256Hex: string): string {
-  const k = `images/${storeId.toLowerCase()}/${productId.toLowerCase()}/${ver}-${sha256Hex.slice(0, 16)}.jpg`;
+/**
+ * 商品图的键：images/<店>/<商品>/<image_ver>-<内容哈希前 16 位>[-<随机 16 位>].jpg。
+ * nonce：选图 / 拍照每次请求自己生成（S22d），这样出错、冲突时删的永远是本次自己写的键，不会碰到别的请求
+ */
+export function imageKey(storeId: string, productId: string, ver: number, sha256Hex: string, nonce16hex?: string): string {
+  const k = `images/${storeId.toLowerCase()}/${productId.toLowerCase()}/${ver}-${sha256Hex.slice(0, 16)}${nonce16hex ? `-${nonce16hex}` : ""}.jpg`;
   assertImageKey(k);
   return k;
 }
