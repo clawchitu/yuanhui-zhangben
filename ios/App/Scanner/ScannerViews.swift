@@ -75,9 +75,8 @@ struct CameraViewfinder: View {
             if let onRawCode {
                 controller.onCode = { onRawCode($0) }
             } else {
-                controller.onCode = { [weak hub] in hub?.receive($0, from: .camera) }
                 // 进货、卖出两页所有暂停→恢复路径（面板、手输页、登记页返回、切后台回来）走同一个防重放（PR #40 Codex 2 / Fable）
-                controller.onResume = { [weak hub] in hub?.cameraResumed() }
+                controller.attach(to: hub)
             }
         }
     }

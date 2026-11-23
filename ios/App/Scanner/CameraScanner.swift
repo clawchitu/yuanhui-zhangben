@@ -336,6 +336,13 @@ final class CameraController {
         if want { onResume?(); runner?.start() } else { runner?.stop() }
     }
 
+    /// 接到卖出 / 进货页的扫码层：认出的码交 `hub.receive(_:from: .camera)`，每次（重新）开相机调 `hub.cameraResumed()`
+    /// （PR #40 Codex 复审 2、Fable 必须修：两页所有暂停→恢复路径走同一个防重放）
+    func attach(to hub: ScanHub) {
+        onCode = { [weak hub] in hub?.receive($0, from: .camera) }
+        onResume = { [weak hub] in hub?.cameraResumed() }
+    }
+
     private func receive(_ code: String) {
         guard running else { return }
         onCode?(code)
