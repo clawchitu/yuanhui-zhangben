@@ -14,8 +14,17 @@ final class PendingPanelUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-uiLargeText", "on"] + args + (ax ? Self.maxAX : [])
         app.launch()
-        XCTAssertTrue(app.otherElements["page.home"].waitForExistence(timeout: 15) || el(app, "page.sell").exists)
+        // -uiRoute 直接开到某页时首页在栈底下，等最上面那一页
+        let top = UIFixture.route(args).map { "page.\($0)" } ?? "page.home"
+        XCTAssertTrue(el(app, top).waitForExistence(timeout: 15), top)
         return app
+    }
+
+    private enum UIFixture {
+        static func route(_ args: [String]) -> String? {
+            guard let i = args.firstIndex(of: "-uiRoute"), i + 1 < args.count else { return nil }
+            return args[i + 1].split(separator: ",").last.map(String.init)
+        }
     }
 
     private func el(_ app: XCUIApplication, _ id: String) -> XCUIElement {
