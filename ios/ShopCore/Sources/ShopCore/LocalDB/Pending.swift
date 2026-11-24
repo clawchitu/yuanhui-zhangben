@@ -17,6 +17,18 @@ public struct PendingEntry: Hashable, Sendable, Identifiable {
     /// 改商品只改了卖价（显示成「改价」）
     public let priceOnlyEdit: Bool
 
+    public init(id: Int64, occurredAt: Date, type: OpType, names: [String], quantity: Int64?, unitName: String?,
+                amountFen: Int64?, priceOnlyEdit: Bool) {
+        self.id = id
+        self.occurredAt = occurredAt
+        self.type = type
+        self.names = names
+        self.quantity = quantity
+        self.unitName = unitName
+        self.amountFen = amountFen
+        self.priceOnlyEdit = priceOnlyEdit
+    }
+
     /// 类型的人话
     public var kindText: String {
         switch type {

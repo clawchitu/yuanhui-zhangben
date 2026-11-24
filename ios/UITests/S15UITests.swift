@@ -23,7 +23,7 @@ final class S15UITests: XCTestCase {
 
     /// 收银员该到的页（遍历确实走到了，不是空跑）
     static let cashierReachable: Set<String> = ["page.home", "page.sell", "page.settings", "page.records", "page.undoLast",
-                                                "page.scanner", "page.privacy", "page.logout"]
+                                                "page.scanner", "page.privacy", "page.logout", "page.pending"]
 
     private func assertCashierWalk(_ fixture: String, file: StaticString = #filePath, line: UInt = #line) {
         let walker = Walker(args: ["-uiFixture", fixture, "-uiRole", "cashier", "-uiLargeText", "off"])
@@ -79,11 +79,13 @@ final class S15UITests: XCTestCase {
         _ = assertFamilyWalk("home")
     }
 
-    /// 同上，未同步首页（25a）：「没传上去」提醒条进得了记的账
+    /// 同上，未同步首页（25a）：「N 笔待传」提醒条进得了「待传的账」（PR #45），记的账仍从「刚记的」进得了
     func testFamilyTraversalReachesEveryPageUnsynced() throws {
         let walker = assertFamilyWalk("home-unsynced")
         XCTAssertTrue(walker.visited.contains("page.records"))
+        XCTAssertTrue(walker.visited.contains("page.pending"))
         XCTAssertTrue(walker.covered(page: "page.home", label: "home.banner.unsynced"))
+        XCTAssertTrue(walker.covered(page: "page.home", label: "syncStatus"), "右上角的同步状态能点")
     }
 
     /// 第二道防线：把收银员没能力的路由直接塞进导航栈，出的是「用不了」页；返回再回到它时仍然是「用不了」，
@@ -348,7 +350,9 @@ final class Walker {
     static let terminal: Set<String> = ["logout.confirm"]
     /// 允许置灰的入口（页面 · 标识）：卖出页空篮时的「收好钱了，记账」和「抹零 / 改总价」（S16 验收：空篮置灰）
     /// 空篮时记账、改价灰；手输条码页没选中候选时「加进去」灰（§5.5，S17）
-    static let allowedDisabled: Set<String> = ["page.sell · sell.commit", "page.sell · sell.discount", "page.manualCode · manual.pick"]
+    /// 「待传的账」点了「再传一次」后变灰至少 1 秒（PR #45 Fable 裁定 6）
+    static let allowedDisabled: Set<String> = ["page.sell · sell.commit", "page.sell · sell.discount", "page.manualCode · manual.pick",
+                                               "page.pending · pending.retry"]
 
     let args: [String]
     var app: XCUIApplication
