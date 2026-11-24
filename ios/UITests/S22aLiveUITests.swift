@@ -227,7 +227,7 @@ final class S22aLiveUITests: XCTestCase {
         try XCTSkipIf(observer || !destructive)
         let code = "69799" + String(Int(Date().timeIntervalSince1970) % 100_000_000).padding(toLength: 8, withPad: "0", startingAt: 0)
         let app = launch(["-uiOffline", "-uiRoute", "sell", "-uiScan", code])
-        let name = app.textFields["newProduct.name"]
+        let name = el(app, "newProduct.name")
         XCTAssertTrue(name.waitForExistence(timeout: 20))
         name.tap(); name.typeText("S22A 后到登记\n")
         el(app, "newProduct.price").tap()

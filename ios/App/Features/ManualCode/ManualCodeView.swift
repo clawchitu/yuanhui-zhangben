@@ -180,7 +180,7 @@ struct ManualCodeView: View {
                         .font(TypeScale.body.weight(.bold))
                         .foregroundStyle(Tokens.Palette.ink)
                         .fixedSize(horizontal: false, vertical: true)
-                        .lineLimit(typeSize.isAccessibilitySize ? 1 : nil)
+                        .lineLimit(typeSize.isAccessibilitySize ? 2 : nil)
                         .minimumScaleFactor(typeSize.isAccessibilitySize ? 0.6 : 1)
                     if on {
                         Text("选中了").font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)

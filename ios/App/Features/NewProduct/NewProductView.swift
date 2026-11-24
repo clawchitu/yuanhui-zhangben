@@ -24,6 +24,15 @@ struct NewProductView: View {
     @FocusState private var nameFocused: Bool
     @FocusState private var moreFocus: MoreField?
     @Environment(\.dynamicTypeSize) private var typeSize
+    /// 量出来的高度，给名称框定行数用（PR #43 Fable 决定：一次只做一件事、按可用高度定行数）
+    /// 平时：上部滚动区高度 + 自家数字键盘高度（和键压多矮无关，避免来回跳）
+    @State private var nameRoom: CGFloat = 0
+    /// 写名称时：上部滚动区高度（顶栏下沿到「写好了」上沿）
+    @State private var editRoom: CGFloat = 0
+    @State private var nameLabelHeight: CGFloat = 0
+    @State private var noticeHeight: CGFloat = 0
+    /// 名称整段不限行时要几行
+    @State private var nameNaturalLines = 1
     let lookup: any ProductNameLookup
     let pendingCount: Int?
     /// 05「换一个」前默认选的商品（卖出页：价签里那一样）
@@ -77,83 +86,223 @@ struct NewProductView: View {
     // MARK: 04a / 04c / 25e
 
     private var basic: some View {
-        VStack(spacing: 0) {
+        let fit = nameFit
+        return VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(model.heading)
-                        .font(TypeScale.title.weight(.bold))
-                        .foregroundStyle(Tokens.Palette.ink)
-                        .fixedSize(horizontal: false, vertical: true)
-                    codeLine
-                    if model.lookup == .offline {
-                        Banner(kind: .soft, text: "没网，查不到名称和图，先自己写", systemImage: "wifi.slash")
-                            .accessibilityIdentifier("newProduct.offline")
+                    // 写名称时只留名称：标题、条码、横幅、整箱按钮先收起来（只是不显示）
+                    if !nameFocused {
+                        Text(model.heading)
+                            .font(TypeScale.title.weight(.bold))
+                            .foregroundStyle(Tokens.Palette.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                        codeLine
+                        if model.lookup == .offline {
+                            Banner(kind: .soft, text: "没网，查不到名称和图，先自己写", systemImage: "wifi.slash")
+                                .accessibilityIdentifier("newProduct.offline")
+                        }
+                        if model.canLinkPack && model.mode != .neutral {
+                            packButton
+                        }
                     }
-                    if model.canLinkPack && model.mode != .neutral {
-                        packButton
-                    }
+                    // 名称标签和卖价标签一样封顶（SE + 最大辅助字号下省出一行名称的高度，见 PR #43）
                     label(model.nameLabel)
-                    HStack(spacing: 12) {
+                        .dynamicTypeSize(...DiscountPanel.labelCap)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { nameLabelHeight = $0 }
+                        .accessibilityIdentifier("newProduct.nameLabel")
+                    // 名称框多行：长名自动换行，首字头像与框顶对齐（真机 11/24：单行把「农夫山泉 饮用天然水 550…」截掉了）
+                    HStack(alignment: .top, spacing: 12) {
                         Thumb(initial: initial, size: 64, fill: Tokens.Palette.line.opacity(0.6))
                             .overlay { if initial == nil { Text("?").font(.system(size: 34, weight: .bold)).foregroundStyle(Tokens.Palette.ink2) } }
-                        TextField("", text: $model.name, prompt: Text("看包装写一下").foregroundStyle(Tokens.Palette.mute))
-                            .font(.system(size: 28, weight: .bold))
-                            .foregroundStyle(Tokens.Palette.ink)
-                            .tint(model.mode.color)
-                            .focused($nameFocused)
-                            .submitLabel(.done)
-                            .onSubmit { model.submitName() }
-                            .autocorrectionDisabled()
-                            .padding(.horizontal, 16)
-                            .frame(minHeight: 64)
-                            .background(Tokens.Palette.card, in: RoundedRectangle(cornerRadius: Tokens.Radius.card))
-                            .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(Tokens.Palette.line, lineWidth: 2))
-                            .accessibilityIdentifier("newProduct.name")
+                        nameBox(lines: nameFocused ? editLines : fit.lines)
                     }
                     // 名称末尾像条码：提示单独在名称框下面，名称一改就清；人点了才去掉（PR #31 Codex 1、Fable 建议 4）
-                    if let n = model.nameScanNotice {
-                        Text(n).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.sell)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityIdentifier("newProduct.nameNotice")
-                        if model.canStripCode {
-                            Button { model.stripScannedCode() } label: {
-                                Text("是条码，去掉这串数字").font(TypeScale.body.weight(.semibold)).underline()
-                                    .foregroundStyle(Tokens.Palette.ink).frame(minHeight: Tokens.Size.minHitTarget)
+                    if !nameFocused, let n = model.nameScanNotice {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(n).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.sell)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("newProduct.nameNotice")
+                            if model.canStripCode {
+                                Button { model.stripScannedCode() } label: {
+                                    Text("是条码，去掉这串数字").font(TypeScale.body.weight(.semibold)).underline()
+                                        .foregroundStyle(Tokens.Palette.ink).frame(minHeight: Tokens.Size.minHitTarget)
+                                }
+                                .accessibilityIdentifier("newProduct.stripCode")
                             }
-                            .accessibilityIdentifier("newProduct.stripCode")
                         }
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { noticeHeight = $0 }
+                        .onDisappear { noticeHeight = 0 }
                     }
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 14)
-                .padding(.bottom, 10)
+                .padding(.top, Self.scrollTopPad)
+                .padding(.bottom, Self.scrollBottomPad)
+                // 写名称时名称贴着顶栏，不跟着 bottom 锚点沉到下面
+                .frame(maxWidth: .infinity, minHeight: nameFocused ? max(0, editRoom - 1) : 0, alignment: .topLeading)
             }
-            .scrollBounceBehavior(.basedOnSize)
+            // 写名称时内容不满一屏也能往下拖，拖一下收键盘
+            .scrollBounceBehavior(nameFocused ? .always : .basedOnSize)
             .scrollDismissesKeyboard(.interactively)
             // 放不下时先露出最下面的名称框（标题往上滚），名称和卖价总在首屏
             .defaultScrollAnchor(.bottom)
-            // 卖价框、键盘、按钮钉在底部：任何字号下卖价框都在首屏、不被键盘压住
-            VStack(alignment: .leading, spacing: 6) {
-                label(model.priceLabel)
-                priceField
-                if let m = model.priceMessage ?? model.error {
-                    Text(m).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.sell)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("newProduct.error")
+            .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded() } action: { h in
+                if nameFocused {
+                    if abs(editRoom - h) >= 1 { editRoom = h }
+                } else {
+                    let room = h + Keypad.height(key: fit.key, spacing: fit.spacing) + (fit.tight ? 0 : tightSavings)
+                    if abs(nameRoom - room) >= 1 { nameRoom = room }
                 }
             }
-            .dynamicTypeSize(...DiscountPanel.labelCap)
-            .padding(.horizontal, 20)
-            .padding(.top, 6)
-            // 写名称时系统键盘在下面，自家键盘先收起来；点卖价框再出来
-            if !nameFocused {
-                Keypad { model.priceKey($0) }
+            .accessibilityIdentifier("newProduct.scroll")
+            if nameFocused {
+                // 写名称时：键盘上方一个大的「写好了」，和回车、扫码枪回车走同一条路
+                PrimaryButton("写好了", mode: model.mode, size: .medium) { finishName() }
+                    .dynamicTypeSize(...DiscountPanel.labelCap)
+                    .accessibilityIdentifier("newProduct.nameDone")
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .background(Tokens.Palette.paper)
+            } else {
+                // 卖价框、键盘、按钮钉在底部：任何字号下卖价框都在首屏、不被键盘压住
+                VStack(alignment: .leading, spacing: 6) {
+                    label(model.priceLabel)
+                    priceField
+                    if let m = model.priceMessage ?? model.error {
+                        Text(m).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.sell)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("newProduct.error")
+                    }
+                }
+                .dynamicTypeSize(...DiscountPanel.labelCap)
+                .padding(.horizontal, 20)
+                .padding(.top, fit.tight ? 2 : 6)
+                Keypad(keyHeight: fit.key, spacing: fit.spacing) { model.priceKey($0) }
                     .accessibilityIdentifier("newProduct.keypad")
                     .padding(.horizontal, 20)
-                    .padding(.top, 6)
+                    .padding(.top, fit.tight ? 2 : 6)
+                basicButtons(tight: fit.tight)
             }
-            basicButtons
         }
+    }
+
+    static let scrollTopPad: CGFloat = 14, scrollBottomPad: CGFloat = 10
+    /// 名称 28pt 粗体，不随辅助字号变（PR #43 Fable 决定：不放大也不缩小）
+    static let nameFontSize: CGFloat = 28
+    static let nameLineHeight = UIFont.systemFont(ofSize: nameFontSize, weight: .bold).lineHeight
+    /// 名称框外框高：n 行字 + 上下 12pt 留白，至少和首字头像一样高
+    static func nameBoxHeight(_ lines: Int) -> CGFloat { max(64, CGFloat(lines) * nameLineHeight + 24) }
+    static let keyMin: CGFloat = 44, keySpacingTight: CGFloat = 4
+
+    /// `tight`：数字键压矮了，底部同时收紧（上下留白各少 4pt、主按钮 72→64pt、两个按钮间距 10→6）
+    struct NameFit: Equatable { var lines: Int; var key: CGFloat; var spacing: CGFloat; var tight: Bool = false }
+
+    /// 收紧底部省下的高度（不含数字键本身），和 `basic`、`basicButtons` 里的 tight 分支一一对应
+    static func tightSavings(twoButtons: Bool) -> CGFloat {
+        4 + 4 + 4 + (PrimaryButton.Size.regular.height - PrimaryButton.Size.medium.height) + (twoButtons ? 4 : 0)
+    }
+    private var tightSavings: CGFloat { Self.tightSavings(twoButtons: model.offersQuickSave && model.offersSecondStep) }
+
+    /// 平时名称框的行数和数字键高：按可用高度取 3→2→1 行；放不下 2 行时先把键压矮（最低 44），压到底才降到 1 行。
+    /// 「名称标签 + 整个名称框（+ 条码提示）」必须整块落在滚动区里，开头不被滚出去
+    /// `room`：按收紧后的底部算，滚动区 + 数字键能用的总高
+    static func fitName(room: CGFloat, labelHeight: CGFloat, noticeHeight: CGFloat, naturalLines: Int,
+                        tightSavings: CGFloat) -> NameFit {
+        let full = NameFit(lines: min(nameDisplayLines, max(1, naturalLines)), key: Tokens.Size.key, spacing: 8)
+        guard room > 0 else { return full }
+        func need(_ n: Int) -> CGFloat {
+            labelHeight + 8 + nameBoxHeight(n) + (noticeHeight > 0 ? 8 + noticeHeight : 0) + scrollBottomPad + 2
+        }
+        let fullKeypad = Keypad.height(key: Tokens.Size.key, spacing: 8)
+        // 名称本来就只要 1 行时下限就是 1 行；否则先在 2 行以上找，不压键
+        let floor = min(full.lines, 2)
+        for n in stride(from: full.lines, through: floor, by: -1) where room - tightSavings - fullKeypad >= need(n) {
+            return NameFit(lines: n, key: Tokens.Size.key, spacing: 8)
+        }
+        for n in stride(from: floor, through: 1, by: -1) {
+            let key = ((room - need(n)) - 3 * keySpacingTight) / 4
+            if key >= keyMin {
+                return NameFit(lines: n, key: min(Tokens.Size.key, key.rounded(.down)), spacing: keySpacingTight, tight: true)
+            }
+        }
+        return NameFit(lines: 1, key: keyMin, spacing: keySpacingTight, tight: true)
+    }
+
+    private var nameFit: NameFit {
+        Self.fitName(room: nameRoom, labelHeight: nameLabelHeight, noticeHeight: noticeHeight, naturalLines: nameNaturalLines,
+                     tightSavings: tightSavings)
+    }
+
+    /// 写名称时的行数：最多 4 行（超出框内滚动），高度不够按可用高度减行，最少 2 整行
+    static func fitEditLines(room: CGFloat, labelHeight: CGFloat) -> Int {
+        guard room > 0 else { return nameEditLines }
+        let fixed = scrollTopPad + labelHeight + 8 + 24 + scrollBottomPad + 2
+        let n = Int(((room - fixed) / nameLineHeight).rounded(.down))
+        return min(nameEditLines, max(2, n))
+    }
+
+    private var editLines: Int { Self.fitEditLines(room: editRoom, labelHeight: nameLabelHeight) }
+
+    /// 「写好了」、键盘回车、扫码枪回车三条路一样：去掉换行、收键盘、做名称检查，回到平时布局
+    private func finishName() {
+        if model.name.contains(where: \.isNewline) { model.name = model.name.filter { !$0.isNewline } }
+        nameFocused = false
+        model.submitName()
+    }
+
+    /// 名称框行数上限：显示时最多 3 行（再长才省略），编辑时随内容增高到 4 行，之后框内滚动；小屏按可用高度再减
+    static let nameDisplayLines = 3
+    static let nameEditLines = 4
+
+    /// 名称框：竖向 TextField 负责编辑；没在编辑时字设成透明，上面盖一层最多 3 行、超出才省略的 Text，
+    /// 两者同字号同宽、行数上限相同，框高一致。TextField 一直在层级里，点框任何地方都进编辑，焦点不丢。
+    private func nameBox(lines: Int) -> some View {
+        let font = Font.system(size: Self.nameFontSize, weight: .bold)
+        return TextField("", text: $model.name, prompt: Text("看包装写一下").foregroundStyle(Tokens.Palette.mute), axis: .vertical)
+            .font(font)
+            .lineLimit(1...lines)
+            .foregroundStyle(nameFocused || model.name.isEmpty ? Tokens.Palette.ink : Color.clear)
+            .tint(model.mode.color)
+            .focused($nameFocused)
+            .submitLabel(.done)
+            .onSubmit { finishName() }
+            // 竖向 TextField 回车会插入换行：名称里不留换行，回车（含扫码枪的回车）照旧当「写好了」
+            .onChange(of: model.name) { _, v in
+                guard v.contains(where: \.isNewline) else { return }
+                finishName()
+            }
+            .autocorrectionDisabled()
+            // 量整段名称不限行要几行（同字号同宽），短名不用为了「放 2 行」去压矮数字键
+            .background(alignment: .topLeading) {
+                Text(model.name.isEmpty ? " " : model.name)
+                    .font(font)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .hidden()
+                    .accessibilityHidden(true)
+                    .onGeometryChange(for: Int.self) { max(1, Int(($0.size.height / Self.nameLineHeight).rounded())) } action: {
+                        nameNaturalLines = $0
+                    }
+            }
+            .overlay(alignment: .topLeading) {
+                if !nameFocused && !model.name.isEmpty {
+                    Text(model.name)
+                        .font(font)
+                        .foregroundStyle(Tokens.Palette.ink)
+                        .lineLimit(lines)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+            .background(Tokens.Palette.card, in: RoundedRectangle(cornerRadius: Tokens.Radius.card))
+            .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(Tokens.Palette.line, lineWidth: 2))
+            .contentShape(Rectangle())
+            .onTapGesture { nameFocused = true }
+            .accessibilityIdentifier("newProduct.name")
     }
 
     private var initial: String? {
@@ -213,16 +362,16 @@ struct NewProductView: View {
         .accessibilityIdentifier("newProduct.price")
     }
 
-    private var basicButtons: some View {
-        VStack(spacing: 10) {
+    private func basicButtons(tight: Bool) -> some View {
+        VStack(spacing: tight ? 6 : 10) {
             if model.offersQuickSave {
-                PrimaryButton(model.mode == .stock ? "存好，接着进货" : "存好，接着卖", mode: model.mode) { saveBasic() }
+                PrimaryButton(model.mode == .stock ? "存好，接着进货" : "存好，接着卖", mode: model.mode, size: tight ? .medium : .regular) { saveBasic() }
                     .disabled(!model.canSaveBasic)
                     .accessibilityIdentifier("newProduct.save")
             }
             if model.offersSecondStep {
                 PrimaryButton("再填进价和库存", mode: model.mode, style: model.offersQuickSave ? .ghost : .filled,
-                              size: model.offersQuickSave ? .small : .regular) {
+                              size: model.offersQuickSave ? .small : (tight ? .medium : .regular)) {
                     nameFocused = false
                     model.goMore()
                 }
@@ -239,7 +388,7 @@ struct NewProductView: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 10)
+        .padding(.top, tight ? 6 : 10)
         .padding(.bottom, 8)
         .background(Tokens.Palette.paper)
     }
