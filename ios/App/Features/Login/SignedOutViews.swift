@@ -28,8 +28,8 @@ final class KickedModel {
     /// 黄卡上的字（没有未传的就不显示黄卡）
     static func warning(pending n: Int, cashier: Bool) -> String? {
         guard n > 0 else { return nil }
-        return cashier ? "还有 \(n) 笔没传上去。先别删 App，让家里人重新出一个收银员码，扫了以后会自动补传"
-            : "还有 \(n) 笔没传上去，没网传不了。先别删 App，连上网重新登录会自动补传"
+        return cashier ? "还有 \(n) 笔待传。先别删 App，让家里人重新出一个收银员码，扫了以后会自动补传"
+            : "还有 \(n) 笔待传，没网传不了。先别删 App，连上网重新登录会自动补传"
     }
 }
 
@@ -79,7 +79,7 @@ struct KickedView: View {
     }
 }
 
-/// 退出登录（设置 → 退出登录，§4.5）：先确认；确认后把没传的传完再注销。没网时提示「还有 N 笔没传，联网后会自动补传」。
+/// 退出登录（设置 → 退出登录，§4.5）：先确认；确认后把没传的传完再注销。没网时提示「还有 N 笔待传，联网后会自动补传」。
 /// S23a 换成 26 号通用确认面板，排空流程不变。
 struct LogoutView: View {
     @Environment(AppModel.self) private var model
@@ -101,7 +101,7 @@ struct LogoutView: View {
     @ViewBuilder private var content: some View {
             switch phase {
             case .confirm:
-                Text("退出以后，这台手机上的账要重新登录才能看。还没传上去的账会先传上去。")
+                Text("退出以后，这台手机上的账要重新登录才能看。待传的账会先传上去。")
                     .font(TypeScale.body).fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 PrimaryButton("退出登录", style: .dark) { Task { await run() } }
@@ -109,10 +109,10 @@ struct LogoutView: View {
                 PrimaryButton("不退了", style: .ghost) { dismiss() }
                     .accessibilityIdentifier("logout.cancel")
             case .working:
-                HStack(spacing: 12) { ProgressView(); Text("正在把没传的账传上去…").font(TypeScale.body) }
+                HStack(spacing: 12) { ProgressView(); Text("正在把待传的账传上去…").font(TypeScale.body) }
                 Spacer()
             case .pending(let n):
-                Text(n > 0 ? "还有 \(n) 笔没传，联网后会自动补传" : "没连上服务器，联网后会自动退出")
+                Text(n > 0 ? "还有 \(n) 笔待传，联网后会自动补传" : "没连上服务器，联网后会自动退出")
                     .font(TypeScale.body.weight(.bold)).fixedSize(horizontal: false, vertical: true)
                     .padding(18)
                     .frame(maxWidth: .infinity, alignment: .leading)

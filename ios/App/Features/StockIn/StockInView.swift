@@ -42,7 +42,7 @@ struct StockInView: View {
             // 商品卡在的时候取景框压暗、不识别，收小到屏高 16%（连同按钮沉到底部），给上面的卡片多留地方
             let layout = ScanLayout(size: geo.size, insets: geo.safeAreaInsets, compact: holding || typeSize.isAccessibilitySize)
             VStack(spacing: 0) {
-                ModeBar(title: "进货", mode: .stock, pendingCount: model.pendingCount, onBack: { dismiss() })
+                ModeBar(title: "进货", mode: .stock, pendingCount: app.figures.pendingCount, onBack: { dismiss() })
                 if model.conversion == nil {
                     emptyHint.frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if model.active == nil {
@@ -66,7 +66,7 @@ struct StockInView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(Route.stockIn.pageId)
         .navigationDestination(isPresented: $showManual) {
-            ManualCodeView(db: model.db, mode: .stock, pendingCount: model.pendingCount, fixture: fixture.manual) { code in
+            ManualCodeView(db: model.db, mode: .stock, pendingCount: app.figures.pendingCount, fixture: fixture.manual) { code in
                 showManual = false
                 model.accepting = true
                 hub.receive(code, from: .manual)
@@ -76,7 +76,7 @@ struct StockInView: View {
         .navigationDestination(item: $model.registerCode) { req in
             NewProductView(db: model.db, barcode: req.code, mode: .stock, quick: false,
                            canLinkPack: app.capabilities.canSend(.barcodeLink),
-                           lookup: app.nameLookup(offline: fixture.offline), pendingCount: model.pendingCount,
+                           lookup: app.nameLookup(offline: fixture.offline), pendingCount: app.figures.pendingCount,
                            suggestedProduct: nil, fixture: fixture.newProduct) { outcome in
                 model.finishRegistration(outcome)
             }
@@ -96,7 +96,7 @@ struct StockInView: View {
         }
         .onAppear {
             let appModel = app
-            model.onPendingChange = { appModel.figures.pendingCount = $0 }
+            model.onPendingChange = { _ in appModel.refreshPending() }
             model.canRegister = appModel.capabilities.has(.fullRegister)
             let model = model
             hub.handler = { model.handle($0) }

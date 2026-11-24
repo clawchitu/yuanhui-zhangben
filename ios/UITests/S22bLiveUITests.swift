@@ -92,13 +92,13 @@ final class S22bLiveUITests: XCTestCase {
         app.terminate()
     }
 
-    /// 断网退出登录：设置 → 退出登录 → 确认 → 「还有 N 笔没传」→ 知道了 → 登录页
+    /// 断网退出登录：设置 → 退出登录 → 确认 → 「还有 N 笔待传」→ 知道了 → 登录页
     private func logoutOffline(expect n: Int) {
         let app = launch(["-uiOffline", "-uiRoute", "settings,logout"])
         XCTAssertTrue(el(app, "page.logout").waitForExistence(timeout: 20))
         el(app, "logout.confirm").tap()
         XCTAssertTrue(el(app, "logout.pending").waitForExistence(timeout: 30))
-        XCTAssertEqual(el(app, "logout.pending").label, "还有 \(n) 笔没传，联网后会自动补传")
+        XCTAssertEqual(el(app, "logout.pending").label, "还有 \(n) 笔待传，联网后会自动补传")
         shot(app, "logout-offline-pending")
         el(app, "logout.ok").tap()
         XCTAssertTrue(el(app, "page.login").waitForExistence(timeout: 20), "回登录页")
@@ -190,7 +190,7 @@ final class S22bLiveUITests: XCTestCase {
         let app = launch(["-uiMaxBatchOps", "1", "-uiRecoveryOffline"])
         XCTAssertTrue(el(app, "page.kicked").waitForExistence(timeout: 40), "进 25b")
         XCTAssertTrue(el(app, "kicked.pending").waitForExistence(timeout: 10))
-        XCTAssertTrue(el(app, "kicked.pending").label.contains("还有 2 笔没传上去"), el(app, "kicked.pending").label)
+        XCTAssertTrue(el(app, "kicked.pending").label.contains("还有 2 笔待传"), el(app, "kicked.pending").label)
         shot(app, "25b-kicked-live")
         app.terminate()
         // 重开（联网）：启动时用旧令牌补传，黄卡消失

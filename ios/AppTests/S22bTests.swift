@@ -255,7 +255,7 @@ final class S22bTests: XCTestCase {
         var f = HomeFigures()
         f.rejectedCount = try db.rejectedUnseenCount()
         f.staleUnsyncedCount = 1
-        XCTAssertEqual(HomeReminder.list(f, capabilities: Capabilities(role: .family)), [.rejected(1), .unsynced(1)])
+        XCTAssertEqual(HomeReminder.list(f, capabilities: Capabilities(role: .family)), [.rejected(1), .unsynced(total: 1, overdue: 1)])
         let m = AppModel(db: db, session: try XCTUnwrap(try db.currentSession()), figures: f, defaults: defaults)
         m.acknowledgeRejected()
         XCTAssertEqual(m.figures.rejectedCount, 0)
@@ -263,8 +263,8 @@ final class S22bTests: XCTestCase {
     }
 
     func testKickedTexts() {
-        XCTAssertEqual(KickedModel.warning(pending: 2, cashier: false), "还有 2 笔没传上去，没网传不了。先别删 App，连上网重新登录会自动补传")
-        XCTAssertEqual(KickedModel.warning(pending: 2, cashier: true), "还有 2 笔没传上去。先别删 App，让家里人重新出一个收银员码，扫了以后会自动补传")
+        XCTAssertEqual(KickedModel.warning(pending: 2, cashier: false), "还有 2 笔待传，没网传不了。先别删 App，连上网重新登录会自动补传")
+        XCTAssertEqual(KickedModel.warning(pending: 2, cashier: true), "还有 2 笔待传。先别删 App，让家里人重新出一个收银员码，扫了以后会自动补传")
         XCTAssertNil(KickedModel.warning(pending: 0, cashier: false))
         XCTAssertEqual(RouteView.content(for: .logout, capabilities: Capabilities(role: .cashier)), .logout)
     }

@@ -22,6 +22,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
     case account         // 账号与密码、注销（23）
     case privacy         // 隐私政策
     case logout          // 退出登录
+    case pending         // 待传的账（首页顶栏的同步状态、25a 提醒条点进来）
 
     /// 进这一页需要的能力；nil = 三种身份都能进
     var requiredCapability: Capability? {
@@ -37,7 +38,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .devices: .manageDevices
         case .deviceName: .renameDevice
         case .account: .account
-        case .settings, .records, .scanner, .privacy, .logout: nil
+        case .settings, .records, .scanner, .privacy, .logout, .pending: nil
         }
     }
 
@@ -68,6 +69,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .account: "账号与密码"
         case .privacy: "隐私政策"
         case .logout: "退出登录"
+        case .pending: "待传的账"
         }
     }
 
@@ -81,7 +83,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .pairing, .devices: "S23a"
         case .account: "S23b"
         case .privacy: "S21"
-        case .logout: nil
+        case .logout, .pending: nil
         case .sell, .manualCode, .discount, .stockIn, .settings, .deviceName, .scanner, .records, .undoLast: nil
         }
     }
@@ -103,7 +105,7 @@ struct RouteView: View {
 
     /// 这条路由在这些能力下出哪种页面（纯函数，单元测试逐个路由 × 身份测）
     enum Content: Equatable {
-        case denied, sell, manualCode, discountEntry, stockIn, settings, deviceName, scanner, records, logout, placeholder
+        case denied, sell, manualCode, discountEntry, stockIn, settings, deviceName, scanner, records, logout, pending, placeholder
     }
 
     static func content(for route: Route, capabilities: Capabilities) -> Content {
@@ -118,6 +120,7 @@ struct RouteView: View {
         case .scanner: return .scanner
         case .records, .undoLast: return .records
         case .logout: return .logout
+        case .pending: return .pending
         default: return .placeholder
         }
     }
@@ -138,6 +141,7 @@ struct RouteView: View {
             case .records:
                 RecordsView(db: model.db, cashier: model.layout == .cashier, route: route, clock: { [model] in model.now })
             case .logout: LogoutView()
+            case .pending: PendingView(db: model.db, clock: { [model] in model.now })
             // 看账（S24 之前是占位页）：家用首页没有「刚记的」条时从这里进记的账（§14 S15-6）
             case .placeholder: PlaceholderPage(route: route, layout: model.layout, link: route == .reports ? .records : nil)
             }

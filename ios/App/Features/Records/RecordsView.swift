@@ -18,7 +18,7 @@ struct RecordsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ModeBar(title: model.cashier ? "我今天记的" : "记的账", pendingCount: app.sync == nil ? model.pendingCount : app.figures.pendingCount,
+            ModeBar(title: model.cashier ? "我今天记的" : "记的账", pendingCount: app.figures.pendingCount,
                     offline: app.offline, onBack: { dismiss() })
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {

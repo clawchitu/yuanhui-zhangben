@@ -27,8 +27,14 @@ final class SyncCoordinator {
     private(set) var running = false
     /// 最近一趟失败的原因（没网、服务器错）；成功后清掉
     private(set) var lastError: String?
+    /// 最近一趟失败归哪一类（「待传的账」面板据此说为什么没传上去）；成功后清掉
+    private(set) var lastFailure: SyncFailure?
+    /// 「再传一次」正在跑（按钮变灰写「正在传…」，至少停 1 秒）
+    private(set) var retrying = false
     /// 网络不通（NWPathMonitor）。首页右上角显示「↑ 没网」（25e）
-    private(set) var offline = false
+    private(set) var offline = false { didSet { if offline != oldValue { onOfflineChange?() } } }
+    /// 没网 / 联网切换时的回调：AppModel 据此决定顶栏的待传要不要马上显示（没网时不等 4 秒）
+    var onOfflineChange: (() -> Void)?
     /// 被踢了（会话已退役）：不再同步
     private(set) var signedOut: SyncError?
     /// 跑完一趟（成功或失败）的回调：AppModel 据此刷新首页的数
@@ -144,6 +150,21 @@ final class SyncCoordinator {
         Task { await self.loop() }
     }
 
+    /// 「再传一次」最少显示「正在传…」多久（太快一闪而过，老人看不清点没点上）
+    static let retryMinimum: Duration = .seconds(1)
+
+    /// 「待传的账」面板的「再传一次」：马上来一趟，等它跑完；「正在传…」至少停 `retryMinimum`
+    func retry(minimum: Duration = SyncCoordinator.retryMinimum) async {
+        guard !retrying else { return }
+        retrying = true
+        let start = ContinuousClock.now
+        kick()
+        await idle()
+        let left = minimum - (ContinuousClock.now - start)
+        if left > .zero { try? await Task.sleep(for: left) }
+        retrying = false
+    }
+
     /// 等当前这趟（和它之后补的那趟）跑完（测试用）
     func idle() async {
         while running { try? await Task.sleep(for: .milliseconds(20)) }
@@ -177,10 +198,11 @@ final class SyncCoordinator {
         }.value
         rounds += 1
         switch result {
-        case .success: lastError = nil
+        case .success: lastError = nil; lastFailure = nil
         case .failure(SyncError.epochMismatch(let e)):
             // 握手两次仍不一致：不是退出，下一趟再试（PR #41 Fable 可选 2）
             lastError = "epoch 握手没对上：\(e)"
+            lastFailure = .other
         case .failure(let e as SyncError):
             signedOut = e
             if case .revoked(true) = e { onDiscard?() }   // 演示店重置：outbox 已丢，令牌也删（PR #41 Fable 可选 6）
@@ -193,6 +215,7 @@ final class SyncCoordinator {
             return
         case .failure(let e):
             lastError = String(describing: e)
+            lastFailure = SyncFailure(e, offline: offline)
             Self.logger.notice("同步没成功：\(String(describing: e), privacy: .public)")
         }
         refreshStatus()
@@ -217,6 +240,27 @@ final class SyncCoordinator {
     var firstSyncFigures: (done: Int, total: Int?) {
         let done = (try? db.productCount()) ?? 0
         return (max(done, progress?.products ?? 0), progress?.totalProducts)
+    }
+}
+
+/// 同步没成功归哪一类（「待传的账」面板的状态句，Fable 裁定 5）
+enum SyncFailure: Equatable, Sendable {
+    /// 没网：传输层失败，且手机这会儿没网（NWPathMonitor / Debug 的 `-uiOffline`）
+    case offline
+    /// 连不上 / 超时：传输层失败，但手机有网
+    case network
+    /// 登录过期：服务器回 401，或钥匙串里读不到令牌（传输里当 401 抛）
+    case unauthorized
+    /// 服务器忙（5xx、429）和其他错误
+    case other
+
+    init(_ error: Error, offline: Bool) {
+        switch error {
+        case APIError.transport: self = offline ? .offline : .network
+        case APIError.server(let status, _, _, _) where status == 401: self = .unauthorized
+        case let e as SyncHTTPError where e.status == 401: self = .unauthorized
+        default: self = .other
+        }
     }
 }
 

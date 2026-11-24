@@ -339,10 +339,13 @@ struct AppRoot: View {
 
     @MainActor static func liveModel(db: LocalDB, session: LocalSession, services: AppServices?) throws -> AppModel {
         var figures = HomeFigures()
-        figures.pendingCount = try db.pendingOps().count
+        let tally = try db.pendingTally()
+        figures.pendingCount = tally.total
+        figures.livePendingCount = tally.total
         figures.lastRecord = HomeFigures.LastRecord.today(try db.lastRecord(), now: Date())
         let model = AppModel(db: db, session: session, figures: figures)
         model.services = services
+        model.pendingDelay = AppModel.pendingDelayLive  // 顶栏 0 → N 等 4 秒（Fable 裁定 1）
         #if DEBUG
         // 联调（S22a XCUITest）：真会话下也能用假扫码、调试探针；-uiInjectDemo 往本机塞服务器上没有的演示商品（卖它会被拒）
         let args = ProcessInfo.processInfo.arguments
@@ -376,7 +379,10 @@ struct AppRoot: View {
         var figures = HomeFigures.design
         if role == .cashier { figures.scannerConnected = false }  // 21b 稿子上是「没连」
         if screen == .home(unsynced: true) {
+            // 25a：5 笔超过一天的待传（真记在本机库里，点开「待传的账」看得到这 5 笔）
+            try UIFixture.installOverdueSales(5, into: db)
             figures.pendingCount = 5
+            figures.livePendingCount = 5
             figures.staleUnsyncedCount = 5
         }
         let defaults = UserDefaults.standard
@@ -386,18 +392,27 @@ struct AppRoot: View {
         default: break
         }
         try UIFixture.installSellExtras(into: db, args: args)
-        if args.contains("-uiPriorSales") { figures.pendingCount = try db.pendingOps().count }
+        if args.contains("-uiPriorSales") {
+            let t = try db.pendingTally(now: UIFixture.designNow)
+            figures.pendingCount = t.total; figures.livePendingCount = t.total; figures.staleUnsyncedCount = t.overdue
+        }
         // S20：-uiRecords 装上稿子 07a / 07b / 07c 的账，首页「刚记的」和待传笔数都从库里取
         let liveRecent = try UIFixture.installRecords(into: db, session: session, args: args)
         if liveRecent {
             figures.lastRecord = HomeFigures.LastRecord.today(try db.lastRecord(), now: UIFixture.designNow)
-            figures.pendingCount = try db.pendingOps().count
+            let t = try db.pendingTally(now: UIFixture.designNow)
+            figures.pendingCount = t.total; figures.livePendingCount = t.total
         }
         let model = AppModel(db: db, session: session, figures: figures, today: UIFixture.designNow, defaults: defaults,
                              scrollToBottom: UIFixture.value(for: "-uiScrollTo", in: args) == "bottom",
                              fixedNow: UIFixture.designNow)
         model.liveRecent = liveRecent
         model.sellFixture = SellFixture.from(args)
+        // 顶栏待传的 4 秒延迟：夹具里默认不等，带 -uiPendingDelay [秒] 才开
+        if args.contains("-uiPendingDelay") {
+            model.pendingDelay = .seconds(UIFixture.value(for: "-uiPendingDelay", in: args).flatMap(Double.init) ?? 4)
+        }
+        model.pendingReasonFixture = UIFixture.value(for: "-uiPendingReason", in: args).flatMap(PendingReason.init(rawValue:))
         if args.contains("-uiFirstSync") { model.firstSyncFixture = (194, 312) }  // 29 稿子上的数
         return model
     }
@@ -466,7 +481,7 @@ private struct TokenUnavailableView: View {
                         Button("重新登录", action: relogin)
                         Button("不了", role: .cancel) {}
                     } message: {
-                        Text("这台手机上还没传上去的账不会丢，重新登录后会自动补传。")
+                        Text("这台手机上待传的账不会丢，重新登录后会自动补传。")
                     }
             }
         }
