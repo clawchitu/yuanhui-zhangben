@@ -40,7 +40,7 @@ struct SellView: View {
         GeometryReader { geo in
             let layout = ScanLayout(size: geo.size, insets: geo.safeAreaInsets, compact: compactFinder)
             VStack(spacing: 0) {
-                ModeBar(title: "卖出", mode: .sell, pendingCount: model.pendingCount, onBack: { dismiss() })
+                ModeBar(title: "卖出", mode: .sell, pendingCount: app.figures.pendingCount, onBack: { dismiss() })
                 basketArea
                     .frame(maxHeight: .infinity)
                     .overlay(alignment: .top) { if let n = model.notice { noticeBanner(n) } }
@@ -58,7 +58,7 @@ struct SellView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(Route.sell.pageId)
         .navigationDestination(isPresented: $showManual) {
-            ManualCodeView(db: model.db, mode: .sell, pendingCount: model.pendingCount, fixture: fixture.manual) { code in
+            ManualCodeView(db: model.db, mode: .sell, pendingCount: app.figures.pendingCount, fixture: fixture.manual) { code in
                 pickManual(code)
             }
         }
@@ -66,7 +66,7 @@ struct SellView: View {
         .navigationDestination(item: $model.registerCode) { req in
             NewProductView(db: model.db, barcode: req.code, mode: fixture.newProduct.mode ?? .sell,
                            quick: model.registration == .quick, canLinkPack: app.capabilities.canSend(.barcodeLink),
-                           lookup: app.nameLookup(offline: fixture.offline), pendingCount: model.pendingCount,
+                           lookup: app.nameLookup(offline: fixture.offline), pendingCount: app.figures.pendingCount,
                            suggestedProduct: model.focusLine?.conversion.product, fixture: fixture.newProduct) { outcome in
                 model.finishRegistration(outcome)
                 model.refreshPending()
@@ -82,7 +82,7 @@ struct SellView: View {
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             let appModel = app
-            model.onPendingChange = { appModel.figures.pendingCount = $0 }
+            model.onPendingChange = { _ in appModel.refreshPending() }
             let caps = appModel.capabilities
             model.registration = caps.has(.fullRegister) ? .full : (caps.has(.quickRegister) ? .quick : .none)
             let model = model

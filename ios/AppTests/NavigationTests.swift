@@ -61,8 +61,8 @@ final class NavigationTests: XCTestCase {
         var f = HomeFigures.design
         f.staleUnsyncedCount = 5
         f.expiringCount = 3
-        XCTAssertEqual(HomeReminder.list(f, capabilities: Capabilities(role: .family)), [.unsynced(5), .expiring(3)])
-        XCTAssertEqual(HomeReminder.list(f, capabilities: Capabilities(role: .cashier)), [.unsynced(5)])
+        XCTAssertEqual(HomeReminder.list(f, capabilities: Capabilities(role: .family)), [.unsynced(total: 5, overdue: 5), .expiring(3)])
+        XCTAssertEqual(HomeReminder.list(f, capabilities: Capabilities(role: .cashier)), [.unsynced(total: 5, overdue: 5)])
         f.staleUnsyncedCount = 0
         XCTAssertEqual(HomeReminder.list(f, capabilities: Capabilities(role: .family)), [.expiring(3)])
         f.expiringCount = 0

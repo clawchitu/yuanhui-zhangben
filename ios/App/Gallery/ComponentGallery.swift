@@ -138,7 +138,7 @@ struct ComponentGallery: View {
                     Pill(text: "收银员", kind: .outline)
                 }
                 Banner(kind: .alert, text: "有 3 样快过期了")
-                Banner(kind: .soft, text: "还有 2 笔没传上去", systemImage: "arrow.up.to.line")
+                Banner(kind: .soft, text: "还有 2 笔待传", systemImage: "arrow.up.to.line")
                 Banner(kind: .expired, text: "这批已过期，别再卖了", systemImage: "exclamationmark.triangle.fill")
             }
         }

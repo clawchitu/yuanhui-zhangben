@@ -2,7 +2,7 @@ import ShopCore
 import SwiftUI
 
 /// 首页：家用 = 01（卖出、进货、看账 / 商品 / 更多、提醒条、刚记的），收银员 = 02（只有卖出、我刚记的、齿轮）。
-/// 入口按能力表出（§6.2）；25a 的「没传上去」提醒条在「快过期」上面。
+/// 入口按能力表出（§6.2）；25a 的「N 笔待传」提醒条在「快过期」上面。右上角的同步状态能点，进「待传的账」。
 /// 大卡片、三个小按钮、「记错了」是固定尺寸（主按钮类），其余文字走动态字号；放不下时整页可以滚动。
 struct HomeView: View {
     @Environment(AppModel.self) private var model
@@ -12,7 +12,8 @@ struct HomeView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ModeBar(title: model.session.storeName, pendingCount: model.figures.pendingCount, offline: model.offline)
+            ModeBar(title: model.session.storeName, pendingCount: model.figures.pendingCount, offline: model.offline,
+                    pendingLink: .pending)
             GeometryReader { geo in
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -116,11 +117,12 @@ struct HomeView: View {
 
     @ViewBuilder private func reminderBanner(_ r: HomeReminder) -> some View {
         switch r {
-        case .unsynced(let n):
-            NavigationLink(value: Route.records) {
+        case .unsynced(let n, let m):
+            // 点了开「待传的账」（Fable 裁定 9）
+            NavigationLink(value: Route.pending) {
                 HStack(alignment: .center, spacing: 12) {
                     Image(systemName: "wifi.slash").font(.system(size: 22, weight: .semibold))
-                    Text("\(n) 笔超过一天没传上去")
+                    Text("\(n) 笔待传，其中 \(m) 笔超过一天")
                         .font(TypeScale.body.weight(.medium))
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)

@@ -1,14 +1,17 @@
 import SwiftUI
 
 /// 顶栏：卖出 = 朱红底白字，进货 = 靛青底白字，中性 = 米纸底墨字。
-/// 待传状态：nil = 不显示；0 = 「✓ 已同步」；N = 「↑ N 笔待传」。
-/// 返回钮、标题、待传状态在同一个布局里；一行放不下（辅助字号）时，待传状态挪到第二行，标题可换行，不重叠、不截断。
+/// 待传状态：nil = 不显示；0 = 「✓ 已同步」；N = 「↑ N 笔待传」；没网 =「↑ 没网 · N 笔待传」（N = 0 只写「没网」）。
+/// 返回钮、标题、待传状态在同一个布局里；一行放不下（辅助字号）时，待传状态挪到第二行（还放不下就换行），标题可换行，不重叠、不截断。
+/// 只有首页给 `pendingLink`：待传状态做成有边框的按钮，点了进「待传的账」（卖出 / 进货页在扫码，不让误触跳走，Fable 裁定 2）。
 struct ModeBar: View {
     let title: String
     var mode: ShopMode = .neutral
     var pendingCount: Int?
-    /// 没网（25e）：待传状态换成「↑ 没网」
+    /// 没网（25e）：待传状态换成「↑ 没网 · N 笔待传」
     var offline = false
+    /// 待传状态点了去哪（只有首页给 `.pending`）；nil = 只是字，不能点
+    var pendingLink: Route?
     var onBack: (() -> Void)?
 
     private var background: Color { mode == .neutral ? Tokens.Palette.paper : mode.color }
@@ -55,7 +58,7 @@ struct ModeBar: View {
                 ZStack { back.hidden().accessibilityHidden(true) }
             }
             if showsPending {
-                pending.frame(maxWidth: .infinity, alignment: .trailing).padding(.bottom, 6)
+                pendingStatus(wrapping: true).frame(maxWidth: .infinity, alignment: .trailing).padding(.bottom, 6)
             }
         }
     }
@@ -75,24 +78,49 @@ struct ModeBar: View {
         }
     }
 
-    @ViewBuilder private var pending: some View {
-        if offline {
-            Label("没网", systemImage: "arrow.up.to.line")
+    /// 待传状态的字（没网 / 已同步 / N 笔待传）
+    static func statusText(pendingCount: Int?, offline: Bool) -> String? {
+        let n = pendingCount ?? 0
+        if offline { return n > 0 ? "没网 · \(n) 笔待传" : "没网" }
+        guard let pendingCount else { return nil }
+        return pendingCount > 0 ? "\(pendingCount) 笔待传" : "已同步"
+    }
+
+    /// 能点时的读屏标签：「N 笔待传，点开看」/「已同步，点开看」
+    static func tapLabel(pendingCount: Int?, offline: Bool) -> String? {
+        statusText(pendingCount: pendingCount, offline: offline).map { $0.replacingOccurrences(of: " · ", with: "，") + "，点开看" }
+    }
+
+    @ViewBuilder private var pending: some View { pendingStatus(wrapping: false) }
+
+    @ViewBuilder private func pendingStatus(wrapping: Bool) -> some View {
+        if let text = Self.statusText(pendingCount: pendingCount, offline: offline) {
+            let synced = !offline && pendingCount == 0
+            let label = Label(text, systemImage: synced ? "checkmark" : "arrow.up.to.line")
                 .font(TypeScale.secondary)
                 .labelStyle(TightLabelStyle())
-                .lineLimit(1)
-                .fixedSize()
-                .padding(.trailing, 6)
+                .lineLimit(wrapping ? nil : 1)
+                .fixedSize(horizontal: !wrapping, vertical: true)
+                .multilineTextAlignment(.trailing)
+            if let pendingLink {
+                NavigationLink(value: pendingLink) {
+                    label
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .frame(minHeight: 44)
+                        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(foreground, lineWidth: 2))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressDimStyle())
+                .foregroundStyle(foreground)
+                .padding(.trailing, 2)
+                .accessibilityLabel(Self.tapLabel(pendingCount: pendingCount, offline: offline) ?? text)
                 .accessibilityIdentifier("syncStatus")
-        } else if let pendingCount {
-            Label(pendingCount > 0 ? "\(pendingCount) 笔待传" : "已同步",
-                  systemImage: pendingCount > 0 ? "arrow.up.to.line" : "checkmark")
-                .font(TypeScale.secondary)
-                .labelStyle(TightLabelStyle())
-                .lineLimit(1)
-                .fixedSize()
-                .padding(.trailing, 6)
-                .accessibilityIdentifier("syncStatus")
+            } else {
+                label
+                    .padding(.trailing, 6)
+                    .accessibilityIdentifier("syncStatus")
+            }
         } else {
             Color.clear.frame(width: 1, height: 1)
         }

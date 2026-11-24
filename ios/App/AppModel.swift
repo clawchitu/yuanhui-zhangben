@@ -14,9 +14,11 @@ struct HomeFigures: Equatable, Sendable {
         var amountFen: Int?       // 5300；盘点、期初这类没有金额的为 nil，不显示（PR #34 Fable 可选 4）
     }
 
-    /// 待传笔数；nil = 不显示同步状态，0 = 已同步
+    /// 顶栏的待传笔数（只给顶栏用，带 4 秒延迟，见 `PendingBadge`）；nil = 不显示同步状态，0 = 已同步
     var pendingCount: Int? = 0
-    /// 超过一天没传上去的笔数（25a 的提醒条）
+    /// 待传实时笔数（当前会话 + 恢复队列）：面板、首页提醒条、退出登录提示用（Fable 裁定 11）
+    var livePendingCount = 0
+    /// 待传里超过一天的笔数（25a 的提醒条，含恢复队列）
     var staleUnsyncedCount = 0
     /// 快过期的样数（01 的黄条、21a 的「快过期的」）
     var expiringCount = 0
@@ -53,7 +55,8 @@ extension HomeFigures.LastRecord {
 
 /// 首页提醒条（25a）。规则：「没同步」在「快过期」上面。
 enum HomeReminder: Hashable, Sendable {
-    case unsynced(Int)
+    /// 「N 笔待传，其中 M 笔超过一天」（N 用实时数），点了开「待传的账」
+    case unsynced(total: Int, overdue: Int)
     /// S22b：服务器拒收的笔数（不再重试），点「知道了」收起
     case rejected(Int)
     case expiring(Int)
@@ -64,10 +67,31 @@ enum HomeReminder: Hashable, Sendable {
     static func list(_ f: HomeFigures, capabilities: Capabilities) -> [HomeReminder] {
         var r: [HomeReminder] = []
         if f.rejectedCount > 0 { r.append(.rejected(f.rejectedCount)) }
-        if f.staleUnsyncedCount > 0 { r.append(.unsynced(f.staleUnsyncedCount)) }
+        if f.staleUnsyncedCount > 0 {
+            r.append(.unsynced(total: max(f.livePendingCount, f.staleUnsyncedCount), overdue: f.staleUnsyncedCount))
+        }
         if let m = f.clockSkewMinutes { r.append(.clockOff(m)) }
         if f.expiringCount > 0, capabilities.has(.expiry) { r.append(.expiring(f.expiringCount)) }
         return r
+    }
+}
+
+/// 顶栏待传状态的 4 秒延迟（Fable 裁定 1）：刚记一笔、几秒内就传上去时，顶栏不闪「1 笔待传」。
+/// - 0 → 有待传：等一会儿再显示；等的期间传完了就一直是「已同步」；
+/// - 已经在显示待传：笔数变了立刻更新；
+/// - 回到 0：立刻「已同步」；
+/// - 已知没网、或上一次同步刚失败：不等，立刻显示。
+enum PendingBadge {
+    enum Step: Equatable {
+        /// 顶栏马上显示这个数
+        case show(Int)
+        /// 先不动，等延迟到了再显示当时的实时数
+        case wait
+    }
+
+    static func next(shown: Int?, live: Int, immediate: Bool) -> Step {
+        if live == 0 || (shown ?? 0) > 0 || immediate { return .show(live) }
+        return .wait
     }
 }
 
@@ -109,6 +133,16 @@ final class AppModel {
     static let clockSkewThreshold: TimeInterval = 5 * 60
     /// 同步调度（正常启动才有；夹具为 nil）
     var sync: SyncCoordinator?
+    /// 顶栏待传的延迟（正常启动 4 秒；夹具和单测为 0，带 `-uiPendingDelay` 才开）
+    var pendingDelay: Duration = .zero
+    static let pendingDelayLive: Duration = .seconds(4)
+    private var pendingReveal: Task<Void, Never>?
+    /// 待传实时笔数（面板、首页提醒条、退出登录提示用；顶栏用 `figures.pendingCount`）
+    var livePendingCount: Int { figures.livePendingCount }
+    #if DEBUG
+    /// 夹具：「待传的账」面板当作这个原因（`-uiPendingReason offline|network|unauthorized|other|deleting`）
+    var pendingReasonFixture: PendingReason?
+    #endif
     /// 首次同步的商品流拉完了没有（没拉完先显示 29，拉完就能进首页开卖）。夹具一律当作拉完了
     var catalogReady: Bool { firstSyncFixture == nil && (sync?.catalogDone ?? true) }
     /// 截 29 用：稿子上的 194 / 312
@@ -161,19 +195,45 @@ final class AppModel {
     func refreshRecent() {
         guard liveRecent else { return }
         figures.lastRecord = HomeFigures.LastRecord.today((try? db.lastRecord()) ?? nil, now: now)
+        refreshPending()
+    }
+
+    /// 写入之后（卖出、进货、撤销……）：待传笔数从本地库重取，正常启动时顺带踢一趟同步
+    func refreshPending() {
         if let sync {
             sync.refreshStatus()
             applySyncStatus()
             sync.kick()
-        } else if let n = try? db.pendingOps().count {
-            figures.pendingCount = n
+        } else if let t = try? db.pendingTally(now: now) {
+            setLivePending(t.total)
+        }
+    }
+
+    /// 待传实时数变了：面板、提醒条马上用；顶栏按 `PendingBadge` 决定马上显示还是等 `pendingDelay`
+    func setLivePending(_ n: Int) {
+        figures.livePendingCount = n
+        let immediate = pendingDelay == .zero || offline || sync?.lastFailure != nil
+        switch PendingBadge.next(shown: figures.pendingCount, live: n, immediate: immediate) {
+        case .show(let v):
+            pendingReveal?.cancel(); pendingReveal = nil
+            if figures.pendingCount != v { figures.pendingCount = v }
+        case .wait:
+            guard pendingReveal == nil else { return }
+            let delay = pendingDelay
+            pendingReveal = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled, let self else { return }
+                self.pendingReveal = nil
+                let live = self.figures.livePendingCount
+                if live > 0 { self.figures.pendingCount = live }
+            }
         }
     }
 
     /// 同步状态 → 首页 / 设置 / 07a 的数（§14 S15-1：来自真数据）
     func applySyncStatus() {
         guard let st = sync?.status else { return }
-        figures.pendingCount = st.pendingCount
+        setLivePending(st.totalPendingCount)
         figures.staleUnsyncedCount = st.overdueCount
         figures.rejectedCount = (try? db.rejectedUnseenCount()) ?? 0
         if let off = clockOffset, abs(off) >= Self.clockSkewThreshold {
@@ -190,6 +250,11 @@ final class AppModel {
             guard let self else { return }
             self.applySyncStatus()
             self.figures.lastRecord = HomeFigures.LastRecord.today((try? self.db.lastRecord()) ?? nil, now: self.now)
+        }
+        // 没网了：顶栏正在等的待传马上显示（不等 4 秒）
+        sync.onOfflineChange = { [weak self] in
+            guard let self else { return }
+            self.setLivePending(self.figures.livePendingCount)
         }
         applySyncStatus()
         sync.start()
@@ -268,7 +333,7 @@ final class AppModel {
     enum LogoutOutcome: Equatable {
         /// 传完了、令牌已注销
         case done
-        /// 没传完（没网）：这几笔进恢复队列，联网后自动补传，传完才注销旧令牌
+        /// 没传完（没网）：这几笔进恢复队列，联网后自动补传，传完才注销旧令牌。带的数是本机待传总数（提示用）
         case pending(Int)
         /// 排空时发现这台手机已经被踢：按被踢走（25b / 25f），没传完的留在恢复队列、旧令牌不删
         case kicked
@@ -318,6 +383,9 @@ final class AppModel {
             // 统一由恢复队列在这个会话的 op 全部清掉后删（PR #41 第二轮必须修）
             if loggedOut { try? db.markRetiredLoggedOut(deviceId: deviceId) }
         }.value
-        return loggedOut ? .done : .pending(pending)
+        // 提示里的笔数和顶栏同口径：本机所有待传（这个会话没传完的已进恢复队列，加上更早的恢复队列）
+        // （这个会话一笔不剩、只是注销没发出去时仍是 0：提示「联网后会自动退出」）
+        let shown = pending > 0 ? max((try? db.pendingTally().total) ?? 0, pending) : 0
+        return loggedOut ? .done : .pending(shown)
     }
 }

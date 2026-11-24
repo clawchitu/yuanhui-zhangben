@@ -156,8 +156,10 @@ public struct SyncStatus: Equatable, Sendable {
     public let deletePendingUntil: String?
     /// 上次同步响应里的服务器时间（和 `lastSyncAt` 同一刻，本机时钟）
     public var serverTimeAtSync: Date? = nil
-    /// 超过一天没传上去的笔数（25a「N 笔超过一天没传上去」）
+    /// 超过一天的待传笔数（25a「N 笔待传，其中 M 笔超过一天」）。和 `totalPendingCount` 同口径：含恢复队列
     public var overdueCount: Int = 0
+    /// 待传总数：当前会话 + 恢复队列（顶栏、面板、首页、退出登录提示都用这一个数，见 `PendingOverview`）
+    public var totalPendingCount: Int = 0
 
     /// 「超过一天没传」（§4.2：outbox 里有超过 24 小时的 → 首页提醒条 25a）
     public func overdue(now: Date) -> Bool {
@@ -166,6 +168,13 @@ public struct SyncStatus: Equatable, Sendable {
         guard let limit = Calendar(identifier: .gregorian).date(byAdding: .day, value: 1, to: o) else { return false }
         return now > limit
     }
+}
+
+/// `/v1/sync` 回了 200 / 409 以外的状态码（服务器忙、登录过期……）。「待传的账」面板据此说为什么没传上去
+public struct SyncHTTPError: Error, Equatable, Sendable, CustomStringConvertible {
+    public let status: Int
+    public init(status: Int) { self.status = status }
+    public var description: String { "同步失败：HTTP \(status)" }
 }
 
 public enum SyncError: Error, Equatable, Sendable {
@@ -510,14 +519,12 @@ extension LocalDB {
                                                              arguments: [$0.deviceId.uuidString, $0.storeId.uuidString]) }
             func m(_ k: MetaKey) throws -> String? { try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [k.rawValue]) }
             let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let dayAgo = Calendar(identifier: .gregorian).date(byAdding: .day, value: -1, to: now).map(Op.formatTimestamp) ?? ""
-            let stale = try s.map { try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM outbox WHERE status = 'pending' AND device_id = ? AND store_id = ? AND occurred_at < ?
-                """, arguments: [$0.deviceId.uuidString, $0.storeId.uuidString, dayAgo]) ?? 0 } ?? 0
+            let tally = try Self.pendingTally(db, now: now)
             return SyncStatus(pendingCount: n, oldestPendingAt: oldest.flatMap(iso.date(from:)),
                               lastSyncAt: try m(.lastSyncAt).flatMap(iso.date(from:)), catalogDone: try m(.catalogDone) != nil,
                               deletePendingUntil: try m(.deletePendingUntil),
-                              serverTimeAtSync: try m(.serverTimeAtSync).flatMap(iso.date(from:)), overdueCount: stale)
+                              serverTimeAtSync: try m(.serverTimeAtSync).flatMap(iso.date(from:)), overdueCount: tally.overdue,
+                              totalPendingCount: tally.total)
         }
     }
 }
@@ -566,7 +573,7 @@ public final class SyncEngine: @unchecked Sendable {
                 lastCursors = nil
                 continue
             }
-            guard code == 200 else { throw invalid("同步失败：HTTP \(code)") }
+            guard code == 200 else { throw SyncHTTPError(status: code) }
             let r = try SyncResponse.decode(data)
             if r.device.revoked {
                 try db.handleRevoked(r, sent: batch)

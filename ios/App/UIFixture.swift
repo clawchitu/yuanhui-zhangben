@@ -16,6 +16,9 @@ import ShopCore
 ///   -uiFreshInstall                              当作刚装好：清掉本机的字号选择和「首次进入做完了」
 ///   -uiScrollTo bottom                           首页打开后滚到底（截长页用）
 ///   -uiPriorSales N                              先记 N 笔卖出（03 顶栏「2 笔待传」）
+///   -uiOverdueSales N                            先记 N 笔前天的卖出（25a「N 笔待传，其中 N 笔超过一天」）
+///   -uiPendingDelay [秒]                         顶栏待传的延迟（夹具默认 0；只写旗子 = 4 秒）
+///   -uiPendingReason offline|network|unauthorized|other|deleting   「待传的账」面板当作这个原因
 ///   -uiLongName                                  多登记一个名字很长、单价很高的商品（码 6900000000017）
 ///   -uiRecords | -uiRecords none                S20：装上稿子 07a / 07b / 07c 的账（none = 一笔都没有，但「刚记的」走真数据）
 ///   -uiRecordsTab yesterday|earlier、-uiRecordsDay N   记的账页一打开就切到这一栏 / 点开 07c 第 N 天
@@ -234,6 +237,16 @@ extension UIFixture {
     enum DemoSeedIds {
         static let water = UUID(uuidString: "5EED0000-0000-4000-8000-000000000206")!
         static let cola = UUID(uuidString: "5EED0000-0000-4000-8000-000000000204")!
+    }
+
+    /// 25a 未同步首页：前天记的 n 笔卖出（农夫山泉 1 瓶），一直没传上去（超过一天）
+    static func installOverdueSales(_ n: Int, into db: LocalDB) throws {
+        guard let water = try db.lookup(barcode: "6921168509256") else { return }
+        for i in 0..<n {
+            var b = Basket()
+            try b.add(water)
+            try db.recordSale(b, at: designNow.addingTimeInterval(-2 * 86_400 + TimeInterval(600 * i)))
+        }
     }
 
     /// 卖出页要用的额外夹具：长名商品、事先记好的几笔卖出
