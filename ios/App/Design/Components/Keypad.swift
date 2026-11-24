@@ -7,7 +7,13 @@ struct Keypad: View {
     }
 
     var showsDot = true
+    /// 键高、行距：默认 56 / 8；小屏放不下名称时 04a 会压矮（最低 44，见 PR #43 Fable 决定）
+    var keyHeight: CGFloat = Tokens.Size.key
+    var spacing: CGFloat = 8
     let onKey: (Key) -> Void
+
+    /// 四行键加三道行距的总高
+    static func height(key: CGFloat, spacing: CGFloat) -> CGFloat { 4 * key + 3 * spacing }
 
     private var rows: [[Key?]] {
         [
@@ -19,7 +25,7 @@ struct Keypad: View {
     }
 
     var body: some View {
-        Grid(horizontalSpacing: 8, verticalSpacing: 8) {
+        Grid(horizontalSpacing: spacing, verticalSpacing: spacing) {
             ForEach(0..<4, id: \.self) { r in
                 GridRow {
                     ForEach(0..<3, id: \.self) { c in
@@ -36,14 +42,14 @@ struct Keypad: View {
                 label(for: key)
                     .foregroundStyle(Tokens.Palette.ink)
                     .frame(maxWidth: .infinity)
-                    .frame(height: Tokens.Size.key)
+                    .frame(height: keyHeight)
                     .background(Tokens.Palette.card, in: RoundedRectangle(cornerRadius: Tokens.Radius.key))
                     .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.key).strokeBorder(Tokens.Palette.line, lineWidth: 1))
             }
             .buttonStyle(PressDimStyle())
             .accessibilityLabel(accessibilityLabel(for: key))
         } else {
-            Color.clear.frame(maxWidth: .infinity).frame(height: Tokens.Size.key)
+            Color.clear.frame(maxWidth: .infinity).frame(height: keyHeight)
         }
     }
 
