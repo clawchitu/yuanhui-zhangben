@@ -15,12 +15,18 @@
    - PR 是 open、非草稿、无冲突、目标 main；
    - `server-ci` 在当前 head 上成功；
    - `ios-ci`：PR 改了 `ios/**`、`contracts/**` 或 `.github/workflows/ios.yml` 时必须成功（`contracts/**` 自 S12 起加入）；没改、工作流没触发时视为不需要；只要出现过就必须成功；
-   - PR 评论里有当前 head 推送之后的「Codex 审核：通过」和「Fable 审核：通过」开头的评论，每方以最后一条「X 审核：」评论为准。
+   - PR 评论里有当前 head 推送之后的「Codex 审核：通过」开头的评论，以及「Opus 审核：通过」或「Fable 审核：通过」开头的评论之一（2026-11-24 起第二路是 Opus，Fable 只为兼容旧 PR），每方以最后一条「X 审核：」评论为准；Opus、Fable 当前 head 上任一方最后一条是「不通过」就拒绝。
    - 全过才 `gh pr merge --squash --match-head-commit <sha>`。
 3. 评审结论用 **PR 评论**而不是 `review/codex`、`review/fable` 状态（没有必需检查，状态也拦不住合并，评论更直观）。
 4. 不写 `scripts/protect-main.sh`（开不了）。
 
 **风险**：这是约定，不是强制。任何有写权限的人或代理仍可以直接推 main、用网页按钮合并。补救：如果之后升级 Pro 或把仓库转到有 Team 计划的组织，补上 `protect-main.sh`，把四个检查设为必需。
+
+## D-1124-1 第二路评审由 Fable 换成 Opus（2026-11-24）
+
+**之前**：每个 PR 由 Codex 和 Fable 双审。
+
+**改为**（负责人 11/24 定，对所有项目生效）：两路评审 = Codex（默认模型 gpt-6.1-terra）+ Opus。Fable 不再做代码评审。`scripts/merge-pr.sh` 要求「Codex 审核：通过」，另外要「Opus 审核：通过」或「Fable 审核：通过」之一；接受 Fable 只是为了兼容 11/24 之前已经用 Fable 审过的旧 PR。只有评审确实通过才发「X 审核：通过」，不替没通过的评审发通过。
 
 ## D-S00-2 iOS 工作流用 paths 过滤（2026-11-19）
 

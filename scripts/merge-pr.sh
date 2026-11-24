@@ -10,8 +10,12 @@
 #   3. ios-ci：PR 改了 ios/**、contracts/** 或 .github/workflows/ios.yml 时必须成功；
 #      没改这些路径、工作流按 paths 过滤没触发时视为「不需要」。
 #      只要 head 上出现过 ios-ci，不管是否需要，都必须是成功。
-#   4. PR 评论里，在当前 head 推上来之后，有以「Codex 审核：通过」开头和以「Fable 审核：通过」开头的评论；
+#   4. PR 评论里，在当前 head 推上来之后：
+#      - 必须有以「Codex 审核：通过」开头的评论；
+#      - 另外要有以「Opus 审核：通过」或「Fable 审核：通过」开头的评论，二者有一个就行
+#        （11/24 起第二路评审由 Fable 换成 Opus；保留 Fable 是为了兼容已经用 Fable 审过的旧 PR）。
 #      每一方以最后一条「X 审核：」开头的评论为准（后来又写了「不通过」就不算过）。
+#      Opus 和 Fable 都审过时，两方最后一条都必须是通过（任何一方写了「不通过」都拒绝）。
 #      有新提交后，旧的「通过」作废，必须重审。
 #   合并方式：squash，--match-head-commit 防止检查和合并之间有人再推。
 set -euo pipefail
@@ -93,29 +97,58 @@ echo "  head 推送时间约 $pushed_at"
 
 comments=$(gh api --paginate "repos/$REPO/issues/$pr/comments?per_page=100" --jq '.[] | {created_at, body, user: .user.login}' | jq -s .)
 
-check_review() {
-  local who="$1" last
-  # 该评审方在 head 推送之后的最后一条「X 审核：」评论（去掉开头空白）
-  last=$(jq -r --arg who "$who" --arg t "$pushed_at" '
+# 某评审方在 head 推送之后的最后一条「X 审核：」评论（去掉开头空白）；没有则输出空
+last_review() {
+  jq -r --arg who "$1" --arg t "$pushed_at" '
     [ .[] | select(.created_at > $t)
           | .body |= sub("^\\s+"; "")
           | select(.body | startswith($who + " 审核："))
-    ] | sort_by(.created_at) | last | if . == null then "" else .body end' <<<"$comments")
+    ] | sort_by(.created_at) | last | if . == null then "" else .body end' <<<"$comments"
+}
+
+# 某评审方当前 head 上的结论：pass / fail / stale（只有早于 head 的评论）/ none（从没评过）
+review_state() {
+  local who="$1" last stale
+  last=$(last_review "$who")
   if [ -z "$last" ]; then
     stale=$(jq -r --arg who "$who" '[.[] | select((.body | sub("^\\s+"; "")) | startswith($who + " 审核："))] | length' <<<"$comments")
-    if [ "$stale" -gt 0 ]; then
-      bad "$who 的审核评论都早于当前 head，需要重审"
-    else
-      bad "没有「$who 审核：通过」评论"
-    fi
+    if [ "$stale" -gt 0 ]; then echo stale; else echo none; fi
   elif [[ "$last" == "$who 审核：通过"* ]]; then
-    ok "$who 审核：通过"
+    echo pass
   else
-    bad "$who 最后一条审核评论不是通过：$(head -c 80 <<<"$last" | head -n1)"
+    echo fail
   fi
 }
-check_review Codex
-check_review Fable
+
+report_review() {
+  local who="$1" st="$2"
+  case "$st" in
+    pass)  ok "$who 审核：通过" ;;
+    stale) bad "$who 的审核评论都早于当前 head，需要重审" ;;
+    none)  bad "没有「$who 审核：通过」评论" ;;
+    *)     bad "$who 最后一条审核评论不是通过：$(last_review "$who" | head -c 80 | head -n1)" ;;
+  esac
+}
+
+# 第一路：Codex，必须通过
+report_review Codex "$(review_state Codex)"
+
+# 第二路：Opus 或 Fable 其一通过；当前 head 上任一方写了「不通过」都拒绝
+opus=$(review_state Opus)
+fable=$(review_state Fable)
+if [ "$opus" = fail ]; then
+  report_review Opus fail
+elif [ "$fable" = fail ]; then
+  report_review Fable fail
+elif [ "$opus" = pass ]; then
+  report_review Opus pass
+elif [ "$fable" = pass ]; then
+  report_review Fable pass
+elif [ "$opus" = stale ] || [ "$fable" = stale ]; then
+  bad "Opus / Fable 的审核评论都早于当前 head，需要重审"
+else
+  bad "没有「Opus 审核：通过」或「Fable 审核：通过」评论"
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo "结论：不能合并"
