@@ -94,7 +94,7 @@ final class LoginModel {
             services.defaults.set(user, forKey: AuthDefaults.lastUsername)
             // 带着去的名字已经报上去了（重名时服务器会加序号，以响应为准）
             if pending != nil { services.pendingDeviceLabel = nil }
-            finish(try services.establish(grant, deviceId: deviceId, db: db))
+            finish(try await services.establish(grant, deviceId: deviceId, db: db))
         } catch let e as APIError {
             Self.logger.notice("登录没成功：\(String(describing: e), privacy: .public)")
             handle(e)
@@ -132,7 +132,7 @@ final class LoginModel {
         let deviceId = UUID()
         do {
             let grant = try await services.api.demoLogin(deviceId: deviceId)
-            finish(try services.establish(grant, deviceId: deviceId, db: db))
+            finish(try await services.establish(grant, deviceId: deviceId, db: db))
         } catch let e as APIError {
             switch e {
             case .transport: message = "连不上服务器，看看网络再试"
@@ -164,7 +164,7 @@ final class LoginModel {
         let deviceId = UUID()
         do {
             let grant = try await services.api.redeem(code: code, deviceId: deviceId)
-            let session = try services.establish(grant, deviceId: deviceId, db: db)
+            let session = try await services.establish(grant, deviceId: deviceId, db: db)
             scanOpen = false
             finish(session)
         } catch let e as APIError {

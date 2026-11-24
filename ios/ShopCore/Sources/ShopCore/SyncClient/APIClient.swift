@@ -155,6 +155,19 @@ public final class APIClient: Sendable {
         }
     }
 
+    /// `POST /v1/auth/logout`（S22b）：作废这个令牌，回 HTTP 状态（204 成功；401 = 令牌已经不认了）。
+    /// 退出登录先把 outbox 传完再调；没传完的推迟到恢复队列传完后用旧令牌调（§4.5）
+    public func logout(token: String) async throws -> Int {
+        var req = URLRequest(url: APIBase.url(bases.current, path: "/v1/auth/logout"), timeoutInterval: 15)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let resp: URLResponse
+        do { (_, resp) = try await session.data(for: req, delegate: NoRedirect.shared) } catch { throw APIError.transport(String(describing: error)) }
+        guard let http = resp as? HTTPURLResponse else { throw APIError.badResponse(0) }
+        if (300..<400).contains(http.statusCode) { throw APIError.redirected(http.statusCode) }
+        return http.statusCode
+    }
+
     func syncOnce(base: URL, body: Data, token: String) async throws -> (Int, Data) {
         var req = URLRequest(url: APIBase.url(base, path: "/v1/sync"), timeoutInterval: 30)
         req.httpMethod = "POST"

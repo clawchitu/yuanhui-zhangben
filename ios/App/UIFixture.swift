@@ -226,6 +226,9 @@ extension UIFixture {
             m.setLocked(until: d)
         }
         if value(for: "-uiLoginScreen", in: args) == "scan" { m.scanOpen = true }
+        // S22b 联调：登录页一出来就兑这个码（等同相机扫到），或点「看看演示」
+        if let code = value(for: "-uiRedeemCode", in: args) { Task { await m.scanned(code) } }
+        if args.contains("-uiDemoLogin") { Task { await m.demo() } }
     }
 
     enum DemoSeedIds {

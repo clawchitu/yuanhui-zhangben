@@ -107,9 +107,10 @@ public final class LocalDB: Sendable {
         try writer.write { db in
             if let old = try Self.currentSession(db) {
                 guard old.deviceId != s.deviceId else { throw invalid("设备 id 每次登录都要新生成（§3.1）") }
-                try db.execute(sql: "UPDATE session SET is_current = 0, retired_at = ? WHERE device_id = ?",
-                               arguments: [ts, old.deviceId.uuidString])
+                try Self.retireCurrent(db, at: ts)
+                _ = old
             }
+            try db.execute(sql: "DELETE FROM meta WHERE key = ?", arguments: [MetaKey.signedOutReason.rawValue])
             try Self.clearProjection(db)
             try db.execute(sql: """
                 INSERT INTO session (device_id, store_id, role, token_ref, store_name, device_label, is_current, created_at)
@@ -140,14 +141,31 @@ public final class LocalDB: Sendable {
     }
 
     /// 退出、被踢（没有新会话）：清投影，当前会话退役，outbox 不动。
-    public func endSession(at now: Date = Date()) throws {
+    /// S22b：`reason` 记下为什么退出（被踢进 25b / 25f，演示店重置回登录页）；`logoutPending` = 主动退出时 outbox 没传完，
+    /// `logout` 推迟到恢复队列传完再调；`revoked` = 服务器已经说这个会话被踢了（不用再调 `logout`）。
+    public func endSession(at now: Date = Date(), reason: SignOutReason? = nil, logoutPending: Bool = false,
+                           revoked: Bool = false) throws {
         try writer.write { db in
-            try db.execute(sql: "UPDATE session SET is_current = 0, retired_at = ? WHERE is_current = 1",
-                           arguments: [Op.formatTimestamp(now)])
+            try db.execute(sql: "UPDATE session SET logout_pending = ?, revoked = ? WHERE is_current = 1",
+                           arguments: [logoutPending, revoked])
+            try Self.retireCurrent(db, at: Op.formatTimestamp(now))
+            if let reason {
+                try db.execute(sql: "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                               arguments: [MetaKey.signedOutReason.rawValue, reason.rawValue])
+            }
             try Self.clearProjection(db)
         }
         try faultHook?(.afterIdentitySwitchBeforeCompact)
         try compactIfPossible()
+    }
+
+    /// 当前会话退役：先把它的 epoch 存进会话行（清投影会清掉 `server_epoch`，恢复队列用旧令牌上传还要带它）
+    static func retireCurrent(_ db: Database, at ts: String) throws {
+        try db.execute(sql: """
+            UPDATE session SET is_current = 0, retired_at = ?,
+              epoch = COALESCE((SELECT value FROM meta WHERE key = ?), epoch)
+            WHERE is_current = 1
+            """, arguments: [ts, MetaKey.serverEpoch.rawValue])
     }
 
     /// 清投影，并在同一个事务里记下「待压缩」

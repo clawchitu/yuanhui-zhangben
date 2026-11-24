@@ -89,6 +89,8 @@ struct AppRoot: View {
                     MainView(initialPath: initialPath).environment(model)
                 case .signedOut(let login):
                     LoginFlow(model: login)
+                case .kicked(let k):
+                    KickedView(model: k)
                 case .failed(let message):
                     StartupErrorView(message: message)
                 case .tokenUnavailable:
@@ -107,7 +109,23 @@ struct AppRoot: View {
                 #endif
             }
         }
-        .task { await services?.refreshConfig() }
+        .task {
+            await services?.refreshConfig()
+            await recoverSignedOut()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AppRoot.signedOut)) { note in
+            // S22b：被踢 / 演示店重置 / 退出登录：旧会话的同步停掉，进 25b / 25f 或登录页
+            guard let db = note.object as? LocalDB else { return }
+            if case .app(let model, _) = boot { model.sync?.stop() }
+            boot = AppRoot.afterSignOut(db: db, services: services)
+            Task { await recoverSignedOut() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AppRoot.showLogin)) { note in
+            guard let db = note.object as? LocalDB else { return }
+            let login = AppRoot.makeLogin(db: db, services: services)
+            login.scanOpen = (note.userInfo?["scan"] as? Bool) ?? false
+            boot = .signedOut(login)
+        }
         .onReceive(NotificationCenter.default.publisher(for: AppRoot.signedIn)) { note in
             // 登录成功：进新会话（还没做完首次进入，先到 16 / 16b）
             guard let db = note.object as? LocalDB, let session = note.userInfo?["session"] as? LocalSession else { return }
@@ -124,11 +142,30 @@ struct AppRoot: View {
     /// 回到前台要做的事
     @MainActor private func onReturnToForeground() async {
         if case .tokenUnavailable = boot { retryBoot() }
+        RecoveryRunner.requestProbe()   // 回前台：旧会话那家店换没换 epoch 再探一次
         await services?.refreshConfig()
+        await recoverSignedOut()
         if case .app(let model, _) = boot {
             model.sync?.kick()  // S22a：回前台同步一趟
             await model.reportPendingLabel()
         }
+    }
+
+    /// S22b：没有当前会话时（登录页、25b / 25f）也要传恢复队列：每次打开 App、回到前台都试一遍（§4.5）。
+    /// 有会话时由 `SyncCoordinator` 在每趟同步之前传
+    @MainActor private func recoverSignedOut() async {
+        guard let services else { return }
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-uiNoLaunchRecovery") { return }
+        #endif
+        let db: LocalDB
+        switch boot {
+        case .signedOut(let l): db = l.db
+        case .kicked(let k): db = k.db
+        default: return
+        }
+        _ = await RecoveryRunner.live(db: db, services: services).run()
+        if case .kicked(let k) = boot { k.refresh() }
     }
 
     /// 「重新登录」：结束本地会话（清投影、会话退役，outbox 不动——未传的账按 S22b 的退役会话补传，不丢），回登录页
@@ -152,6 +189,8 @@ struct AppRoot: View {
         case app(AppModel, [Route])
         /// 没有会话：登录页（13）
         case signedOut(LoginModel)
+        /// S22b：被踢了，25b（家用）/ 25f（收银员）
+        case kicked(KickedModel)
         case failed(String)
         /// 有会话，但钥匙串这会儿读不出来（例如重启后还没解锁）：会话不动，提示后重试（PR #35 Fable 可选 2）
         case tokenUnavailable
@@ -196,6 +235,13 @@ struct AppRoot: View {
             let boot = try liveBoot(directory: try storeDirectory(), tokens: tokens,
                                     defaults: services?.defaults ?? .standard, services: services)
             #if DEBUG
+            // S22b 联调：被踢页（25f）上带着要兑的码重开，等同点了「扫家里人给的码」再扫
+            if case .kicked(let k) = boot, UIFixture.value(for: "-uiRedeemCode", in: args) != nil {
+                try? k.db.clearSignOutReason()
+                let login = makeLogin(db: k.db, services: services)
+                UIFixture.applyLoginFixture(login, args: args)
+                return .signedOut(login)
+            }
             if case .signedOut(let login) = boot { UIFixture.applyLoginFixture(login, args: args) }
             #endif
             return boot
@@ -225,8 +271,29 @@ struct AppRoot: View {
             // 钥匙串里没有这个会话的令牌（重装、换机恢复）：不能当作已登录
             try db.endSession()
         }
-        return .signedOut(makeLogin(db: db, services: services))
+        return afterSignOut(db: db, services: services)
     }
+
+    /// 没有当前会话时进哪一页：被踢 → 25b / 25f（重启后也是）；演示店重置、退出登录 → 登录页
+    @MainActor static func afterSignOut(db: LocalDB, services: AppServices?) -> Boot {
+        switch try? db.signOutReason() {
+        case .kickedFamily?, .kickedCashier?:
+            let cashier = (try? db.signOutReason()) == .kickedCashier
+            return .kicked(KickedModel(db: db, cashier: cashier) {
+                NotificationCenter.default.post(name: AppRoot.showLogin, object: db, userInfo: ["scan": cashier])
+            })
+        case .demoReset?:
+            try? db.clearSignOutReason()
+            return .signedOut(makeLogin(db: db, services: services))
+        case nil:
+            return .signedOut(makeLogin(db: db, services: services))
+        }
+    }
+
+    /// 被踢 / 演示店重置 / 退出登录完成的通知（object 是本机库）
+    static let signedOut = Notification.Name("yh.signedOut")
+    /// 25b / 25f 点了按钮：进登录页（收银员直接开扫码）
+    static let showLogin = Notification.Name("yh.showLogin")
 
     /// 强杀验收「本地提交中途」：处理同步响应的事务里直接退出进程（只在 Debug 带 `-uiCrashAt midCommit` 时）
     static func crashHook(_ args: [String] = ProcessInfo.processInfo.arguments) -> (@Sendable (LocalDBFaultPoint) throws -> Void)? {
@@ -285,8 +352,10 @@ struct AppRoot: View {
         if args.contains("-uiInjectDemo") { try DemoSeed.install(into: db) }
         #endif
         if let services {
-            model.attach(SyncCoordinator.live(db: db, services: services, tokenRef: session.tokenRef,
-                                              crash: CrashPoint.from(ProcessInfo.processInfo.arguments)))
+            let sync = SyncCoordinator.live(db: db, services: services, tokenRef: session.tokenRef,
+                                            crash: CrashPoint.from(ProcessInfo.processInfo.arguments))
+            sync.onSignedOut = { NotificationCenter.default.post(name: AppRoot.signedOut, object: db) }
+            model.attach(sync)
         }
         Task { await model.reportPendingLabel() }
         return model

@@ -28,6 +28,8 @@ struct HomeFigures: Equatable, Sendable {
     var scannerConnected: Bool?
     /// 手机时钟和服务器差了几分钟（超过 5 分钟才有值，T5 的提醒条）
     var clockSkewMinutes: Int?
+    /// S22b：服务器拒收、还没点「知道了」的笔数（「N 笔没记上」提醒条；拒收的不再重试）
+    var rejectedCount = 0
 
     /// 设计稿 01 / 02 / 21a 上的数
     static let design = HomeFigures(pendingCount: 0, staleUnsyncedCount: 0, expiringCount: 3,
@@ -52,6 +54,8 @@ extension HomeFigures.LastRecord {
 /// 首页提醒条（25a）。规则：「没同步」在「快过期」上面。
 enum HomeReminder: Hashable, Sendable {
     case unsynced(Int)
+    /// S22b：服务器拒收的笔数（不再重试），点「知道了」收起
+    case rejected(Int)
     case expiring(Int)
     /// 手机时间不准（T5）：差了几分钟
     case clockOff(Int)
@@ -59,6 +63,7 @@ enum HomeReminder: Hashable, Sendable {
     /// 要显示哪些提醒、按什么顺序。快过期只给有「处理快过期」能力的手机（收银员没有黄条，S27）
     static func list(_ f: HomeFigures, capabilities: Capabilities) -> [HomeReminder] {
         var r: [HomeReminder] = []
+        if f.rejectedCount > 0 { r.append(.rejected(f.rejectedCount)) }
         if f.staleUnsyncedCount > 0 { r.append(.unsynced(f.staleUnsyncedCount)) }
         if let m = f.clockSkewMinutes { r.append(.clockOff(m)) }
         if f.expiringCount > 0, capabilities.has(.expiry) { r.append(.expiring(f.expiringCount)) }
@@ -170,6 +175,7 @@ final class AppModel {
         guard let st = sync?.status else { return }
         figures.pendingCount = st.pendingCount
         figures.staleUnsyncedCount = st.overdueCount
+        figures.rejectedCount = (try? db.rejectedUnseenCount()) ?? 0
         if let off = clockOffset, abs(off) >= Self.clockSkewThreshold {
             figures.clockSkewMinutes = Int((abs(off) / 60).rounded())
         } else {
@@ -249,5 +255,69 @@ final class AppModel {
             }
             return
         }
+    }
+
+    // MARK: - S22b 没记上、退出登录
+
+    /// 「N 笔没记上」点「知道了」
+    func acknowledgeRejected() {
+        try? db.acknowledgeRejected()
+        figures.rejectedCount = (try? db.rejectedUnseenCount()) ?? 0
+    }
+
+    enum LogoutOutcome: Equatable {
+        /// 传完了、令牌已注销
+        case done
+        /// 没传完（没网）：这几笔进恢复队列，联网后自动补传，传完才注销旧令牌
+        case pending(Int)
+        /// 排空时发现这台手机已经被踢：按被踢走（25b / 25f），没传完的留在恢复队列、旧令牌不删
+        case kicked
+    }
+
+    /// 退出登录（§4.5）：先把 outbox 传完，再调 `logout`；传不完（没网）就推迟 `logout`，未传的进恢复队列。
+    /// 两种都结束本地会话（清投影）。开写事务、压缩都在后台线程。
+    ///
+    /// PR #41 必须修 1：笔数按**这个会话**（设备 + 店）数，不按「当前会话」（排空中被踢，会话已退役，「当前」就是空的）；
+    /// 只要这个会话还有没拿到结果的 op，旧令牌一律不删；排空收到被踢就按被踢流程走，不调 logout。
+    func logout() async -> LogoutOutcome {
+        sync?.stop()
+        await sync?.idle()
+        let db = db, ref = session.tokenRef, deviceId = session.deviceId, storeId = session.storeId
+        var revoked = false
+        var drainError: Error?
+        if let sync {
+            sync.onSignedOut = nil
+            let engine = SyncEngine(db: db, appBuild: services?.build ?? 0, transport: sync.transportForDrain)
+            let r = await Task.detached(priority: .userInitiated) { () -> Error? in
+                do { try engine.sync(); return nil } catch { return error }
+            }.value
+            if case .revoked? = r as? SyncError { revoked = true }
+            drainError = r
+        }
+        if revoked {
+            if case .revoked(true)? = drainError as? SyncError { sync?.onDiscard?() }   // 演示店重置：令牌也删
+            // 会话已由引擎退役（原因 kicked_*，演示店重置则已丢弃）；剩下的用同一个旧令牌由恢复队列补传
+            if let recovery = sync?.recovery { _ = await recovery.run() }
+            return .kicked
+        }
+        let pending = (try? db.pendingCount(deviceId: deviceId, storeId: storeId)) ?? 1
+        var loggedOut = false
+        if pending == 0, let services, let token = try? services.tokens.token(ref: ref) {
+            #if DEBUG
+            let offline = ProcessInfo.processInfo.arguments.contains("-uiOffline")
+            #else
+            let offline = false
+            #endif
+            if !offline, let code = try? await services.api.logout(token: token), code == 204 || code == 200 || code == 401 {
+                loggedOut = true
+            }
+        }
+        _ = await Task.detached(priority: .userInitiated) { () -> Void in
+            try? db.endSession(logoutPending: !loggedOut)
+            // 注销成功也不删令牌、不删会话行：14 天保留期内的 op 换 epoch 后要用它重传；
+            // 统一由恢复队列在这个会话的 op 全部清掉后删（PR #41 第二轮必须修）
+            if loggedOut { try? db.markRetiredLoggedOut(deviceId: deviceId) }
+        }.value
+        return loggedOut ? .done : .pending(pending)
     }
 }

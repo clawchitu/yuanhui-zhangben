@@ -24,7 +24,7 @@ jobs:
   ios-ci:
     name: ios-ci
     runs-on: [self-hosted, macOS, yuanhui]
-    timeout-minutes: 45
+    timeout-minutes: 75   # S22b：测试约 40 分钟 + Release、Beta 检查各约 6 分钟，45 分钟不够（D-S22b-1）
     defaults:
       run:
         working-directory: ios

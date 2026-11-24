@@ -8,6 +8,7 @@ import { authRoutes } from "./routes/auth.ts";
 import { deviceRoutes } from "./routes/devices.ts";
 import { accountRoutes } from "./routes/account.ts";
 import { syncRoutes } from "./routes/sync.ts";
+import { heldRoutes } from "./routes/held.ts";
 import { reportRoutes } from "./routes/reports.ts";
 import { DEFAULT_PAGE_SIZE } from "./sync/pull.ts";
 import { Guard } from "./auth/guard.ts";
@@ -173,6 +174,7 @@ export function buildApp(input: AppDeps): FastifyInstance {
   app.register(deviceRoutes);
   app.register(accountRoutes);
   app.register(syncRoutes);
+  app.register(heldRoutes);
   app.register(reportRoutes);
   app.register(lookupRoutes);
   app.register(productImageRoutes);

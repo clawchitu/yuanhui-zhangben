@@ -1416,7 +1416,7 @@ S09 的 PR（#20）提了 16 条，Fable 审核裁定如下（按评论原文；
 | ~~T20~~ | ~~`deploy.sh` 跑迁移前检查最近一次备份心跳，营业时间内超过 2 小时没更新就拒绝，带一个明确的跳过开关~~ **已完成（PR #23）** | PR #22 Codex 4、Fable | S10b |
 | ~~T21~~ | ~~备份单独用一个 RAM 账号：`backups/` 只写不删，删除靠生命周期；35 天生命周期只作用于 `backups/` 前缀，`exports/`、`deletions/` 怎么过期单独定；确认两个桶没开版本控制~~ **已完成（PR #23）** | PR #22 Fable（S10a-6） | S10b |
 | T22 | S11b 探针把方案 B（包内 CA 锚点固定）一并实测，写明需要的 Info.plist 键值，不等 A 出问题再测 | PR #22 Fable（S10a-3） | S11b |
-| T23 | 换 epoch 后真手机补回：带保留 op 的测试手机恢复后拿到 `epoch_mismatch`、全量拉取、补回备份之后的流水（原 B7） | PR #23 Fable | S22b |
+| ~~T23~~ | 换 epoch 后真手机补回：带保留 op 的测试手机恢复后拿到 `epoch_mismatch`、全量拉取、补回备份之后的流水（原 B7） | PR #23 Fable | S22b（S22b 做完：`S22bLiveUITests.test8EpochChange` 本机 pg_dump → 再卖一笔 → pg_restore + 换 epoch → 手机握手、全量拉取、补回备份之后那笔，服务器不重复） |
 | T24 | 第一份备份满 36 天后看 `backup.ts status`：`lifecycle_stale` 为 false、最旧一份不超过 36 天；`exports/` 里没有超过 30 天的对象 | PR #23 Fable | 部署后第 36 天，最迟 S32 |
 | T25 | 隐私政策和注销页写明：注销后永久保留一条不含业务数据的删除记录（店的随机编号和时间）；导出包最长保留 30 天 | PR #23 Fable（S10b-4） | §10 |
 | T26 | 告警接上：`backup_failed`、`backup_lifecycle_stale`、`consecutive_failures ≥ 2`、备份被跳过（锁）、`gate-skips.log` 有新行、`restore_failed` | PR #23 Fable | S10c |
@@ -1428,6 +1428,10 @@ S09 的 PR（#20）提了 16 条，Fable 审核裁定如下（按评论原文；
 | T32 | PR #31 Fable 建议 5：最大辅助字号下 06b 的「算出来到期」要往下滚才看得到。记进货前滚进视野，或把算出的到期日并进「记好了」那句话 | PR #31 Fable | 同 T30 |
 | T34 | 活店换图（S22d 选图、拍照）后删旧对象失败只记日志 `image_discard_failed`，`images/<店>/` 下这些旧对象暂无清扫（店被注销清除时会按前缀一起删）。要不要加按「没有商品引用」定期清扫，待定 | S22d-server 方案③ | 待排 |
 | T33 | PR #31 Codex 建议：04b 进价填 0 直接保存，补上和进货页一样的 0 元二次确认，保留「没填」和「明确为 0」的区别 | PR #31 Codex | S25 商品编辑前 |
+| T34 | PR #41 Fable 可选 1：`SyncEngine` 构造时绑定会话的 deviceId，每轮和提交事务内核对（防旧引擎跨会话串店的理论窗口） | PR #41 Fable | S23a |
+| T35 | PR #41 Fable 可选 5：恢复队列遇 401（店已清除、设备行已删）永久留着，25b/25f 加「这些账已无法补传」的说明 | PR #41 Fable | S23a |
+| T36 | PR #41 Fable 可选 8、9：`relogin` / `liveBoot` / `clearLegacyDemo` 的 `endSession` 移出主线程，`relogin` 结束的会话推迟 logout；同步与恢复上传改专用队列，不阻塞协作线程池 | PR #41 Fable | S23a |
+| T37 | PR #41 Fable 可选 10：held「记上」不看原设备角色（被踢收银员构造的进货也能被家用记上）。待裁定：S23a 显示原角色，或服务端对原角色无权的类型令 `can_accept=false` | PR #41 Fable | S23a |
 
 T2 的 PR（#15）定了 4 条，Fable 审核裁定如下：
 

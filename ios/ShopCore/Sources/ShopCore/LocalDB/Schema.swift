@@ -216,6 +216,16 @@ enum LocalSchema {
                 );
                 """)
         }
+        // S22b：恢复队列用旧令牌上传要带旧会话自己的 epoch（换会话时 `server_epoch` 跟投影一起清掉）；
+        // 主动退出登录时 outbox 没传完，`logout` 推迟到恢复队列传完再调（§4.5）；服务器已确认这个会话被踢（不用再调 logout）
+        m.registerMigration("v5-identity") { db in
+            try db.execute(sql: """
+                ALTER TABLE session ADD COLUMN epoch TEXT;
+                ALTER TABLE session ADD COLUMN logout_pending INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE session ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE session ADD COLUMN logged_out INTEGER NOT NULL DEFAULT 0;
+                """)
+        }
         return m
     }
 
@@ -241,4 +251,12 @@ public enum MetaKey: String, Sendable {
     case catalogDone = "sync.catalog_done"
     /// S22a：账号注销期间（§14 S04-2），值是服务器给的 `delete_pending_until`
     case deletePendingUntil = "sync.delete_pending_until"
+    /// S22b：为什么没有当前会话（被踢 `kicked_family` / `kicked_cashier`，演示店重置 `demo_reset`）。启动时据此进 25b / 25f；
+    /// 开新会话时清掉。不属于投影
+    case signedOutReason = "identity.signed_out"
+    /// S22b：恢复队列被服务器拒收、还没让人看过的笔数（收银员会话下旧会话的 op 拿到结果就删，读不回 outbox，
+    /// 只能按当次响应记数，§8 S22b）。首页「N 笔没记上」点「知道了」清零。不属于投影
+    case recoveryRejectedUnseen = "recovery.rejected_unseen"
+    /// S22b：被拒 op 看到哪儿了（`confirmed_at`，首页「知道了」时记下）。不属于投影：换 epoch 后已点过「知道了」的不再冒出来
+    case rejectedSeenAt = "sync.rejected_seen_at"
 }
