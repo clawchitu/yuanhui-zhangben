@@ -112,6 +112,7 @@ final class PendingPanelTests: XCTestCase {
         try db.endSession()   // 旧会话没传完的进恢复队列
         try db.beginSession(try LocalSession(deviceId: UUID(), storeId: DemoSeed.storeId, role: .family, tokenRef: "t2",
                                              storeName: "元辉烟酒店", deviceLabel: "柜台手机"))
+        try DemoSeed.install(into: db)   // 结束会话清了投影
         try sell(db)
         let m = try model(db, delay: .zero)
         m.refreshPending()
@@ -268,6 +269,7 @@ final class PendingPanelTests: XCTestCase {
         try db.endSession()
         try db.beginSession(try LocalSession(deviceId: UUID(), storeId: DemoSeed.storeId, role: .family, tokenRef: "t2",
                                              storeName: "元辉烟酒店", deviceLabel: "柜台手机"))
+        try DemoSeed.install(into: db)   // 结束会话清了投影
         try sell(db); try sell(db)
         let m = try model(db, delay: .zero) { _ in throw APIError.transport("没网") }
         let out = await m.logout()
