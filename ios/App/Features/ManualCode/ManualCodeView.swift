@@ -174,7 +174,8 @@ struct ManualCodeView: View {
         let name = c.packQty > 1 ? "\(c.product.name) · \(c.unitLabel)" : c.product.name
         return Button { model.select(c) } label: {
             HStack(spacing: 14) {
-                Thumb(initial: ProductNaming.isPlaceholder(c.product.name) ? nil : c.product.name.first.map(String.init), size: 50)
+                Thumb(initial: ProductNaming.isPlaceholder(c.product.name) ? nil : c.product.name.first.map(String.init),
+                      ref: Thumb.ref(c.product), size: 50)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
                         .font(TypeScale.body.weight(.bold))

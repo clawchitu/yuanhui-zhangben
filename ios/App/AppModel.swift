@@ -262,6 +262,22 @@ final class AppModel {
 
     /// 网络服务（正常启动才有；夹具为 nil，改名只改本机）
     var services: AppServices?
+    /// S22c：商品图（正常启动才有；夹具带 Debug 的 `-uiImages` 才有）
+    var images: ProductImages?
+
+    /// 接上商品图：同步成功预取、epoch 重建清掉、开关跟 `/v1/config` 走
+    func attachImages(_ images: ProductImages) {
+        self.images = images
+        if let sync {
+            sync.onSynced = { [weak images] in images?.prefetch() }
+            sync.onRebuilt = { [weak images] in images?.reset() }
+        }
+        services?.onImagesSwitch = { [weak images] on in images?.setEnabled(on) }
+        if sync?.catalogDone ?? false { images.prefetch() }
+        #if DEBUG
+        if sync == nil, ProcessInfo.processInfo.arguments.contains("-uiImagesPrefetch") { images.prefetch() }
+        #endif
+    }
 
     /// 04a 查名称用哪个：正常启动问服务器（真机热修），夹具 / Debug 的 `-uiOffline` 用桩
     func nameLookup(offline: Bool) -> any ProductNameLookup {

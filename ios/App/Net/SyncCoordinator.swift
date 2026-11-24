@@ -45,6 +45,12 @@ final class SyncCoordinator {
     var recovery: RecoveryRunner?
     /// 演示店重置后删掉当前令牌
     var onDiscard: (() -> Void)?
+    /// S22c：同步在飞（下载器看它，在飞时不发新的图片请求）
+    nonisolated let busy = SyncBusyFlag()
+    /// S22c：一趟成功、商品流已拉完（预取商品图）
+    var onSynced: (() -> Void)?
+    /// S22c：这趟换了 epoch、投影重建（商品图缓存清掉重来）
+    var onRebuilt: (() -> Void)?
     /// 完成的趟数（测试看）
     private(set) var rounds = 0
 
@@ -147,6 +153,7 @@ final class SyncCoordinator {
         guard signedOut == nil else { return }
         if running { again = true; return }
         running = true
+        busy.value = true
         Task { await self.loop() }
     }
 
@@ -179,6 +186,7 @@ final class SyncCoordinator {
             await once()
         } while again && signedOut == nil
         running = false
+        busy.value = false
     }
 
     private func once() async {
@@ -188,7 +196,7 @@ final class SyncCoordinator {
             Task { @MainActor in self?.apply(p) }
         }
         let recovery = recovery
-        let result = await Task.detached(priority: .utility) { () -> Result<SyncStatus, Error> in
+        let outcome = await Task.detached(priority: .utility) { () -> (Result<SyncStatus, Error>, Bool) in
             // 恢复队列先传（兑码成功后第一次拉取之前也是这里），没网、传不完都不拦当前会话
             _ = recovery?.runBlocking()
             let r = Result { try engine.sync(progress: report) }
@@ -197,9 +205,11 @@ final class SyncCoordinator {
                 RecoveryRunner.requestProbe()
                 _ = recovery.runBlocking()
             }
-            return r
+            return (r, engine.handshakes > 0)
         }.value
+        let (result, rebuilt) = outcome
         rounds += 1
+        if rebuilt { onRebuilt?() }
         switch result {
         case .success: lastError = nil; lastFailure = nil
         case .failure(SyncError.epochMismatch(let e)):
@@ -222,6 +232,7 @@ final class SyncCoordinator {
             Self.logger.notice("同步没成功：\(String(describing: e), privacy: .public)")
         }
         refreshStatus()
+        if case .success = result, catalogDone { onSynced?() }
         onFinish?()
     }
 

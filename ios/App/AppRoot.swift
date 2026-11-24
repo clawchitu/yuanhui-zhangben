@@ -86,7 +86,7 @@ struct AppRoot: View {
                 case .gallery(let page):
                     ComponentGallery(page: page)
                 case .app(let model, let initialPath):
-                    MainView(initialPath: initialPath).environment(model)
+                    MainView(initialPath: initialPath).environment(model).environment(\.productImages, model.images)
                 case .signedOut(let login):
                     LoginFlow(model: login)
                 case .kicked(let k):
@@ -106,6 +106,7 @@ struct AppRoot: View {
                 }
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("-uiSyncProbe") { SyncProbe() }
+                if ProcessInfo.processInfo.arguments.contains("-uiFrameProbe"), case .app(let model, _) = boot { ImageProbe(images: model.images) }
                 #endif
             }
         }
@@ -116,7 +117,7 @@ struct AppRoot: View {
         .onReceive(NotificationCenter.default.publisher(for: AppRoot.signedOut)) { note in
             // S22b：被踢 / 演示店重置 / 退出登录：旧会话的同步停掉，进 25b / 25f 或登录页
             guard let db = note.object as? LocalDB else { return }
-            if case .app(let model, _) = boot { model.sync?.stop() }
+            if case .app(let model, _) = boot { model.sync?.stop(); model.images?.shutdown() }
             boot = AppRoot.afterSignOut(db: db, services: services)
             Task { await recoverSignedOut() }
         }
@@ -129,10 +130,16 @@ struct AppRoot: View {
         .onReceive(NotificationCenter.default.publisher(for: AppRoot.signedIn)) { note in
             // 登录成功：进新会话（还没做完首次进入，先到 16 / 16b）
             guard let db = note.object as? LocalDB, let session = note.userInfo?["session"] as? LocalSession else { return }
+            if case .app(let old, _) = boot { old.images?.shutdown() }   // 换身份：旧会话的图清掉
             do { boot = .app(try AppRoot.liveModel(db: db, session: session, services: services), []) }
             catch { boot = .failed(String(describing: error)) }
         }
         .onChange(of: scenePhase) { _, phase in
+            // S22c：进后台就停下载，回前台接着下（不用 background URLSession / BGTask）
+            if case .app(let model, _) = boot {
+                if phase == .background { model.images?.enterBackground() }
+                if phase == .active { model.images?.enterForeground() }
+            }
             // 回到前台（进过后台、又变成 active）：再取一次配置、补报没报上的手机名（§14 S15-2）
             guard foreground.shouldRefresh(on: phase) else { return }
             Task { await onReturnToForeground() }
@@ -173,6 +180,7 @@ struct AppRoot: View {
         do {
             let db = try LocalDB(path: try AppRoot.storeDirectory().appendingPathComponent(AppRoot.liveDBName).path)
             try db.endSession()
+            ProductImageDisk(storeId: UUID()).removeAll()   // 会话结束：商品图缓存整个删掉
             boot = .signedOut(AppRoot.makeLogin(db: db, services: services))
         } catch {
             boot = .failed(String(describing: error))
@@ -359,6 +367,8 @@ struct AppRoot: View {
                                             crash: CrashPoint.from(ProcessInfo.processInfo.arguments))
             sync.onSignedOut = { NotificationCenter.default.post(name: AppRoot.signedOut, object: db) }
             model.attach(sync)
+            let busy = sync.busy
+            model.attachImages(ProductImages.live(db: db, session: session, services: services, syncBusy: { busy.value }))
         }
         Task { await model.reportPendingLabel() }
         return model
@@ -416,6 +426,7 @@ struct AppRoot: View {
         }
         model.pendingReasonFixture = UIFixture.value(for: "-uiPendingReason", in: args).flatMap(PendingReason.init(rawValue:))
         if args.contains("-uiFirstSync") { model.firstSyncFixture = (194, 312) }  // 29 稿子上的数
+        if let images = try UIFixture.fixtureImages(db: db, session: session, args: args) { model.attachImages(images) }
         return model
     }
     #endif
@@ -458,6 +469,26 @@ private struct SyncProbe: View {
                 .accessibilityIdentifier("debug.sync")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        .allowsHitTesting(false)
+    }
+}
+#endif
+
+#if DEBUG
+/// 商品图探针（`-uiFrameProbe`）：卡顿（主线程两帧最长间隔）、屏幕上显示着真图的 Thumb 数。每 0.5 秒刷新，
+/// 读屏标签「frames=state;maxGapMs=N;frameCount=N;shown=N;enabled=0|1」
+private struct ImageProbe: View {
+    let images: ProductImages?
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+            let m = FrameMonitor.shared
+            let text = "frames=\(m.state);maxGapMs=\(m.maxGapMs);frameCount=\(m.frames);shown=\(images?.debugShown ?? -1);enabled=\(images?.enabled == true ? 1 : 0)"
+            Text(text)
+                .font(.system(size: 1)).foregroundStyle(.clear).frame(width: 1, height: 1)
+                .accessibilityLabel(text)
+                .accessibilityIdentifier("debug.images")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         .allowsHitTesting(false)
     }
 }

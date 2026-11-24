@@ -43,6 +43,8 @@ struct FakeScanner: Equatable, Sendable {
     @MainActor
     func run(into hub: ScanHub) async {
         try? await Task.sleep(for: .seconds(delay))
+        FrameMonitor.shared.begin()   // S22c 卡顿探针：从第一个码开始量
+        defer { FrameMonitor.shared.end() }
         for code in codes {
             switch source {
             case .gun:
