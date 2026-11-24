@@ -16,6 +16,7 @@ import ShopCore
 ///   -uiFreshInstall                              当作刚装好：清掉本机的字号选择和「首次进入做完了」
 ///   -uiScrollTo bottom                           首页打开后滚到底（截长页用）
 ///   -uiPriorSales N                              先记 N 笔卖出（03 顶栏「2 笔待传」）
+///   -uiOverdueSales N                            先记 N 笔前天的卖出（25a「N 笔待传，其中 N 笔超过一天」）
 ///   -uiPendingDelay [秒]                         顶栏待传的延迟（夹具默认 0；只写旗子 = 4 秒）
 ///   -uiPendingReason offline|network|unauthorized|other|deleting   「待传的账」面板当作这个原因
 ///   -uiLongName                                  多登记一个名字很长、单价很高的商品（码 6900000000017）

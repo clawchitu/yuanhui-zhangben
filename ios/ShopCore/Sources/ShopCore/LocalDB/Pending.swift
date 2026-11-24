@@ -180,7 +180,11 @@ extension LocalDB {
     static func pendingEntry(_ db: Database, _ r: Row) throws -> PendingEntry? {
         guard let type = OpType(rawValue: r["type"]), let at = parseTimestamp(r["occurred_at"]) else { return nil }
         let data: Data = r["op_json"]
-        guard let p = (try? JSONDecoder().decode(PanelOp.self, from: data))?.payload else { return nil }
+        // 读不懂内容也不丢这一行（否则列表少一行、「还有 N 笔」又算上它，数对不上）：只写时间和类型
+        guard let p = (try? JSONDecoder().decode(PanelOp.self, from: data))?.payload else {
+            return PendingEntry(id: r["seq"], occurredAt: at, type: type, names: [], quantity: nil, unitName: nil,
+                                amountFen: nil, priceOnlyEdit: false)
+        }
         func productName(_ id: String?) throws -> String? {
             guard let id = id.flatMap(UUID.init(uuidString:)) else { return nil }  // 本机表里是大写 uuidString
             return try String.fetchOne(db, sql: "SELECT name FROM product WHERE id = ?", arguments: [id.uuidString])

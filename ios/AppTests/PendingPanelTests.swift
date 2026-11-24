@@ -275,4 +275,16 @@ final class PendingPanelTests: XCTestCase {
         let out = await m.logout()
         XCTAssertEqual(out, .pending(3), "提示里的笔数和顶栏同口径（含恢复队列）")
     }
+
+    func testRetryGivesUpWaitingAfterMaximum() async throws {
+        let db = try db(), server = S22aTests.FakeServer()
+        server.delay = 1.5   // 网一直不回
+        let sync = SyncCoordinator(db: db, build: 1) { try server.handle($0) }
+        let t0 = ContinuousClock.now
+        await sync.retry(minimum: .milliseconds(100), maximum: .milliseconds(400))
+        XCTAssertLessThan(ContinuousClock.now - t0, .milliseconds(1200), "到上限就恢复按钮")
+        XCTAssertFalse(sync.retrying)
+        XCTAssertTrue(sync.running, "同步在后台接着跑")
+        await sync.idle()
+    }
 }

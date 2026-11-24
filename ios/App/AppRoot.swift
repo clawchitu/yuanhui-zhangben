@@ -379,8 +379,6 @@ struct AppRoot: View {
         var figures = HomeFigures.design
         if role == .cashier { figures.scannerConnected = false }  // 21b 稿子上是「没连」
         if screen == .home(unsynced: true) {
-            // 25a：5 笔超过一天的待传（真记在本机库里，点开「待传的账」看得到这 5 笔）
-            try UIFixture.installOverdueSales(5, into: db)
             figures.pendingCount = 5
             figures.livePendingCount = 5
             figures.staleUnsyncedCount = 5
@@ -392,7 +390,11 @@ struct AppRoot: View {
         default: break
         }
         try UIFixture.installSellExtras(into: db, args: args)
-        if args.contains("-uiPriorSales") {
+        // -uiOverdueSales N：真记 N 笔前天的卖出（25a 提醒条点开「待传的账」看得到这几笔）
+        if let n = UIFixture.value(for: "-uiOverdueSales", in: args).flatMap(Int.init), n > 0 {
+            try UIFixture.installOverdueSales(n, into: db)
+        }
+        if args.contains("-uiPriorSales") || args.contains("-uiOverdueSales") {
             let t = try db.pendingTally(now: UIFixture.designNow)
             figures.pendingCount = t.total; figures.livePendingCount = t.total; figures.staleUnsyncedCount = t.overdue
         }

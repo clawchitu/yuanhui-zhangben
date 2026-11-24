@@ -153,13 +153,16 @@ final class SyncCoordinator {
     /// 「再传一次」最少显示「正在传…」多久（太快一闪而过，老人看不清点没点上）
     static let retryMinimum: Duration = .seconds(1)
 
-    /// 「待传的账」面板的「再传一次」：马上来一趟，等它跑完；「正在传…」至少停 `retryMinimum`
-    func retry(minimum: Duration = SyncCoordinator.retryMinimum) async {
+    /// 「正在传…」最多停多久：网一直不回时按钮先恢复，同步在后台接着跑（PR #45 Opus 可选 3）
+    static let retryMaximum: Duration = .seconds(10)
+
+    /// 「待传的账」面板的「再传一次」：马上来一趟，等它跑完；「正在传…」至少停 `retryMinimum`、最多 `retryMaximum`
+    func retry(minimum: Duration = SyncCoordinator.retryMinimum, maximum: Duration = SyncCoordinator.retryMaximum) async {
         guard !retrying else { return }
         retrying = true
         let start = ContinuousClock.now
         kick()
-        await idle()
+        while running && ContinuousClock.now - start < maximum { try? await Task.sleep(for: .milliseconds(20)) }
         let left = minimum - (ContinuousClock.now - start)
         if left > .zero { try? await Task.sleep(for: left) }
         retrying = false

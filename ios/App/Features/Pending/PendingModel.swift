@@ -67,12 +67,18 @@ final class PendingModel {
 
     var now: Date { clock() }
 
+    /// 第几次重读：后发的先回来时，先发的那次旧结果不覆盖新的
+    private var generation = 0
+
     /// 重读（库在后台线程读，不卡主线程）
     func reload() async {
+        generation += 1
+        let mine = generation
         let db = db, now = clock()
         let o = await Task.detached(priority: .userInitiated) { try? db.pendingOverview(now: now) }.value
         loads += 1
-        if let o { overview = o }
+        guard mine == generation, let o else { return }
+        overview = o
     }
 
     /// 「再传一次」：马上同步一趟，「正在传…」至少停 1 秒，传完重读

@@ -1,7 +1,7 @@
 import XCTest
 
 /// 「待传的账」面板（PR #45，Fable 裁定 2–9、12）。要在 iPhone SE（第 3 代）和 iPhone 16 Pro 上各跑一遍；
-/// 每条测试里默认字号、最大辅助字号都跑。夹具：-uiPriorSales N 先记 N 笔没传的卖出，home-unsynced 是 5 笔前天的
+/// 每条测试里默认字号、最大辅助字号都跑。夹具：-uiPriorSales N 先记 N 笔没传的卖出，-uiOverdueSales N 记 N 笔前天的
 @MainActor
 final class PendingPanelUITests: XCTestCase {
     static let maxAX = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
@@ -111,10 +111,10 @@ final class PendingPanelUITests: XCTestCase {
         }
     }
 
-    /// 25a 提醒条「N 笔待传，其中 M 笔超过一天」点了开面板；前天的写「11月17日 19:48」这样
+    /// 25a 提醒条「N 笔待传，其中 M 笔超过一天」点了开面板；前天的写「11月17日 19:48」这样（-uiOverdueSales 真记 5 笔前天的）
     func testBannerOpensPanelWithOlderDates() {
         for ax in [false, true] {
-            let app = launch(["-uiFixture", "home-unsynced"], ax: ax)
+            let app = launch(["-uiFixture", "home", "-uiOverdueSales", "5"], ax: ax)
             let c = ctx(app, ax)
             let banner = app.buttons["home.banner.unsynced"]
             XCTAssertTrue(banner.waitForExistence(timeout: 5), c)
