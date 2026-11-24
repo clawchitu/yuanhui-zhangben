@@ -119,7 +119,7 @@ final class S18UITests: XCTestCase {
         let app = launch(["-uiRole", "cashier", "-uiScan", Self.cashierCode])
         XCTAssertFalse(el(app, "newProduct.more").exists, "收银员没有第二步")
         XCTAssertFalse(el(app, "newProduct.pack").exists, "收银员不能挂整件码")
-        let name = app.textFields["newProduct.name"]
+        let name = el(app, "newProduct.name")
         name.tap()
         name.typeText("白象 老母鸡汤面\n")
         el(app, "newProduct.price").tap()

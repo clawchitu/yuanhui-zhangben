@@ -338,7 +338,7 @@ struct StockInView: View {
             // 大字 / 最大辅助字号下商品卡会滚出首屏：蓝卡顶上带一行商品名，填钱时看得见是哪一样（PR #31 Fable 建议 1，同 S18-3）
             if typeSize >= .xxxLarge, let p = model.product {
                 Text(p.name).font(TypeScale.secondary.weight(.semibold)).foregroundStyle(Tokens.Palette.ink2)
-                    .lineLimit(1).truncationMode(.middle)
+                    .lineLimit(2).truncationMode(.middle)
                     .accessibilityIdentifier("stockIn.cardName")
             }
             HStack(alignment: .lastTextBaseline) {

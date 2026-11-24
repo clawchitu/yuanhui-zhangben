@@ -93,22 +93,11 @@ struct NewProductView: View {
                         packButton
                     }
                     label(model.nameLabel)
-                    HStack(spacing: 12) {
+                    // 名称框多行：长名自动换行，首字头像与框顶对齐（真机 11/24：单行把「农夫山泉 饮用天然水 550…」截掉了）
+                    HStack(alignment: .top, spacing: 12) {
                         Thumb(initial: initial, size: 64, fill: Tokens.Palette.line.opacity(0.6))
                             .overlay { if initial == nil { Text("?").font(.system(size: 34, weight: .bold)).foregroundStyle(Tokens.Palette.ink2) } }
-                        TextField("", text: $model.name, prompt: Text("看包装写一下").foregroundStyle(Tokens.Palette.mute))
-                            .font(.system(size: 28, weight: .bold))
-                            .foregroundStyle(Tokens.Palette.ink)
-                            .tint(model.mode.color)
-                            .focused($nameFocused)
-                            .submitLabel(.done)
-                            .onSubmit { model.submitName() }
-                            .autocorrectionDisabled()
-                            .padding(.horizontal, 16)
-                            .frame(minHeight: 64)
-                            .background(Tokens.Palette.card, in: RoundedRectangle(cornerRadius: Tokens.Radius.card))
-                            .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(Tokens.Palette.line, lineWidth: 2))
-                            .accessibilityIdentifier("newProduct.name")
+                        nameBox
                     }
                     // 名称末尾像条码：提示单独在名称框下面，名称一改就清；人点了才去掉（PR #31 Codex 1、Fable 建议 4）
                     if let n = model.nameScanNotice {
@@ -154,6 +143,52 @@ struct NewProductView: View {
             }
             basicButtons
         }
+    }
+
+    /// 名称框行数：显示时最多 3 行（再长才省略），编辑时随内容增高到 4 行，之后框内滚动
+    static let nameDisplayLines = 3
+    static let nameEditLines = 4
+
+    /// 名称框：竖向 TextField 负责编辑；没在编辑时字设成透明，上面盖一层最多 3 行、超出才省略的 Text，
+    /// 两者同字号同宽、行数上限相同，框高一致。TextField 一直在层级里，点框任何地方都进编辑，焦点不丢。
+    private var nameBox: some View {
+        let font = Font.system(size: 28, weight: .bold)
+        return TextField("", text: $model.name, prompt: Text("看包装写一下").foregroundStyle(Tokens.Palette.mute), axis: .vertical)
+            .font(font)
+            .lineLimit(1...(nameFocused ? Self.nameEditLines : Self.nameDisplayLines))
+            .foregroundStyle(nameFocused || model.name.isEmpty ? Tokens.Palette.ink : Color.clear)
+            .tint(model.mode.color)
+            .focused($nameFocused)
+            .submitLabel(.done)
+            .onSubmit { model.submitName() }
+            // 竖向 TextField 回车会插入换行：名称里不留换行，回车（含扫码枪的回车）照旧当「写好了」
+            .onChange(of: model.name) { _, v in
+                guard v.contains(where: \.isNewline) else { return }
+                model.name = v.filter { !$0.isNewline }
+                nameFocused = false
+                model.submitName()
+            }
+            .autocorrectionDisabled()
+            .overlay(alignment: .topLeading) {
+                if !nameFocused && !model.name.isEmpty {
+                    Text(model.name)
+                        .font(font)
+                        .foregroundStyle(Tokens.Palette.ink)
+                        .lineLimit(Self.nameDisplayLines)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+            .background(Tokens.Palette.card, in: RoundedRectangle(cornerRadius: Tokens.Radius.card))
+            .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(Tokens.Palette.line, lineWidth: 2))
+            .contentShape(Rectangle())
+            .onTapGesture { nameFocused = true }
+            .accessibilityIdentifier("newProduct.name")
     }
 
     private var initial: String? {
