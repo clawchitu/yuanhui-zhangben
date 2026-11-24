@@ -463,4 +463,36 @@ final class EventLog: @unchecked Sendable {
         let on = #"{"min_build":1,"demo_login_enabled":false,"privacy_url":"p","support_url":"s","product_images_enabled":true}"#
         #expect(try JSONDecoder().decode(RemoteConfig.self, from: Data(on.utf8)).imagesEnabled == true)
     }
+
+    /// 商品图总量超过磁盘上限：被淘汰的那几张同一个进程里不再预取（老人用手机流量，不反复重下）
+    @Test func evictedImagesAreNotPrefetchedAgain() async throws {
+        let l = loader(limit: 500)   // 每张约 206 字节，最多留 2 张
+        let want = keys(5)
+        await l.prefetch(want)
+        try await settle(l)
+        #expect(ImageStubProtocol.requests.count == 5)
+        #expect(l.disk.keys().count <= 2)
+        #expect(await l.evictedCount >= 3)
+        await l.prefetch(want)
+        try await settle(l)
+        await l.prefetch(want)
+        try await settle(l)
+        #expect(ImageStubProtocol.requests.count == 5, "淘汰掉的不再重下")
+        // 屏幕上要看被淘汰的那张，仍按需下
+        let gone = want.first { !l.disk.has($0) }!
+        await l.request(gone)
+        try await settle(l)
+        #expect(ImageStubProtocol.requests.count == 6)
+        #expect(l.disk.has(gone))
+    }
+
+    /// 冷启动时开关已关（或演示店）：当前店的旧缓存也整个删掉（T11）
+    @Test func startWhenDisabledRemovesEverything() async throws {
+        let l = loader(enabled: false)
+        try l.disk.write(ImageFixtures.jpeg, for: ImageKey(uuid(2), 1))
+        await l.start()
+        #expect(l.disk.keys().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+        #expect(ImageStubProtocol.requests.isEmpty)
+    }
 }

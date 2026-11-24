@@ -233,6 +233,7 @@ final class S22cTests: XCTestCase {
 
     /// 会话结束（退出、被踢、换身份）、epoch 重建：清内存、删整目录
     func testShutdownAndResetEmptyCache() async throws {
+        S22cStub.imageStatus = 404   // reset 之后会接着预取一轮；这里只看删目录，不让预取写回来
         let imgs = images(try db(.family))
         let k = ImageKey(UIFixture.DemoSeedIds.water, 1)
         try imgs.loader.disk.write(S22cStub.jpeg, for: k)
@@ -244,6 +245,22 @@ final class S22cTests: XCTestCase {
         imgs.shutdown()
         await waitUntil("会话结束：目录删掉") { !FileManager.default.fileExists(atPath: self.root.path) }
         do { let v = await imgs.load(k); XCTAssertNil(v) }
+    }
+
+    /// epoch 重建：删完目录后自己接着预取一轮（两步串在一起，不等下一趟同步）
+    func testResetThenPrefetches() async throws {
+        let db = try db(.family)
+        let imgs = images(db)
+        let k = ImageKey(UIFixture.DemoSeedIds.water, 1)
+        try imgs.loader.disk.write(S22cStub.jpeg, for: k)
+        do { let v = await imgs.load(k); XCTAssertNotNil(v) }
+        XCTAssertTrue(S22cStub.imageRequests.isEmpty)
+        imgs.reset()
+        XCTAssertNil(imgs.cached(k))
+        let wants = try db.imageWants().count
+        await waitUntil("重建后预取全部") { imgs.loader.disk.keys().count == wants }
+        XCTAssertEqual(S22cStub.imageRequests.count, wants, "旧目录删掉后整轮重下，没有和删除交错丢图")
+        XCTAssertLessThanOrEqual(S22cStub.maxConcurrent, 2)
     }
 
     /// 登录时记下是不是演示店

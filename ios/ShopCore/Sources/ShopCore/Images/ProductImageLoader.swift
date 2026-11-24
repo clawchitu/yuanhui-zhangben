@@ -17,14 +17,14 @@ import os
 public actor ProductImageLoader {
     public struct Policy: Sendable {
         public var concurrency = 2
-        public var requestTimeout: TimeInterval = 20
-        public var resourceTimeout: TimeInterval = 30
+        public var requestTimeout = 20   // 秒（ShopCore 不许出现浮点类型，NoFloatTests）
+        public var resourceTimeout = 30   // 秒
         public var maxBytes = 256 * 1024
         /// 单张退避（秒）：第 1、2、3 次及以后
-        public var itemBackoff: [TimeInterval] = [60, 300, 1800]
+        public var itemBackoff = [60, 300, 1800]   // 秒
         public var queueFailureLimit = 3
-        public var queuePauseBase: TimeInterval = 60
-        public var queuePauseMax: TimeInterval = 1800
+        public var queuePauseBase = 60   // 秒
+        public var queuePauseMax = 1800   // 秒
         public var prefetch404Limit = 5
         /// 同步在飞 / 整队暂停时多久看一次
         public var pollInterval: Duration = .milliseconds(100)
@@ -67,6 +67,8 @@ public actor ProductImageLoader {
     private var workers: [Int: Task<Void, Never>] = [:]
     private var nextWorker = 0
     private var missing: Set<ImageKey> = []
+    /// 因为磁盘容量被淘汰掉的图：同一个进程里不再预取（商品图超过 100 MB 时不反复重下、不白耗流量）；屏幕上要看时仍按需下
+    private var evicted: Set<ImageKey> = []
     private var backoff: [ImageKey: (fails: Int, until: Date)] = [:]
     private var consecutiveFailures = 0
     private var pauseLevel = 0
@@ -112,8 +114,8 @@ public actor ProductImageLoader {
         c.httpCookieStorage = nil
         c.httpShouldSetCookies = false
         c.httpMaximumConnectionsPerHost = policy.concurrency
-        c.timeoutIntervalForRequest = policy.requestTimeout
-        c.timeoutIntervalForResource = policy.resourceTimeout
+        c.timeoutIntervalForRequest = .init(policy.requestTimeout)
+        c.timeoutIntervalForResource = .init(policy.resourceTimeout)
         c.waitsForConnectivity = false
         return URLSession(configuration: c, delegate: APIClient.NoRedirect.shared, delegateQueue: nil)
     }
@@ -132,7 +134,10 @@ public actor ProductImageLoader {
     // MARK: - 对外
 
     /// 启动时：删不是当前店的子目录
-    public func start() { disk.removeOtherStores() }
+    /// 启动：开关关着（或演示店）就删整个缓存目录（T11：冷启动时开关已关，当前店的旧图也不能留）；开着只删不是当前店的子目录
+    public func start() {
+        if enabled { disk.removeOtherStores() } else { disk.removeAll() }
+    }
 
     /// 同步成功（商品流已拉完）、或开关 false→true 之后：把缺图的全排上（不设上限），清掉不在商品表里的文件。
     /// 也是 401 之后恢复的时机（同步成功说明令牌还认）
@@ -142,7 +147,7 @@ public actor ProductImageLoader {
         prefetch404Run = 0
         disk.prune(keeping: Set(wants.map(\.productId)))
         let present = Set(disk.keys())
-        for k in wants where !present.contains(k) && eligible(k) && !queue.contains(where: { $0.key == k }) {
+        for k in wants where !present.contains(k) && !evicted.contains(k) && eligible(k) && !queue.contains(where: { $0.key == k }) {
             queue.append(Item(key: k, origin: .prefetch))
         }
         pump()
@@ -174,6 +179,7 @@ public actor ProductImageLoader {
         queue.removeAll()
         inFlightKeys.removeAll()
         missing.removeAll()
+        evicted.removeAll()
         backoff.removeAll()
         consecutiveFailures = 0; pauseLevel = 0; pausedUntil = nil
         prefetch404Run = 0
@@ -211,7 +217,7 @@ public actor ProductImageLoader {
     public func prime(_ data: Data, productId: UUID, ver: Int) {
         let k = ImageKey(productId, ver)
         guard enabled, ver > 0, data.count <= policy.maxBytes, validate(data) else { return }
-        do { try disk.write(data, for: k); missing.remove(k); onEvent(.stored(k)) } catch {
+        do { stored(k, evicting: try disk.write(data, for: k)); missing.remove(k); onEvent(.stored(k)) } catch {
             Self.logger.notice("图片写盘失败：\(String(describing: error), privacy: .public)")
         }
     }
@@ -221,6 +227,18 @@ public actor ProductImageLoader {
     public var idle: Bool { workers.isEmpty && (queue.isEmpty || !runnable) }
 
     // MARK: - 内部
+
+    private func stored(_ k: ImageKey, evicting gone: [ImageKey]) {
+        evicted.remove(k)
+        guard !gone.isEmpty else { return }
+        evicted.formUnion(gone)
+        let drop = Set(gone)
+        queue.removeAll { $0.origin == .prefetch && drop.contains($0.key) }
+        Self.logger.notice("缓存超过上限，淘汰 \(gone.count) 张，本进程不再预取它们")
+    }
+
+    /// 测试看：因为容量被淘汰、本进程不再预取的
+    public var evictedCount: Int { evicted.count }
 
     private func eligible(_ k: ImageKey) -> Bool {
         if missing.contains(k) || inFlightKeys.contains(k) { return false }
@@ -262,7 +280,7 @@ public actor ProductImageLoader {
 
     private func fetch(_ item: Item, token tok: String, generation gen: Int) async {
         let k = item.key
-        var req = URLRequest(url: Self.url(base: base(), key: k), timeoutInterval: policy.requestTimeout)
+        var req = URLRequest(url: Self.url(base: base(), key: k), timeoutInterval: .init(policy.requestTimeout))
         req.httpMethod = "GET"
         req.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
         req.setValue("image/jpeg", forHTTPHeaderField: "Accept")
@@ -301,7 +319,7 @@ public actor ProductImageLoader {
                     return
                 }
                 do {
-                    try disk.write(data, for: k)
+                    stored(k, evicting: try disk.write(data, for: k))
                 } catch {
                     Self.logger.notice("图片写盘失败：\(String(describing: error), privacy: .public)")
                     return
@@ -338,14 +356,14 @@ public actor ProductImageLoader {
     private func failed(_ k: ImageKey, why: String) {
         let fails = (backoff[k]?.fails ?? 0) + 1
         let wait = policy.itemBackoff[min(fails, policy.itemBackoff.count) - 1]
-        backoff[k] = (fails, now().addingTimeInterval(wait))
+        backoff[k] = (fails, now().addingTimeInterval(.init(wait)))
         consecutiveFailures += 1
         Self.logger.notice("图片没下成（\(why, privacy: .public)），\(Int(wait)) 秒后再试")
         if consecutiveFailures >= policy.queueFailureLimit {
-            let pause = min(policy.queuePauseBase * pow(2, Double(pauseLevel)), policy.queuePauseMax)
+            let pause = min(policy.queuePauseBase * (1 << min(pauseLevel, 20)), policy.queuePauseMax)
             pauseLevel += 1
             consecutiveFailures = 0
-            pausedUntil = now().addingTimeInterval(pause)
+            pausedUntil = now().addingTimeInterval(.init(pause))
             Self.logger.notice("连续失败，整队暂停 \(Int(pause)) 秒")
         }
     }

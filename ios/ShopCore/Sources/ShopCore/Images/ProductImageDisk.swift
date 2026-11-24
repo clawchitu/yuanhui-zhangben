@@ -71,8 +71,9 @@ public final class ProductImageDisk: Sendable {
         }
     }
 
-    /// 原子写入，然后删这个商品的其他版本，再按上限淘汰
-    public func write(_ data: Data, for k: ImageKey) throws {
+    /// 原子写入，然后删这个商品的其他版本，再按上限淘汰；返回因为容量被淘汰掉的图
+    @discardableResult
+    public func write(_ data: Data, for k: ImageKey) throws -> [ImageKey] {
         try lock.withLock {
             try fm.createDirectory(at: directory, withIntermediateDirectories: true)
             #if os(iOS)
@@ -83,25 +84,28 @@ public final class ProductImageDisk: Sendable {
             for o in unlockedKeys() where o.productId == k.productId && o != k {
                 try? fm.removeItem(at: file(o))
             }
-            evict(keeping: k)
+            return evict(keeping: k)
         }
     }
 
     /// 超过上限：按修改时间从旧到新删，刚写的那张不删
-    private func evict(keeping k: ImageKey) {
+    private func evict(keeping k: ImageKey) -> [ImageKey] {
         let urls = ((try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey])) ?? [])
         var items = urls.map { u -> (URL, Int, Date) in
             let v = try? u.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             return (u, v?.fileSize ?? 0, v?.contentModificationDate ?? .distantPast)
         }
         var total = items.reduce(0) { $0 + $1.1 }
-        guard total > limitBytes else { return }
+        guard total > limitBytes else { return [] }
         items.sort { $0.2 < $1.2 }
         let keep = file(k).lastPathComponent
+        var gone: [ImageKey] = []
         for (u, size, _) in items where total > limitBytes && u.lastPathComponent != keep {
             try? fm.removeItem(at: u)
             total -= size
+            if let e = ImageKey(fileName: u.lastPathComponent) { gone.append(e) }
         }
+        return gone
     }
 
     /// 只留这些商品的图（每轮预取后：不在当前商品表、已归档、`image_ver` 变 0 的都删）

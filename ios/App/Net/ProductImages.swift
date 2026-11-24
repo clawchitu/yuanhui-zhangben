@@ -54,7 +54,7 @@ final class ProductImages {
                                     syncBusy: syncBusy, validate: Self.decodes, onEvent: { e in relay.forward(e) })
         relay.target = self
         let loader = loader
-        Task { await loader.start() }   // 删不是当前店的子目录
+        Task { await loader.start() }   // 开关开着：删不是当前店的子目录；关着：整个缓存目录删掉
     }
 
     /// 下载器的事件转回主线程（下载器建好之前 self 还没有，先建个中转）
@@ -126,11 +126,14 @@ final class ProductImages {
         }
     }
 
-    /// epoch 重建（同一个会话、投影重来）：取消、清内存、删整目录；下一趟同步成功后重新预取
+    /// epoch 重建（同一个会话、投影重来）：取消、清内存、删整目录，删完接着预取一轮（两步串在一个任务里，不和新下载交错）
     func reset() {
         clearMemory()
         let loader = loader
-        Task { await loader.reset() }
+        Task {
+            await loader.reset()
+            self.prefetch()
+        }
     }
 
     /// 会话结束（退出、被踢、换身份、换店）：取消、清内存、删整目录，之后不再做任何事
