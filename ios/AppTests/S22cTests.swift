@@ -28,7 +28,7 @@ final class S22cStub: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         let url = request.url!
         Self.lock.withLock { Self.log.append(request); Self.concurrent += 1; Self.maxConcurrent = max(Self.maxConcurrent, Self.concurrent) }
-        let finish: (Int, [String: String], Data) -> Void = { [self] status, headers, body in
+        let finish: @Sendable (Int, [String: String], Data) -> Void = { [self] status, headers, body in
             Self.lock.withLock { Self.concurrent -= 1 }
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!,
                                 cacheStoragePolicy: .notAllowed)

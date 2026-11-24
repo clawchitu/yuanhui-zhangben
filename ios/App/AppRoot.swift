@@ -180,7 +180,7 @@ struct AppRoot: View {
         do {
             let db = try LocalDB(path: try AppRoot.storeDirectory().appendingPathComponent(AppRoot.liveDBName).path)
             try db.endSession()
-            ProductImageDisk(storeId: UUID()).removeAll()   // 会话结束：商品图缓存整个删掉
+            Task.detached(priority: .utility) { ProductImageDisk(storeId: UUID()).removeAll() }   // 会话结束：商品图缓存整个删掉（不在主线程）
             boot = .signedOut(AppRoot.makeLogin(db: db, services: services))
         } catch {
             boot = .failed(String(describing: error))

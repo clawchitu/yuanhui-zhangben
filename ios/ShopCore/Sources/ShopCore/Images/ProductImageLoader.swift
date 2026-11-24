@@ -45,6 +45,8 @@ public actor ProductImageLoader {
     enum Outcome: Sendable {
         case response(status: Int, data: Data, contentType: String?, etag: String?)
         case transport
+        /// 低数据模式拦下了预取的请求（`allowsConstrainedNetworkAccess = false`）：不算失败，停本轮预取
+        case constrained
         case cancelled
     }
 
@@ -282,6 +284,9 @@ public actor ProductImageLoader {
         switch outcome {
         case .cancelled:
             return
+        case .constrained:
+            Self.logger.notice("低数据模式：停本轮预取")
+            queue.removeAll { $0.origin == .prefetch }
         case .transport:
             failed(k, why: "transport")
         case let .response(status, data, type, etag):
@@ -367,6 +372,7 @@ public actor ProductImageLoader {
             await withCheckedContinuation { (cont: CheckedContinuation<Outcome, Never>) in
                 let t = session.dataTask(with: req) { data, resp, err in
                     if let e = err as? URLError, e.code == .cancelled { cont.resume(returning: .cancelled); return }
+                    if let e = err as? URLError, e.networkUnavailableReason == .constrained { cont.resume(returning: .constrained); return }
                     guard err == nil, let http = resp as? HTTPURLResponse else { cont.resume(returning: .transport); return }
                     cont.resume(returning: .response(status: http.statusCode, data: data ?? Data(),
                                                      contentType: http.value(forHTTPHeaderField: "Content-Type"),
