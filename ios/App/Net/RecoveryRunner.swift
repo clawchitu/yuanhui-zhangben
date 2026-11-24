@@ -10,7 +10,11 @@ final class RecoveryRunner: @unchecked Sendable {
     /// 保证兑码后第一次拉取之前恢复队列确实传过一遍
     private static let lock = NSLock()
     /// 本进程探过旧会话的 epoch 了（只在持锁时读写）
-    nonisolated(unsafe) private static var probed = false
+    /// 「要探 epoch」用单独的小锁和代数，绝不和整趟上传共用那把锁（PR #41 第三轮必须修：回前台在主线程调 `requestProbe`，
+    /// 等整趟锁会在弱网下卡住主线程）。`requestProbe` 只把代数加一；`runBlocking` 开始时记下代数，探成功了才把这一代记为已探
+    private static let flagLock = NSLock()
+    nonisolated(unsafe) private static var probeGeneration = 1
+    nonisolated(unsafe) private static var probedGeneration = 0
     static let logger = Logger(subsystem: "cn.yuanhuishop.zhangben", category: "recovery")
 
     init(uploader: RecoveryUploader) { self.uploader = uploader }
@@ -43,10 +47,12 @@ final class RecoveryRunner: @unchecked Sendable {
         Self.lock.lock()
         defer { Self.lock.unlock() }
         // 启动、回前台、当前会话刚握手换了 epoch 时探一下旧会话那家店换没换 epoch（§4.6）；没探成（5xx、没网）下趟再探
-        let probe = !Self.probed
+        let gen = Self.flagLock.withLock { Self.probeGeneration }
+        let probe = Self.flagLock.withLock { Self.probedGeneration != gen }
         do {
             let r = try uploader.run(probeEpochs: probe)
-            if probe && !r.probeIncomplete { Self.probed = true }
+            // 跑到一半又来了请求（代数变了）：不覆盖，下趟再探
+            if probe && !r.probeIncomplete { Self.flagLock.withLock { Self.probedGeneration = max(Self.probedGeneration, gen) } }
             return r
         } catch {
             Self.logger.notice("恢复队列这趟没传完：\(String(describing: error), privacy: .public)")
@@ -55,7 +61,13 @@ final class RecoveryRunner: @unchecked Sendable {
     }
 
     /// 下一趟恢复上传要探 epoch（回前台、当前会话握手之后）
-    static func requestProbe() { lock.lock(); probed = false; lock.unlock() }
+    /// 主线程可调：只动小锁、立即返回，探测在下一趟恢复上传里做
+    static func requestProbe() { flagLock.withLock { probeGeneration += 1 } }
+
+    /// 测试用：在后台占住整趟锁一段时间
+    static func holdRunLockForTesting(_ seconds: TimeInterval) {
+        lock.lock(); Thread.sleep(forTimeInterval: seconds); lock.unlock()
+    }
 
     /// 在后台跑一趟
     func run() async -> RecoveryReport? {

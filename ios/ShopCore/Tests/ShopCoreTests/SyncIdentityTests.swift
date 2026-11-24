@@ -311,8 +311,10 @@ final class SyncIdentityTests: XCTestCase, @unchecked Sendable {
             switch call {
             case .logout: logouts.value += 1; return (204, Data())
             case .sync(let t, let req):
+                // 服务器现在的 epoch：换之前是 A，换之后是 B；带的不一样就 409
                 let e = self.body(req)["epoch"] as? String
-                if sent.value.isEmpty == false || e == self.epochB.uuidString.lowercased() || e == self.epochA.uuidString.lowercased() && serverB.value == false {
+                let current = (serverB.value ? self.epochB : self.epochA).uuidString.lowercased()
+                if e == current {
                     sent.value.append((t, self.opIds(req)))
                     return (200, try self.response(req, epoch: serverB.value ? self.epochB : self.epochA))
                 }
@@ -390,5 +392,30 @@ final class SyncIdentityTests: XCTestCase, @unchecked Sendable {
         try tokens.save("token-A", ref: "tA")
         XCTAssertTrue(try up.run(probeEpochs: true).probeIncomplete)
         XCTAssertEqual(try db.recoveryPendingCount(), 0)
+    }
+
+    /// 探测遇到演示店重置：这家店的 op 丢掉，同店所有退役会话的令牌都删，不留孤立令牌
+    func testProbeDiscardDeletesAllTokensOfStore() throws {
+        let db = try makeDB()
+        try sell(db)
+        try SyncEngine(db: db, appBuild: 1) { req in (200, try self.response(req, epoch: self.epochA)) }.sync()
+        try db.endSession(revoked: true)
+        // 同一家店（本机店 id 相同）的另一个退役会话
+        try db.writer.write { d in
+            try d.execute(sql: """
+                INSERT INTO session (device_id, store_id, role, token_ref, store_name, device_label, is_current, created_at, retired_at)
+                VALUES (?, ?, 'family', 'tA2', '店', '手机', 0, '2026-11-20T00:00:00.000+08:00', '2026-11-21T00:00:00.000+08:00')
+                """, arguments: [uuid(9).uuidString, storeA.uuidString])
+        }
+        let tokens = MemoryTokenStore(); try tokens.save("token-A", ref: "tA"); try tokens.save("token-A2", ref: "tA2")
+        let up = RecoveryUploader(db: db, tokens: tokens, appBuild: 1) { call in
+            guard case .sync(_, let req) = call else { return (204, Data()) }
+            return (200, try self.response(req, epoch: self.epochA, revoked: true, discard: true))
+        }
+        let r = try up.run(probeEpochs: true)
+        XCTAssertTrue(r.discarded)
+        XCTAssertTrue(try db.allOutbox().isEmpty)
+        XCTAssertNil(try tokens.token(ref: "tA"))
+        XCTAssertNil(try tokens.token(ref: "tA2"), "同店的孤立令牌也删")
     }
 }

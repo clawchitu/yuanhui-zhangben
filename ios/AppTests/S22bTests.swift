@@ -233,6 +233,20 @@ final class S22bTests: XCTestCase {
         XCTAssertEqual(try tokens.token(ref: "tNow"), "token-old", "保留期没过，令牌还留着")
     }
 
+    /// PR #41 第三轮必须修：恢复上传整趟持锁（弱网下最长约 30 秒）时，主线程调 `requestProbe` 立即返回，不等锁
+    func testRequestProbeDoesNotWaitForRunLock() throws {
+        let started = DispatchSemaphore(value: 0)
+        Thread.detachNewThread { started.signal(); RecoveryRunner.holdRunLockForTesting(2) }
+        started.wait()
+        Thread.sleep(forTimeInterval: 0.1)   // 确保后台线程已经拿到锁
+        let t0 = Date()
+        RecoveryRunner.requestProbe()
+        let ms = Date().timeIntervalSince(t0) * 1000
+        XCTAssertTrue(Thread.isMainThread)
+        XCTAssertLessThan(ms, 50, "主线程耗时 \(ms) ms")
+        Thread.sleep(forTimeInterval: 2)     // 等后台放锁，别影响后面的测试
+    }
+
     func testRejectedReminderAndAck() throws {
         let db = try db(.family)
         try sell(db)

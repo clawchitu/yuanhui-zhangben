@@ -218,10 +218,15 @@ extension LocalDB {
     }
 
     /// 演示小店重置（`discard_outbox = true`，§4.5）：丢弃这家店的 outbox 和恢复队列，不重放。
-    public func discardOutbox(storeId: UUID) throws {
+    /// 返回被删掉的退役会话的令牌引用：调用方把钥匙串里的这些令牌一并删掉，不留孤立令牌（PR #41 第三轮 Codex 可选）
+    @discardableResult
+    public func discardOutbox(storeId: UUID) throws -> [String] {
         try writer.write { db in
             try db.execute(sql: "DELETE FROM outbox WHERE store_id = ?", arguments: [storeId.uuidString])
+            let refs = try String.fetchAll(db, sql: "SELECT token_ref FROM session WHERE store_id = ? AND is_current = 0",
+                                           arguments: [storeId.uuidString])
             try db.execute(sql: "DELETE FROM session WHERE store_id = ? AND is_current = 0", arguments: [storeId.uuidString])
+            return refs
         }
     }
 

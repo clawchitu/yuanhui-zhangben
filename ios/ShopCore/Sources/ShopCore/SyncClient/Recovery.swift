@@ -42,6 +42,8 @@ public final class RecoveryUploader: Sendable {
     let tokens: any TokenStore
     let appBuild: Int
     let send: Send
+    /// 探测这趟里有店因演示重置被丢弃（只在 `run` 的同一线程里读写）
+    nonisolated(unsafe) private var discarded = false
 
     public init(db: LocalDB, tokens: any TokenStore, appBuild: Int, send: @escaping Send) {
         self.db = db; self.tokens = tokens; self.appBuild = appBuild; self.send = send
@@ -57,7 +59,10 @@ public final class RecoveryUploader: Sendable {
         // 补做没做成的压缩（只跑恢复上传、没有当前会话时也要做，§3.4）；14 天到期的已确认 op 清掉（§4.6）
         do { try db.compactIfNeeded() } catch LocalDBError.compactionBusy {}
         try db.purgeConfirmed()
-        if probeEpochs { report.probeIncomplete = try !probe() }
+        if probeEpochs {
+            report.probeIncomplete = try !probe()
+            if discarded { report.discarded = true }
+        }
         for g in try db.recoveryQueue() {
             try upload(g, report: &report, maxRounds: maxRounds)
         }
@@ -86,7 +91,7 @@ public final class RecoveryUploader: Sendable {
             guard code == 200 else { return }  // 401（旧令牌不认了）、5xx：这组先停
             let r = try SyncResponse.decode(data)
             if r.device.discardOutbox == true {
-                try db.discardOutbox(storeId: g.storeId)
+                for ref in try db.discardOutbox(storeId: g.storeId) { tokens.delete(ref: ref) }
                 tokens.delete(ref: g.tokenRef)
                 report.discarded = true
                 return
@@ -114,6 +119,7 @@ public final class RecoveryUploader: Sendable {
     @discardableResult
     func probe() throws -> Bool {
         var complete = true
+        discarded = false
         for r in try db.retiredSessionsWithRetainedOps() {
             // 钥匙串里没有令牌的不重标：重标了也传不上去，只会让库存多算、「N 笔没传」不归零
             guard let token = try tokens.token(ref: r.session.tokenRef) else { continue }
@@ -124,8 +130,9 @@ public final class RecoveryUploader: Sendable {
                 try db.resetRetiredForEpoch(deviceId: r.session.deviceId, e)
             } else if code == 200, let resp = try? SyncResponse.decode(data), resp.device.discardOutbox == true {
                 // 演示店重置：这家店的 op 和令牌都丢掉（PR #41 第二轮 Codex 可选）
-                try db.discardOutbox(storeId: r.session.storeId)
+                for ref in try db.discardOutbox(storeId: r.session.storeId) { tokens.delete(ref: ref) }
                 tokens.delete(ref: r.session.tokenRef)
+                discarded = true
             } else if code != 200 && code != 401 {
                 complete = false
             }

@@ -203,10 +203,8 @@ extension LocalDB {
     public func resetForEpoch(_ epoch: UUID) throws -> Int {
         let n = try writer.write { db -> Int in
             let s = try Self.requireSession(db)
-            let oldEpoch = try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [MetaKey.serverEpoch.rawValue])
             try Self.clearProjection(db)
             // 退役会话保留的 op 不在这里重标：由恢复队列握手后当趟探测（只探钥匙串里还有令牌的会话，PR #41 第二轮 Fable ①）
-            _ = oldEpoch
             try db.execute(sql: "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                            arguments: [MetaKey.serverEpoch.rawValue, epoch.uuidString.lowercased()])
             try db.execute(sql: """
