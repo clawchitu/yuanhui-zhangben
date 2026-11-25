@@ -3,10 +3,10 @@ import os
 import ShopCore
 import UIKit
 
-/// 一次待发的换图（S22d）：选了一张候选图（`select`），或拍了一张照片（`photo`，S22d 第二个 PR）。
-/// 同一个商品只留最后一次（文件名就是商品 id）。
+/// 一次待发的换图（S22d）：选了一张候选图（`select`），或拍了 / 从相册选了一张照片（`photo`，PUT 上传）。
+/// 同一个商品只留最后一次（文件名就是商品 id）：先选图后拍照，只发照片。
 struct PendingImage: Codable, Equatable, Sendable {
-    enum Kind: String, Codable, Sendable { case select }
+    enum Kind: String, Codable, Sendable { case select, photo }
     var kind: Kind
     var productId: UUID
     /// select：商品的单件码和候选 id（服务器按「条码挂在这个商品上、候选 ready」判）
@@ -17,8 +17,8 @@ struct PendingImage: Codable, Equatable, Sendable {
     var notFound = 0
 }
 
-/// 待发换图的本机暂存（S22d，Fable 方案 5）：`Application Support/pending-images/<店>/<商品>.json`，
-/// 附带的图片字节（选图：候选缩图，成功后 prime 用）存同名 `.jpg`。先写临时文件再改名；json 最后写，有 json 才算一条。
+/// 待发换图的本机暂存（S22d，Fable 方案 5）：`Application Support/pending-images/<店>/<商品>.json`；
+/// 要上传的照片（≤ 400 KB）存同名 `.jpg`，200px 预览（选图：候选缩图本身；照片：本机缩的一份；成功后 prime 用）存 `.thumb.jpg`。先写临时文件再改名；json 最后写，有 json 才算一条。
 /// 不进账本库（不动迁移，出错碰不到账）；不放 Caches（系统会清）。按会话的店分目录，会话结束整个目录删掉。
 /// 方法都是同步文件操作：只在后台线程调。
 final class PendingImageStore: Sendable {
@@ -42,15 +42,17 @@ final class PendingImageStore: Sendable {
     var dir: URL { root.appendingPathComponent(storeId.uuidString.lowercased(), isDirectory: true) }
     private func json(_ id: UUID) -> URL { dir.appendingPathComponent("\(id.uuidString.lowercased()).json") }
     private func jpg(_ id: UUID) -> URL { dir.appendingPathComponent("\(id.uuidString.lowercased()).jpg") }
+    private func thumb(_ id: UUID) -> URL { dir.appendingPathComponent("\(id.uuidString.lowercased()).thumb.jpg") }
 
     private static let encoder: JSONEncoder = { let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e }()
     private static let decoder: JSONDecoder = { let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d }()
 
-    /// 存一条（同一商品覆盖）。先写图片再写 json
-    func put(_ item: PendingImage, payload: Data?) throws {
+    /// 存一条（同一商品覆盖）。先写图片再写 json。`payload`：要上传的照片；`preview`：200px 预览
+    func put(_ item: PendingImage, payload: Data? = nil, preview: Data? = nil) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         if let payload { try Self.atomicWrite(payload, to: jpg(item.productId)) } else { try? fm.removeItem(at: jpg(item.productId)) }
+        if let preview { try Self.atomicWrite(preview, to: thumb(item.productId)) } else { try? fm.removeItem(at: thumb(item.productId)) }
         try Self.atomicWrite(try Self.encoder.encode(item), to: json(item.productId))
         try trim()
     }
@@ -78,10 +80,12 @@ final class PendingImageStore: Sendable {
     }
 
     func payload(_ id: UUID) -> Data? { try? Data(contentsOf: jpg(id)) }
+    func preview(_ id: UUID) -> Data? { try? Data(contentsOf: thumb(id)) }
 
     func remove(_ id: UUID) {
         try? FileManager.default.removeItem(at: json(id))
         try? FileManager.default.removeItem(at: jpg(id))
+        try? FileManager.default.removeItem(at: thumb(id))
     }
 
     /// 这家店的全部删掉（会话结束）
@@ -125,9 +129,10 @@ actor ImageUploader {
         let gate: @Sendable (UUID) -> ImageGate
         let token: @Sendable () -> String?
         let select: @Sendable (_ productId: UUID, _ barcode: String, _ cid: String, _ token: String) async throws -> Int
+        let upload: @Sendable (_ productId: UUID, _ jpeg: Data, _ token: String) async throws -> Int
         /// 开关开着、这个会话还能换图
         let enabled: @Sendable () async -> Bool
-        /// 一条发成功了：商品、新版本、附带的图片字节
+        /// 一条发成功了：商品、新版本、200px 预览（prime 用）
         let succeeded: @Sendable (UUID, Int, Data?) async -> Void
         /// 有要等登记确认的：踢一趟同步
         let needSync: @Sendable () async -> Void
@@ -154,9 +159,9 @@ actor ImageUploader {
     func stop() { stopped = true }
 
     /// 存一条再发一趟。写盘和「停住、全删」都在这个 actor 里串行做：会话结束之后迟到的暂存不会再把目录写回来
-    func enqueue(_ item: PendingImage, payload: Data?) async {
+    func enqueue(_ item: PendingImage, payload: Data?, preview: Data?) async {
         guard !stopped else { return }
-        do { try deps.store.put(item, payload: payload) } catch {
+        do { try deps.store.put(item, payload: payload, preview: preview) } catch {
             Self.logger.notice("换图暂存没写上：\(String(describing: error), privacy: .public)")
         }
         await flush(kickIfWaiting: true)
@@ -196,9 +201,9 @@ actor ImageUploader {
             }
             switch await send(item) {
             case .sent(let ver):
-                let payload = deps.store.payload(item.productId)
+                let preview = deps.store.preview(item.productId)
                 deps.store.remove(item.productId)
-                await deps.succeeded(item.productId, ver, payload)
+                await deps.succeeded(item.productId, ver, preview)
             case .keep: continue
             case .drop: await drop(item)
             case .notFound:
@@ -224,6 +229,11 @@ actor ImageUploader {
             case .select:
                 guard let code = item.barcode, let cid = item.candidateId else { return .drop }
                 return .sent(try await deps.select(item.productId, code, cid, token))
+            case .photo:
+                // 照片文件丢了或不像 JPEG、超了上限：发不出去，丢掉（不挡后面的）
+                guard let jpeg = deps.store.payload(item.productId), jpeg.count <= APIClient.uploadMaxBytes,
+                      ProductImageLoader.looksLikeJPEG(jpeg) else { return .drop }
+                return .sent(try await deps.upload(item.productId, jpeg, token))
             }
         } catch let e as APIError {
             switch e {
@@ -273,6 +283,7 @@ final class ImageChanges {
         uploader = ImageUploader(.init(
             store: store, gate: gate, token: token,
             select: { try await api.selectImage(productId: $0, barcode: $1, candidateId: $2, token: $3) },
+            upload: { try await api.uploadImage(productId: $0, jpeg: $1, token: $2) },
             enabled: { await relay.enabled() },
             succeeded: { id, ver, data in await relay.succeeded(id, ver, data) },
             needSync: { await relay.needSync() },
@@ -305,7 +316,7 @@ final class ImageChanges {
         let store = store
         Task.detached(priority: .utility) { [weak self] in
             store.removeOtherStores()
-            let previews = store.all().compactMap { i in store.payload(i.productId).flatMap(UIImage.init(data:)).map { (i.productId, $0) } }
+            let previews = store.all().compactMap { i in store.preview(i.productId).flatMap(UIImage.init(data:)).map { (i.productId, $0) } }
             await self?.restore(previews)
             await self?.flush()
         }
@@ -320,8 +331,19 @@ final class ImageChanges {
         guard !stopped else { return }
         if let thumbnail, let img = UIImage(data: thumbnail) { images?.setPreview(img, productId: productId) }
         let item = PendingImage(kind: .select, productId: productId, barcode: barcode, candidateId: candidateId, createdAt: Date())
+        enqueue(item, payload: nil, preview: thumbnail)
+    }
+
+    /// 拍了 / 从相册选了一张照片（已压好：上传件 ≤ 400 KB，预览 200px）：暂存、显示预览、去发。「重新拍照」就是再来一次
+    func upload(productId: UUID, photo: CompressedPhoto) {
+        guard !stopped else { return }
+        if let img = UIImage(data: photo.preview) { images?.setPreview(img, productId: productId) }
+        enqueue(PendingImage(kind: .photo, productId: productId, createdAt: Date()), payload: photo.upload, preview: photo.preview)
+    }
+
+    private func enqueue(_ item: PendingImage, payload: Data?, preview: Data?) {
         let uploader = uploader
-        Task.detached(priority: .userInitiated) { await uploader.enqueue(item, payload: thumbnail) }
+        Task.detached(priority: .userInitiated) { await uploader.enqueue(item, payload: payload, preview: preview) }
     }
 
     /// 同步成功之后、会话建立时：发一趟（不踢同步）

@@ -72,14 +72,15 @@ struct NewProductView: View {
             case .more: more
             case .image:
                 if let imageChoice {
-                    ImageChoiceView(choice: imageChoice, mode: model.mode, onUse: { useImage($0) }, onSkip: { skipImage() })
+                    ImageChoiceView(choice: imageChoice, mode: model.mode, onUse: { useImage($0) }, onPhoto: { usePhoto($0) },
+                                    onSkip: { skipImage() })
                 }
             }
         }
         .background(Tokens.Palette.paper.ignoresSafeArea())
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(pageId)
-        // 第三步在等候选：候选定了只剩 0 张或 1 张就不再问（1 张直接用），自己往下走
+        // 第三步在等候选：候选定了只剩 1 张就直接用、自己往下走；0 张留在这一页提示拍照
         .onChange(of: imageChoice?.settled) { _, _ in if model.step == .image { decideImage() } }
         .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(isPresented: $showPack) {
@@ -115,7 +116,7 @@ struct NewProductView: View {
 
     // MARK: 第三步：商品图（S22d）
 
-    /// 存好了：开关开着、有候选就问选哪张；只有 1 张直接用；没有就照常交回
+    /// 存好了：开关开着就进第三步——有两张以上候选让人选；只有 1 张直接用；没有就提示拍照（可跳过）
     private func finish(_ outcome: RegistrationOutcome) {
         guard imageChoice != nil, case .registered = outcome else { onDone(outcome); return }
         registered = outcome
@@ -128,8 +129,15 @@ struct NewProductView: View {
         guard let outcome = registered, let choice = imageChoice else { return }
         guard choice.settled else { model.step = .image; return }
         let usable = choice.usable
-        if usable.count >= 2 { model.step = .image; return }
-        if let only = usable.first { choose(only, for: outcome) }
+        guard usable.count == 1 else { model.step = .image; return }
+        choose(usable[0], for: outcome)
+        registered = nil
+        onDone(outcome)
+    }
+
+    private func usePhoto(_ photo: CompressedPhoto) {
+        guard let outcome = registered else { return }
+        changes?.upload(productId: outcome.conversion.product.id, photo: photo)
         registered = nil
         onDone(outcome)
     }

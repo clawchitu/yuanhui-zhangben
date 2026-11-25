@@ -20,6 +20,8 @@ struct StockInView: View {
     @State private var hub = ScanHub(feedback: ScanFeedback.shared)
     @State private var torchOn = false
     @State private var showManual = false
+    /// S22d：商品卡上点了商品图，换图的页
+    @State private var replaceImage = false
     @State private var fedFixture = false
     private let fixture: SellFixture
 
@@ -29,7 +31,7 @@ struct StockInView: View {
         self.fixture = fixture
     }
 
-    private var covered: Bool { showManual || model.registerCode != nil || model.confirmZeroCost || model.confirmDate }
+    private var covered: Bool { showManual || model.registerCode != nil || model.confirmZeroCost || model.confirmDate || replaceImage }
 
     /// 商品卡在、还没确认：相机区压暗、相机来的码不收（扫码页布局方案第 4 条；扫码枪、手输照常换商品）
     private var holding: Bool { model.conversion != nil }
@@ -80,6 +82,11 @@ struct StockInView: View {
                            suggestedProduct: nil, fixture: fixture.newProduct,
                            changes: app.imageChanges) { outcome in
                 model.finishRegistration(outcome)
+            }
+        }
+        .sheet(isPresented: $replaceImage) {
+            if let conv = model.conversion, let changes = app.imageChanges {
+                ReplaceImageSheet(productId: conv.product.id, barcode: conv.barcode.barcode, changes: changes)
             }
         }
         .alert("进价是 0 元，确定吗？", isPresented: Binding(get: { model.confirmZeroCost },
@@ -263,8 +270,7 @@ struct StockInView: View {
 
     private var productCard: some View {
         HStack(alignment: .top, spacing: 14) {
-            Thumb(initial: model.product.flatMap { ProductNaming.isPlaceholder($0.name) ? nil : $0.name.first.map(String.init) },
-                  ref: Thumb.ref(model.product), size: 64)
+            productThumb
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.product?.name ?? "").font(.system(size: 26, weight: .bold)).foregroundStyle(Tokens.Palette.ink)
                     .fixedSize(horizontal: false, vertical: true)
@@ -289,6 +295,28 @@ struct StockInView: View {
         .padding(14)
         .background(Tokens.Palette.card, in: RoundedRectangle(cornerRadius: Tokens.Radius.card))
         .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(Tokens.Palette.ink, lineWidth: 2.5))
+    }
+
+    /// 商品图：家用、开关开着时点一下换图（重新选、重新拍、从相册选，S22d）；右下角一个小相机
+    @ViewBuilder private var productThumb: some View {
+        let thumb = Thumb(initial: model.product.flatMap { ProductNaming.isPlaceholder($0.name) ? nil : $0.name.first.map(String.init) },
+                          ref: Thumb.ref(model.product), size: 64)
+        if app.imageChanges != nil, model.conversion != nil {
+            Button { replaceImage = true } label: {
+                thumb.overlay(alignment: .bottomTrailing) {
+                    Image(systemName: "camera.circle.fill")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(.white, Tokens.Palette.stock)
+                        .offset(x: 6, y: 6)
+                }
+                .frame(minWidth: Tokens.Size.minHitTarget, minHeight: Tokens.Size.minHitTarget)
+            }
+            .buttonStyle(PressDimStyle())
+            .accessibilityLabel("换商品图")
+            .accessibilityIdentifier("stockIn.image")
+        } else {
+            thumb
+        }
     }
 
     private var fields: some View {

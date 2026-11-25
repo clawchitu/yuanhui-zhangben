@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import Network
 import UIKit
 import XCTest
@@ -37,10 +38,10 @@ final class S22dUITests: XCTestCase {
     private func idle(_ s: TimeInterval) { RunLoop.current.run(until: Date().addingTimeInterval(s)) }
 
     private func launch(route: String = "sell", role: String = "family", confirmAfter: Int? = 3, off: Bool = false,
-                        extra: [String] = []) -> XCUIApplication {
+                        scan: String = S22dUITests.code, extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         var args = ["-uiFixture", "home", "-uiRole", role, "-uiLargeText", "on", "-uiProbe", "-uiFrameProbe", "-uiRoute", route,
-                    "-uiScan", Self.code, "-uiImages", "http://localhost:\(stub.port)"]
+                    "-uiScan", scan, "-uiImages", "http://localhost:\(stub.port)"]
         if let confirmAfter { args += ["-uiConfirmUpsert", String(confirmAfter)] }
         if off { args.append("-uiImagesOff") }
         app.launchArguments = args + extra
@@ -134,14 +135,14 @@ final class S22dUITests: XCTestCase {
         wait("select 第一张") { self.stub.requests(method: "POST").count == 1 }
     }
 
-    /// A3：一直 pending，8 秒到了也没有一张：不再问，自己回卖出页，一个 select 都不发；轮询不超过 8 秒
+    /// A3：一直 pending，8 秒到了也没有一张：不再问，转成「这个商品还没有图」提示拍照，一个 select 都不发；轮询不超过 8 秒
     func testPendingTimesOut() {
         stub.lookup = #"{"found":true,"name":"\#(Self.name)","has_image":true,"image_candidates":{"state":"pending","ids":[]}}"#
         stub.states = [#"{"state":"pending","ids":[]}"#]
         let app = launch()
         let start = Date()
         register(app)
-        wait("8 秒后自己回卖出页", timeout: 20) { self.el(app, "page.sell").exists && !self.el(app, "page.newProductImage").exists }
+        wait("8 秒后转成提示拍照", timeout: 20) { self.el(app, "imageChoice.prompt").exists && !self.el(app, "imageChoice.searching").exists }
         idle(3)
         let polls = stub.requests(method: "GET").filter { $0.path.hasSuffix("/images") }
         XCTAssertGreaterThan(polls.count, 3)
@@ -234,13 +235,13 @@ final class S22dUITests: XCTestCase {
     func testLayoutSixCandidates() {
         readyLookup(Self.cids)
         for ax in [false, true] {
-            let app = launch(confirmAfter: nil, extra: ax ? Self.maxAX : [])
+            let app = launch(confirmAfter: nil, extra: ["-uiFakeCamera"] + (ax ? Self.maxAX : []))
             register(app)
             XCTAssertTrue(el(app, "page.newProductImage").waitForExistence(timeout: 10))
             wait("六张都到了") { el(app, "imageChoice.option.0").exists && self.stub.candidateFetches.count >= 6 }
             let window = app.windows.firstMatch.frame
-            for id in ["imageChoice.use", "imageChoice.skip"] {
-                let b = app.buttons[id]
+            for id in ["imageChoice.use", "imageChoice.skip", "photo.camera", "photo.album"] {
+                let b = el(app, id)
                 XCTAssertTrue(b.isHittable, "ax=\(ax) \(id) 点得到")
                 XCTAssertTrue(window.contains(b.frame), "ax=\(ax) \(id) 在屏幕内 \(b.frame)")
                 XCTAssertGreaterThanOrEqual(b.frame.height, 44, "ax=\(ax) \(id) 不低于 44pt")
@@ -256,6 +257,165 @@ final class S22dUITests: XCTestCase {
             XCTAssertTrue(last.isSelected)
             app.buttons["imageChoice.use"].tap()
             XCTAssertTrue(el(app, "page.sell").waitForExistence(timeout: 5))
+            app.terminate()
+        }
+    }
+
+    // MARK: 拍照、相册（S22d ②）
+
+    /// 上传件合不合规格：JPEG、≤ 400 KB、长边 ≤ 1024、方向烘进像素（没有 EXIF 方向）。返回像素宽高
+    private func checkUpload(_ body: Data, file: StaticString = #filePath, line: UInt = #line) -> CGSize {
+        XCTAssertTrue(body.count > 3 && body[0] == 0xFF && body[1] == 0xD8, "是 JPEG", file: file, line: line)
+        XCTAssertLessThanOrEqual(body.count, 400 * 1024, "不超过 400 KB（\(body.count)）", file: file, line: line)
+        guard let src = CGImageSourceCreateWithData(body as CFData, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else { XCTFail("解不开", file: file, line: line); return .zero }
+        let w = (props[kCGImagePropertyPixelWidth] as? Int) ?? 0, h = (props[kCGImagePropertyPixelHeight] as? Int) ?? 0
+        XCTAssertLessThanOrEqual(max(w, h), 1024, "长边 ≤ 1024（\(w)×\(h)）", file: file, line: line)
+        XCTAssertGreaterThan(min(w, h), 0)
+        XCTAssertEqual((props[kCGImagePropertyOrientation] as? Int) ?? 1, 1, "方向已烘进像素", file: file, line: line)
+        XCTAssertNil(props[kCGImagePropertyGPSDictionary], "不带 GPS", file: file, line: line)
+        return CGSize(width: w, height: h)
+    }
+
+    private func shoot(_ app: XCUIApplication) {
+        let camera = app.buttons["photo.camera"]
+        XCTAssertTrue(camera.waitForExistence(timeout: 5), "有「拍一张」")
+        XCTAssertTrue(camera.isHittable)
+        camera.tap()
+        let shutter = app.buttons["fakeCamera.shutter"]
+        XCTAssertTrue(shutter.waitForExistence(timeout: 5), "打开相机")
+        shutter.tap()
+    }
+
+    /// A4 / A5：没有候选 → 第三步提示「这个商品还没有图」→ 拍一张（假相机，真点快门）→ 回卖出页；登记确认后 PUT 一次，
+    /// 上传件是竖着拍的 4032×3024 压出来的 768×1024 JPEG、≤ 400 KB；不发 select
+    func testNoCandidatesPromptsAndUploadsPhoto() throws {
+        readyLookup([])
+        let app = launch(confirmAfter: 2, extra: ["-uiFakeCamera"])
+        register(app)
+        XCTAssertTrue(el(app, "page.newProductImage").waitForExistence(timeout: 10), "没图也进第三步")
+        XCTAssertEqual(el(app, "imageChoice.title").label, "这个商品还没有图")
+        XCTAssertFalse(el(app, "imageChoice.use").exists, "没有「就用这张」")
+        shot(app, "prompt-photo")
+        shoot(app)
+        XCTAssertTrue(el(app, "page.sell").waitForExistence(timeout: 15), "拍完回卖出页")
+        wait("PUT 上传") { self.stub.requests(method: "PUT").count == 1 }
+        let put = try XCTUnwrap(stub.requests(method: "PUT").first)
+        XCTAssertTrue(put.path.hasPrefix("/v1/images/") && put.path.split(separator: "/").count == 3, put.path)
+        XCTAssertEqual(put.auth, "Bearer fixture-token")
+        XCTAssertEqual(checkUpload(put.body), CGSize(width: 768, height: 1024), "竖拍：方向转正、长边 1024")
+        idle(1)
+        XCTAssertEqual(stub.requests(method: "PUT").count, 1)
+        XCTAssertEqual(stub.requests(method: "POST").count, 0)
+        XCTAssertGreaterThanOrEqual(probe(app)["shown"].flatMap(Int.init) ?? 0, 1, "价签上显示拍的图")
+    }
+
+    /// A4：没有候选时点「跳过」：零请求
+    func testNoCandidatesSkip() {
+        readyLookup([])
+        let app = launch(confirmAfter: 1, extra: ["-uiFakeCamera"])
+        register(app)
+        XCTAssertTrue(el(app, "page.newProductImage").waitForExistence(timeout: 10))
+        app.buttons["imageChoice.skip"].tap()
+        XCTAssertTrue(el(app, "page.sell").waitForExistence(timeout: 5))
+        idle(3)
+        XCTAssertEqual(stub.requests(method: "PUT").count + stub.requests(method: "POST").count, 0)
+    }
+
+    /// 选图页上也能不选、改拍一张：只 PUT，不 select
+    func testShootInsteadOfPicking() {
+        readyLookup(Array(Self.cids.prefix(2)))
+        let app = launch(confirmAfter: 1, extra: ["-uiFakeCamera"])
+        register(app)
+        XCTAssertTrue(el(app, "page.newProductImage").waitForExistence(timeout: 10))
+        wait("缩图到了") { el(app, "imageChoice.option.1").exists }
+        shoot(app)
+        XCTAssertTrue(el(app, "page.sell").waitForExistence(timeout: 15))
+        wait("PUT 上传") { self.stub.requests(method: "PUT").count == 1 }
+        idle(1)
+        XCTAssertEqual(stub.requests(method: "POST").count, 0, "改拍了：不 select")
+    }
+
+    /// 从相册选（系统相册选择器，真点模拟器自带的照片）→ 压好上传
+    func testAlbumPickUploads() throws {
+        readyLookup([])
+        let app = launch(confirmAfter: 1)
+        register(app)
+        XCTAssertTrue(el(app, "page.newProductImage").waitForExistence(timeout: 10))
+        app.buttons["photo.album"].firstMatch.tap()
+        // 选择器顶上有「Private Access to Photos」横幅（带一个照片图标），要点的是下面网格里的照片：找第一张宽于 80pt 的图
+        XCTAssertTrue(app.scrollViews.images.firstMatch.waitForExistence(timeout: 15), "相册选择器出来了")
+        var photo: XCUIElement?
+        wait("网格里的照片") {
+            photo = app.scrollViews.images.allElementsBoundByIndex.first { $0.frame.width > 80 && $0.isHittable }
+            return photo != nil
+        }
+        shot(app, "album-picker")
+        try XCTUnwrap(photo).tap()
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        shot(app, "album-after-tap")
+        XCTAssertTrue(el(app, "page.sell").waitForExistence(timeout: 20), "选完回卖出页")
+        wait("PUT 上传", timeout: 20) { self.stub.requests(method: "PUT").count == 1 }
+        _ = checkUpload(try XCTUnwrap(stub.requests(method: "PUT").first).body)
+    }
+
+    /// 离线查不到候选（没网）：同样提示拍照
+    func testOfflinePromptsPhoto() {
+        let app = launch(confirmAfter: nil, extra: ["-uiFakeCamera", "-uiOffline"])
+        let field = el(app, "newProduct.name")
+        XCTAssertTrue(field.waitForExistence(timeout: 15))
+        for c in "35" { app.buttons[String(c)].firstMatch.tap() }
+        app.buttons["newProduct.save"].firstMatch.tap()
+        XCTAssertTrue(el(app, "page.newProductImage").waitForExistence(timeout: 10), "没网也提示拍照")
+        XCTAssertEqual(el(app, "imageChoice.title").label, "这个商品还没有图")
+        XCTAssertEqual(stub.requests(method: "GET").filter { $0.path.contains("/images") }.count, 0, "没网：不问候选")
+    }
+
+    /// A8：进货页商品卡点商品图 → 换商品图：候选里选第二张 → 马上 select（已有商品，不用等登记）；再点一次改拍一张 → PUT
+    func testStockInCardReplacesImage() throws {
+        readyLookup(Array(Self.cids.prefix(2)))
+        let app = launch(route: "stockIn", confirmAfter: nil, scan: "6921168509256", extra: ["-uiFakeCamera"])
+        let image = el(app, "stockIn.image")
+        XCTAssertTrue(image.waitForExistence(timeout: 15), "商品卡上的商品图能点")
+        image.tap()
+        XCTAssertTrue(el(app, "page.replaceImage").waitForExistence(timeout: 5))
+        wait("两张候选") { el(app, "imageChoice.option.1").exists }
+        shot(app, "replace-sheet")
+        el(app, "imageChoice.option.1").tap()
+        app.buttons["imageChoice.use"].tap()
+        wait("select") { self.stub.requests(method: "POST").count == 1 }
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: stub.requests(method: "POST")[0].body) as? [String: String])
+        XCTAssertEqual(body, ["barcode": "6921168509256", "candidate_id": Self.cids[1]])
+        XCTAssertTrue(image.waitForExistence(timeout: 5))
+        image.tap()
+        XCTAssertTrue(el(app, "page.replaceImage").waitForExistence(timeout: 5))
+        shoot(app)
+        wait("PUT") { self.stub.requests(method: "PUT").count == 1 }
+        XCTAssertTrue(el(app, "stockIn.image").waitForExistence(timeout: 5), "回到商品卡")
+    }
+
+    /// A9：收银员进货页没有（收银员进不了进货）；开关关时商品卡上的图不能点
+    func testStockInCardNoEntryWhenOff() {
+        let app = launch(route: "stockIn", confirmAfter: nil, off: true, scan: "6921168509256")
+        XCTAssertTrue(el(app, "stockIn.name").waitForExistence(timeout: 15))
+        XCTAssertFalse(el(app, "stockIn.image").exists)
+    }
+
+    /// A10：没图提示页在默认字号和最大辅助字号下，拍一张 / 从相册选 / 跳过都在屏幕内点得到
+    func testPromptLayout() {
+        readyLookup([])
+        for ax in [false, true] {
+            let app = launch(confirmAfter: nil, extra: ["-uiFakeCamera"] + (ax ? Self.maxAX : []))
+            register(app)
+            XCTAssertTrue(el(app, "page.newProductImage").waitForExistence(timeout: 10))
+            let window = app.windows.firstMatch.frame
+            for id in ["photo.camera", "photo.album", "imageChoice.skip"] {
+                let b = el(app, id)
+                XCTAssertTrue(b.isHittable, "ax=\(ax) \(id) 点得到")
+                XCTAssertTrue(window.contains(b.frame), "ax=\(ax) \(id) 在屏幕内 \(b.frame)")
+                XCTAssertGreaterThanOrEqual(b.frame.height, 44, "ax=\(ax) \(id) 不低于 44pt")
+            }
+            shot(app, "prompt-\(ax ? "axmax" : "standard")")
             app.terminate()
         }
     }
@@ -365,6 +525,9 @@ final class ShopStub: @unchecked Sendable {
             status = selectReply
             let v = lock.withLock { () -> Int in vers[parts[2], default: 0] += 1; return vers[parts[2]]! }
             out = Data(status == 200 ? #"{"image_ver":\#(v)}"#.utf8 : #"{"code":"not_found"}"#.utf8)
+        case ("PUT", 3) where parts[1] == "images":
+            let v = lock.withLock { () -> Int in vers[parts[2], default: 0] += 1; return vers[parts[2]]! }
+            out = Data(#"{"image_ver":\#(v)}"#.utf8)
         case ("GET", 3) where parts[1] == "images":
             type = "image/jpeg"; out = Self.jpeg(parts[2])
         default:

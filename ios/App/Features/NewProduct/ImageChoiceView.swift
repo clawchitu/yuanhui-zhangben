@@ -109,22 +109,37 @@ final class ImageChoiceModel {
 }
 
 /// 登记的第三步「选商品图」（S22d，Fable 方案 1、10）：商品已经存好了，这一步只管图。返回键等于「跳过」。
-/// 上面两列方格（最多 6 张，可滚）；底栏钉在滚动区外：「就用这张」整宽，下面「跳过」。默认选中第一张。
+/// 有候选：上面两列方格（最多 6 张，可滚），默认选中第一张；底栏钉在滚动区外：「就用这张」整宽，
+/// 下面「拍一张」「从相册选」各半，最下面「跳过」。没有候选（没图、没网）：「这个商品还没有图」，拍一张 / 从相册选 / 跳过。
 struct ImageChoiceView: View {
     @Bindable var choice: ImageChoiceModel
     let mode: ShopMode
     let onUse: (String) -> Void
+    let onPhoto: (CompressedPhoto) -> Void
     let onSkip: () -> Void
+    /// `replace`：进货页商品卡上换图（已有商品），文字换成「换商品图」「关掉」
+    var replace = false
+
+    /// 候选定了、一张能用的都没有：只提示拍照
+    private var promptOnly: Bool { choice.settled && choice.usable.isEmpty }
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("选一张商品图")
+                    Text(replace ? "换商品图" : (promptOnly ? "这个商品还没有图" : "选一张商品图"))
                         .font(TypeScale.title.weight(.bold))
                         .foregroundStyle(Tokens.Palette.ink)
+                        .fixedSize(horizontal: false, vertical: true)
                         .dynamicTypeSize(...DiscountPanel.labelCap)
                         .accessibilityIdentifier("imageChoice.title")
+                    if promptOnly && !replace {
+                        Text("拍一张，以后扫到它就显示这张图；不拍也行")
+                            .font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .dynamicTypeSize(...DiscountPanel.labelCap)
+                            .accessibilityIdentifier("imageChoice.prompt")
+                    }
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
                         ForEach(Array(choice.usable.enumerated()), id: \.element) { i, id in
                             cell(i, id)
@@ -147,12 +162,15 @@ struct ImageChoiceView: View {
             .scrollBounceBehavior(.basedOnSize)
             .accessibilityIdentifier("imageChoice.scroll")
             VStack(spacing: 8) {
-                PrimaryButton("就用这张", systemImage: "checkmark", mode: mode, size: .medium) {
-                    if let s = choice.selected { onUse(s) }
+                if !promptOnly {
+                    PrimaryButton("就用这张", systemImage: "checkmark", mode: mode, size: .medium) {
+                        if let s = choice.selected { onUse(s) }
+                    }
+                    .disabled(choice.selected == nil)
+                    .accessibilityIdentifier("imageChoice.use")
                 }
-                .disabled(choice.selected == nil)
-                .accessibilityIdentifier("imageChoice.use")
-                PrimaryButton("跳过", mode: mode, style: .ghost, size: .small) { onSkip() }
+                PhotoButtons(mode: mode, onPhoto: onPhoto)
+                PrimaryButton(replace ? "关掉" : "跳过", mode: mode, style: .ghost, size: .small) { onSkip() }
                     .accessibilityIdentifier("imageChoice.skip")
             }
             .padding(.horizontal, 20)
@@ -188,5 +206,37 @@ struct ImageChoiceView: View {
         .accessibilityLabel("第 \(i + 1) 张")
         .accessibilityAddTraits(on ? .isSelected : [])
         .accessibilityIdentifier("imageChoice.option.\(i)")
+    }
+}
+
+/// 进货页商品卡上点商品图：重新选候选图、重新拍照或从相册选（S22d，Fable 方案 4；商品详情页 S25 之前先放这里）。
+/// 只问一次候选（不轮询）。选好、拍好就关掉；换图走同一套暂存和重发
+struct ReplaceImageSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var choice: ImageChoiceModel
+    let productId: UUID
+    let changes: ImageChanges
+
+    init(productId: UUID, barcode: String, changes: ImageChanges) {
+        self.productId = productId
+        self.changes = changes
+        let m = ImageChoiceModel(barcode: barcode, changes: changes)
+        m.pollLimit = .zero
+        _choice = State(initialValue: m)
+    }
+
+    var body: some View {
+        ImageChoiceView(choice: choice, mode: .stock, onUse: { cid in
+            changes.choose(productId: productId, barcode: choice.barcode, candidateId: cid, thumbnail: choice.bytes[cid])
+            dismiss()
+        }, onPhoto: { photo in
+            changes.upload(productId: productId, photo: photo)
+            dismiss()
+        }, onSkip: { dismiss() }, replace: true)
+        .padding(.top, 8)
+        .background(Tokens.Palette.paper.ignoresSafeArea())
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("page.replaceImage")
+        .task { await choice.run(initial: nil) }
     }
 }

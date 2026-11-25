@@ -24,6 +24,7 @@ final class S22dTests: XCTestCase {
         let lock = NSLock()
         var replies: [Result<Int, Error>] = []
         var calls: [(UUID, String, String, String)] = []
+        var uploads: [(UUID, Data)] = []
         var gate: ImageGate = .ready
         var succeeded: [(UUID, Int, Data?)] = []
         var kicks = 0
@@ -37,6 +38,10 @@ final class S22dTests: XCTestCase {
             store: ps, gate: { _ in s.lock.withLock { s.gate } }, token: { "tok" },
             select: { id, code, cid, tok in
                 s.lock.withLock { s.calls.append((id, code, cid, tok)) }
+                return try s.next().get()
+            },
+            upload: { id, jpeg, tok in
+                s.lock.withLock { s.uploads.append((id, jpeg)) }
                 return try s.next().get()
             },
             enabled: { s.lock.withLock { s.enabled } },
@@ -92,7 +97,7 @@ final class S22dTests: XCTestCase {
     func testGateHoldsUntilUpsertConfirmed() async throws {
         let ps = PendingImageStore(root: root, storeId: store), s = Script()
         let id = UUID()
-        try ps.put(item(id), payload: Data([9]))
+        try ps.put(item(id), preview: Data([9]))
         s.gate = .waiting
         let u = uploader(s, store: ps)
         await u.flush(kickIfWaiting: true)
@@ -198,6 +203,45 @@ final class S22dTests: XCTestCase {
         await u.flush(kickIfWaiting: false)
         XCTAssertEqual(s.calls.count, 1, "过期的不发")
         XCTAssertEqual(ps.all().count, 0)
+    }
+
+    /// 照片：等登记确认后 PUT 暂存的上传件；成功回调带 200px 预览；同一商品后来的照片顶掉先前的选图；照片文件坏了丢掉不挡后面的
+    func testPhotoUploadsPayloadAndReplacesSelect() async throws {
+        let ps = PendingImageStore(root: root, storeId: store), s = Script()
+        let id = UUID(), jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 1, 2]), preview = Data([0xFF, 0xD8, 7])
+        try ps.put(item(id), preview: Data([9]))
+        try ps.put(PendingImage(kind: .photo, productId: id, createdAt: Date()), payload: jpeg, preview: preview)
+        let bad = UUID()
+        try ps.put(PendingImage(kind: .photo, productId: bad, createdAt: Date().addingTimeInterval(-1)), payload: Data("坏".utf8), preview: nil)
+        s.replies = [.success(4)]
+        await uploader(s, store: ps).flush(kickIfWaiting: false)
+        XCTAssertEqual(s.calls.count, 0, "照片顶掉了选图：不 select")
+        XCTAssertEqual(s.uploads.map(\.0), [id], "坏照片不发")
+        XCTAssertEqual(s.uploads.first?.1, jpeg)
+        XCTAssertEqual(s.succeeded.first?.1, 4)
+        XCTAssertEqual(s.succeeded.first?.2, preview, "prime 用 200px 预览")
+        XCTAssertEqual(ps.all().count, 0, "成功的删掉、坏的丢掉")
+    }
+
+    /// 压缩：竖拍 4032×3024（方向 .right）的大图 → 768×1024（方向烘进像素）、JPEG、≤ 400 KB；预览长边 200；小图不放大
+    func testCompressorMeetsSpec() throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let noisy = UIGraphicsImageRenderer(size: CGSize(width: 4032, height: 3024), format: format).image { c in
+            for y in stride(from: 0, to: 3024, by: 8) { for x in stride(from: 0, to: 4032, by: 8) {
+                UIColor(white: CGFloat((x * 7 + y * 13) % 255) / 255, alpha: 1).setFill(); c.fill(CGRect(x: x, y: y, width: 8, height: 8))
+            } }
+        }
+        let shot = UIImage(cgImage: noisy.cgImage!, scale: 1, orientation: .right)
+        let p = try XCTUnwrap(PhotoCompressor.compress(shot))
+        XCTAssertLessThanOrEqual(p.upload.count, PhotoCompressor.maxBytes)
+        let up = try XCTUnwrap(UIImage(data: p.upload))
+        XCTAssertEqual(up.size, CGSize(width: 768, height: 1024))
+        XCTAssertEqual(up.imageOrientation, .up)
+        let pv = try XCTUnwrap(UIImage(data: p.preview))
+        XCTAssertEqual(max(pv.size.width, pv.size.height), 200)
+        let small = UIGraphicsImageRenderer(size: CGSize(width: 300, height: 200), format: format).image { c in UIColor.red.setFill(); c.fill(CGRect(x: 0, y: 0, width: 300, height: 200)) }
+        XCTAssertEqual(UIImage(data: try XCTUnwrap(PhotoCompressor.compress(small)).upload)?.size, CGSize(width: 300, height: 200), "不放大")
     }
 
     // MARK: 闸门接真的本机库
