@@ -47,11 +47,49 @@ public struct BarcodeLookupResult: Decodable, Equatable, Sendable {
     public let hasImage: Bool?
     /// found=false 时服务器这次没问到外部条码库（超时、出错、没配 AppCode）：不是明确没查到，别记住，下次再查
     public let retryLater: Bool?
-    enum CodingKeys: String, CodingKey { case found, name, spec, brand, hasImage = "has_image", retryLater = "retry_later" }
-    public init(found: Bool, name: String? = nil, spec: String? = nil, brand: String? = nil, hasImage: Bool? = nil, retryLater: Bool? = nil) {
+    /// 商品图候选（S22d）：家用、审核才有；收银员的响应不带
+    public let imageCandidates: ImageCandidates?
+    enum CodingKeys: String, CodingKey {
+        case found, name, spec, brand, hasImage = "has_image", retryLater = "retry_later", imageCandidates = "image_candidates"
+    }
+    public init(found: Bool, name: String? = nil, spec: String? = nil, brand: String? = nil, hasImage: Bool? = nil, retryLater: Bool? = nil,
+                imageCandidates: ImageCandidates? = nil) {
         self.found = found; self.name = name; self.spec = spec; self.brand = brand; self.hasImage = hasImage; self.retryLater = retryLater
+        self.imageCandidates = imageCandidates
     }
 }
+
+/// 商品图候选（契约 components/schemas/ImageCandidates，S22d）。`ids` 按快鸟给的顺序，最多 6 个。
+/// 认不出的 `state` 当 `none`；不合规的 id（不是 16 位小写十六进制）丢掉，不拿它拼地址
+public struct ImageCandidates: Decodable, Equatable, Sendable {
+    public enum State: String, Sendable { case none, pending, ready }
+    public let state: State
+    public let ids: [String]
+
+    public init(state: State, ids: [String]) {
+        self.state = state
+        var seen = Set<String>()
+        self.ids = Array(ids.filter { Self.isCandidateId($0) && seen.insert($0).inserted }.prefix(Self.maxCount))
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try c.decode(String.self, forKey: .state)
+        self.init(state: State(rawValue: raw) ?? .none, ids: try c.decodeIfPresent([String].self, forKey: .ids) ?? [])
+    }
+    enum CodingKeys: String, CodingKey { case state, ids }
+
+    public static let maxCount = 6
+    public static let empty = ImageCandidates(state: .none, ids: [])
+
+    /// 契约 CandidateId：`^[0-9a-f]{16}$`
+    public static func isCandidateId(_ s: String) -> Bool {
+        s.utf8.count == 16 && s.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+}
+
+/// `POST /v1/images/:id/select`、`PUT /v1/images/:id` 的响应（契约 ImageVer）
+struct ImageVerBody: Decodable { let image_ver: Int }
 
 /// 服务器的错误响应（契约 components/schemas/Error），或者连不上
 public enum APIError: Error, Equatable, Sendable {
@@ -142,6 +180,36 @@ public final class APIClient: Sendable {
     /// 查码的总时限（毫秒），含退回默认地址的那一次
     public static let lookupBudgetMs = 5_000
 
+    // MARK: - 商品图（S22d）
+
+    /// 一张候选缩图最多多大（服务器存 200px JPEG，约 10 KB；和商品图下载器同一上限）
+    public static let candidateMaxBytes = 256 * 1024
+    /// 拍照上传的硬上限（服务器 1 MB，超了 413）
+    public static let uploadMaxBytes = 1024 * 1024
+
+    /// `GET /v1/barcode-lookup/:barcode/images`：候选现状（只读库、不调快鸟，供轮询）。码不合法当没有
+    public func imageCandidates(_ code: String, token: String) async throws -> ImageCandidates {
+        guard Self.isLookupBarcode(code) else { return .empty }
+        return try await send("GET", "/v1/barcode-lookup/\(code)/images", body: nil as [String: String]?, token: token, timeoutMs: 5_000)
+    }
+
+    /// `GET /v1/barcode-lookup/:barcode/images/:cid`：一张候选缩图（JPEG 字节）。不是 JPEG 或超过上限按坏响应
+    public func candidateImage(_ code: String, cid: String, token: String) async throws -> Data {
+        guard Self.isLookupBarcode(code), ImageCandidates.isCandidateId(cid) else { throw APIError.badResponse(0) }
+        let data = try await sendRaw("GET", "/v1/barcode-lookup/\(code)/images/\(cid)", body: nil, token: token, timeoutMs: 10_000)
+        guard data.count <= Self.candidateMaxBytes, ProductImageLoader.looksLikeJPEG(data) else { throw APIError.badResponse(200) }
+        return data
+    }
+
+    /// `POST /v1/images/:product_id/select`：把一张候选设成商品图，回新的 `image_ver`。幂等（内容相同不升版本），
+    /// 所以下发地址连不上时可以退回默认地址重发
+    public func selectImage(productId: UUID, barcode: String, candidateId: String, token: String) async throws -> Int {
+        guard Self.isLookupBarcode(barcode), ImageCandidates.isCandidateId(candidateId) else { throw APIError.badResponse(0) }
+        let r: ImageVerBody = try await send("POST", "/v1/images/\(productId.uuidString.lowercased())/select",
+                                             body: ["barcode": barcode, "candidate_id": candidateId], token: token)
+        return r.image_ver
+    }
+
     /// `PATCH /v1/devices/me`（§14 S15-2）。返回服务器定下的名字（重名会加序号）
     public func renameDevice(_ label: String, token: String) async throws -> String {
         let r: Label = try await send("PATCH", "/v1/devices/me", body: ["label": label], token: token)
@@ -201,6 +269,37 @@ public final class APIClient: Sendable {
             guard left > 0 else { throw APIError.transport(why) }
             return try await sendOnce(method, base: bases.defaultBase, path, body: body, token: token, timeoutMs: left)
         }
+    }
+
+    /// 回原始字节的请求（图片）：和 `send` 一样的时限、退回默认地址、不跟重定向；非 2xx 按契约 Error 解析抛出
+    func sendRaw(_ method: String, _ path: String, body: Data?, contentType: String? = nil, token: String?,
+                 timeoutMs: Int = 15_000) async throws -> Data {
+        let primary = bases.current
+        let clock = ContinuousClock()
+        let start = clock.now
+        do {
+            return try await sendRawOnce(method, base: primary, path, body: body, contentType: contentType, token: token, timeoutMs: timeoutMs)
+        } catch let APIError.transport(why) where primary != bases.defaultBase {
+            let left = timeoutMs - Self.millis(clock.now - start)
+            guard left > 0 else { throw APIError.transport(why) }
+            return try await sendRawOnce(method, base: bases.defaultBase, path, body: body, contentType: contentType, token: token, timeoutMs: left)
+        }
+    }
+
+    func sendRawOnce(_ method: String, base: URL, _ path: String, body: Data?, contentType: String?, token: String?,
+                     timeoutMs: Int) async throws -> Data {
+        var req = URLRequest(url: APIBase.url(base, path: path))
+        req.timeoutInterval = .init(timeoutMs) / 1000
+        req.httpMethod = method
+        if let body { req.httpBody = body }
+        if let contentType { req.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+        if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let data: Data, resp: URLResponse
+        do { (data, resp) = try await session.data(for: req, delegate: NoRedirect.shared) } catch { throw APIError.transport(String(describing: error)) }
+        guard let http = resp as? HTTPURLResponse else { throw APIError.badResponse(0) }
+        if (300..<400).contains(http.statusCode) { throw APIError.redirected(http.statusCode) }
+        guard (200..<300).contains(http.statusCode) else { throw Self.error(status: http.statusCode, data: data) }
+        return data
     }
 
     /// Duration → 整数毫秒（向上取整，宁可少给后一次时间）

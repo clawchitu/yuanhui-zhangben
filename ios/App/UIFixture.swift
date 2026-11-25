@@ -28,6 +28,7 @@ import ShopCore
 ///   -uiScan / -uiScanSource / -uiScanGap / -uiScanDelay   FakeScanner 喂码，见 `FakeScanner`（S14；卖出页同样认）
 ///   卖出页的 -uiPaid / -uiAutoCommit / -uiHoldDone / -uiProbe 见 `SellFixture`
 ///   -uiImages 地址 / -uiImagesOff / -uiImagesPrefetch / -uiFrameProbe   S22c 商品图和卡顿探针，见 `fixtureImages`
+///   -uiConfirmUpsert 秒                          S22d：登记放够这么多秒当作服务器已确认（见 `confirmUpserts`）
 /// Beta / Release 里这些参数一律不认：没有会话就出「还没登录」页。
 enum UIFixture {
     enum Screen: Equatable {
@@ -252,7 +253,49 @@ extension UIFixture {
         try? FileManager.default.removeItem(at: root)
         let images = ProductImages(db: db, disk: ProductImageDisk(root: root, storeId: session.storeId), enabled: !args.contains("-uiImagesOff"),
                                    blocked: false, base: { base }, token: { "fixture-token" }, syncBusy: { false })
+        // S22d：家用夹具也能选图（查码、候选、选图都打这个地址）；暂存目录先清空
+        if Capabilities(role: session.role).has(.productImages), let api = fixtureAPI(base: raw) {
+            let pending = PendingImageStore(storeId: session.storeId)
+            pending.removeAll()
+            images.changes = ImageChanges(store: pending, gate: { (try? db.imageGate(productId: $0)) ?? .waiting },
+                                          api: api, token: { "fixture-token" })
+        }
         return images
+    }
+
+    /// S22d：夹具的网络（只连 UI 测试的桩）
+    static func fixtureAPI(base: String) -> APIClient? {
+        let defaults = UserDefaults(suiteName: "ui-fixture-api")!
+        defaults.removePersistentDomain(forName: "ui-fixture-api")
+        return APIBaseStore(defaultBase: base, policy: APIEnvironment.policy, defaults: defaults).map { APIClient(bases: $0) }
+    }
+
+    /// S22d：夹具里查码也打桩（`-uiImages` 的地址），令牌是 fixture-token
+    @MainActor static func fixtureServices(session: LocalSession, args: [String]) -> AppServices? {
+        guard let raw = value(for: "-uiImages", in: args), let api = fixtureAPI(base: raw) else { return nil }
+        let tokens = MemoryTokenStore()
+        try? tokens.save("fixture-token", ref: session.tokenRef)
+        return AppServices(api: api, tokens: tokens, defaults: UserDefaults(suiteName: "ui-fixture-api")!)
+    }
+
+    /// S22d：`-uiConfirmUpsert 秒`：夹具里没有同步，登记的 `product_upsert` 在 outbox 里放够这么多秒就当服务器确认了
+    /// （走真的 `recordResults`），然后让换图发一趟——等同于同步成功之后的那一下
+    @MainActor static func confirmUpserts(db: LocalDB, session: LocalSession, images: ProductImages, args: [String]) {
+        guard let secs = value(for: "-uiConfirmUpsert", in: args).flatMap(Double.init) else { return }
+        let store = session.storeId
+        Task { @MainActor [weak images] in
+            var seen: [UUID: Date] = [:]
+            while let images, images.changes != nil {
+                try? await Task.sleep(for: .milliseconds(300))
+                let ops = await Task.detached { ((try? db.pendingOps()) ?? []).filter { $0.type == .productUpsert }.map(\.id) }.value
+                let now = Date()
+                for id in ops where seen[id] == nil { seen[id] = now }
+                let due = ops.filter { now.timeIntervalSince(seen[$0] ?? now) >= secs }
+                guard !due.isEmpty, let results = try? due.map({ try OpResult(id: $0, status: .applied) }) else { continue }
+                let ok = await Task.detached { (try? db.recordResults(results, storeId: store)) != nil }.value
+                if ok { images.changes?.flush() }
+            }
+        }
     }
 
     /// 25a 未同步首页：前天记的 n 笔卖出（农夫山泉 1 瓶），一直没传上去（超过一天）

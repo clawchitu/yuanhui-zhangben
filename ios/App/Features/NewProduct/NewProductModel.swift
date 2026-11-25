@@ -14,6 +14,15 @@ enum NameLookupResult: Equatable, Sendable {
 
 protocol ProductNameLookup: Sendable {
     func lookup(_ barcode: String) async -> NameLookupResult
+    /// 连同商品图候选一起（S22d）：nil = 这次没带回来（桩、进程内记过的码），由选图那边自己去问
+    func lookupWithImages(_ barcode: String) async -> (NameLookupResult, ImageCandidates?)
+}
+
+extension ProductNameLookup {
+    func lookupWithImages(_ barcode: String) async -> (NameLookupResult, ImageCandidates?) {
+        let r = await lookup(barcode)
+        return (r, r == .offline ? ImageCandidates.empty : nil)
+    }
 }
 
 /// 桩实现：Debug 下认几个演示码（设计稿 04a 的乐事），其余「没查到」；`offline` 时一律「没网」。
@@ -45,23 +54,26 @@ struct ServerNameLookup: ProductNameLookup {
     let tokenRef: String
     var memo: NameLookupMemo = .shared
 
-    func lookup(_ barcode: String) async -> NameLookupResult {
+    func lookup(_ barcode: String) async -> NameLookupResult { await lookupWithImages(barcode).0 }
+
+    /// 候选：这次真问了服务器才带回来；进程内记过的码给 nil（选图那边再打一次只读的 `/images`，不扣快鸟次数）
+    func lookupWithImages(_ barcode: String) async -> (NameLookupResult, ImageCandidates?) {
         // 按登录（令牌引用）分开记：演示店里记下的「没查到」换到真实店不沿用（Fable 可选 3）
         let key = "\(tokenRef)|\(barcode)"
-        if let hit = await memo.get(key) { return hit }
-        guard let token = try? tokens.token(ref: tokenRef) else { return .notFound }
+        if let hit = await memo.get(key) { return (hit, nil) }
+        guard let token = try? tokens.token(ref: tokenRef) else { return (.notFound, nil) }
         let b: BarcodeLookupResult
         do {
             b = try await api.barcodeLookup(barcode, token: token)
         } catch APIError.transport {
-            return .offline
+            return (.offline, ImageCandidates.empty)
         } catch {
-            return .notFound   // 429（额度、限速）、服务器错：不记，下次进来再查
+            return (.notFound, nil)   // 429（额度、限速）、服务器错：不记，下次进来再查
         }
         let r = Self.result(b)
         // 只记查到和明确没查到；服务器这次没问到外部（retry_later）也当没查到手填，但不记，下次扫还会再查
         if Self.memoizable(b) { await memo.put(key, r) }
-        return r
+        return (r, b.imageCandidates ?? (b.found ? nil : ImageCandidates.empty))
     }
 
     /// 能记到进程结束的结果：查到，或明确没查到（不带 retry_later）
@@ -147,7 +159,8 @@ enum DigitsInput {
 /// - 从卖出进来朱红，从进货进来靛青（`mode`），两步一样。
 @MainActor @Observable
 final class NewProductModel {
-    enum Step: Equatable { case basic, more }
+    /// `image`：已经存好了，第三步选商品图（S22d，只有家用、开关开着、有候选时）
+    enum Step: Equatable { case basic, more, image }
     enum LookupState: Equatable { case loading, found, notFound, offline }
 
     let db: LocalDB
@@ -205,7 +218,11 @@ final class NewProductModel {
 
     var title: String {
         if quick { return "新商品" }
-        return step == .basic ? "新商品 1/2" : "新商品 2/2"
+        switch step {
+        case .basic: return "新商品 1/2"
+        case .more: return "新商品 2/2"
+        case .image: return "存好了"
+        }
     }
 
     var heading: String { quick ? "店里没登记过，先记个名字和价钱" : "第一次扫到，登记一下" }

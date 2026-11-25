@@ -39,13 +39,21 @@ struct NewProductView: View {
     let suggestedProduct: Product?
     let fixture: NewProductFixture
     let onDone: (RegistrationOutcome) -> Void
+    /// S22d：这个会话的换图（家用、开关开着才有）；有就在存好之后问选哪张商品图
+    let changes: ImageChanges?
+    @State private var imageChoice: ImageChoiceModel?
+    /// 存好了、在第三步等选图的那次登记
+    @State private var registered: RegistrationOutcome?
 
     enum MoreField: Hashable { case cost, qty, year, month, day }
 
     init(db: LocalDB, barcode: String, mode: ShopMode, quick: Bool, canLinkPack: Bool, lookup: any ProductNameLookup,
-         pendingCount: Int?, suggestedProduct: Product? = nil, fixture: NewProductFixture = .none,
+         pendingCount: Int?, suggestedProduct: Product? = nil, fixture: NewProductFixture = .none, changes: ImageChanges? = nil,
          onDone: @escaping (RegistrationOutcome) -> Void) {
         _model = State(initialValue: NewProductModel(db: db, barcode: barcode, mode: mode, quick: quick, canLinkPack: canLinkPack))
+        let changes = quick ? nil : changes
+        self.changes = changes
+        _imageChoice = State(initialValue: changes.map { ImageChoiceModel(barcode: barcode, changes: $0) })
         self.lookup = lookup
         self.pendingCount = pendingCount
         self.suggestedProduct = suggestedProduct
@@ -56,12 +64,23 @@ struct NewProductView: View {
     var body: some View {
         VStack(spacing: 0) {
             ModeBar(title: model.title, mode: model.mode, pendingCount: model.lookup == .offline ? nil : pendingCount,
-                    offline: model.lookup == .offline, onBack: { if !model.back() { dismiss() } })
-            if model.step == .basic { basic } else { more }
+                    offline: model.lookup == .offline, onBack: {
+                        if model.step == .image { skipImage() } else if !model.back() { dismiss() }
+                    })
+            switch model.step {
+            case .basic: basic
+            case .more: more
+            case .image:
+                if let imageChoice {
+                    ImageChoiceView(choice: imageChoice, mode: model.mode, onUse: { useImage($0) }, onSkip: { skipImage() })
+                }
+            }
         }
         .background(Tokens.Palette.paper.ignoresSafeArea())
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(model.step == .basic ? "page.newProduct" : "page.newProduct2")
+        .accessibilityIdentifier(pageId)
+        // 第三步在等候选：候选定了只剩 0 张或 1 张就不再问（1 张直接用），自己往下走
+        .onChange(of: imageChoice?.settled) { _, _ in if model.step == .image { decideImage() } }
         .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(isPresented: $showPack) {
             LinkPackView(db: model.db, barcode: model.barcode, mode: model.mode, pendingCount: pendingCount,
@@ -78,9 +97,59 @@ struct NewProductView: View {
             Text("顾客扫到这一样会按 ¥0.00 收钱")
         }
         .task {
-            model.applyLookup(await lookup.lookup(model.barcode))
+            let (r, candidates) = await lookup.lookupWithImages(model.barcode)
+            model.applyLookup(r)
             applyFixture()
+            // 候选在后台接着问（最多 8 秒），人照常填名称和价钱
+            await imageChoice?.run(initial: r == .offline ? ImageCandidates.empty : candidates)
         }
+    }
+
+    private var pageId: String {
+        switch model.step {
+        case .basic: "page.newProduct"
+        case .more: "page.newProduct2"
+        case .image: "page.newProductImage"
+        }
+    }
+
+    // MARK: 第三步：商品图（S22d）
+
+    /// 存好了：开关开着、有候选就问选哪张；只有 1 张直接用；没有就照常交回
+    private func finish(_ outcome: RegistrationOutcome) {
+        guard imageChoice != nil, case .registered = outcome else { onDone(outcome); return }
+        registered = outcome
+        nameFocused = false
+        moreFocus = nil
+        decideImage()
+    }
+
+    private func decideImage() {
+        guard let outcome = registered, let choice = imageChoice else { return }
+        guard choice.settled else { model.step = .image; return }
+        let usable = choice.usable
+        if usable.count >= 2 { model.step = .image; return }
+        if let only = usable.first { choose(only, for: outcome) }
+        registered = nil
+        onDone(outcome)
+    }
+
+    private func useImage(_ cid: String) {
+        guard let outcome = registered else { return }
+        choose(cid, for: outcome)
+        registered = nil
+        onDone(outcome)
+    }
+
+    private func skipImage() {
+        guard let outcome = registered else { return }
+        registered = nil
+        onDone(outcome)
+    }
+
+    private func choose(_ cid: String, for outcome: RegistrationOutcome) {
+        changes?.choose(productId: outcome.conversion.product.id, barcode: model.barcode, candidateId: cid,
+                        thumbnail: imageChoice?.bytes[cid])
     }
 
     // MARK: 04a / 04c / 25e
@@ -394,12 +463,12 @@ struct NewProductView: View {
     }
 
     private func saveBasic(confirmedZero: Bool = false) {
-        if let conv = model.saveBasic(confirmedZero: confirmedZero) { onDone(.registered(conv, quick: model.quick)) }
+        if let conv = model.saveBasic(confirmedZero: confirmedZero) { finish(.registered(conv, quick: model.quick)) }
     }
 
     private func saveMore(confirmedZero: Bool = false) {
         moreFocus = nil
-        if let conv = model.saveMore(confirmedZero: confirmedZero) { onDone(.registered(conv, quick: false)) }
+        if let conv = model.saveMore(confirmedZero: confirmedZero) { finish(.registered(conv, quick: false)) }
     }
 
     // MARK: 04b

@@ -30,6 +30,12 @@ final class ProductImages {
         c.countLimit = 300
         return c
     }()
+    /// S22d：本机刚选的 / 刚拍的图（还没同步回新的 `image_ver`）：Thumb 先显示它，离线也看得到。键是商品 id；
+    /// `ver` = 服务器回的版本（还没传上去是 nil）。商品的 `image_ver` 超过它（别的手机又换了图）就不再用
+    private(set) var previews: [UUID: Preview] = [:]
+    struct Preview { let image: UIImage; var ver: Int? }
+    /// S22d：这个会话待发的选图 / 照片（家用、审核且不是演示店才有）
+    @ObservationIgnored var changes: ImageChanges?
     @ObservationIgnored private var waiting: Set<ImageKey> = []
     @ObservationIgnored private var stopped = false
     #if DEBUG
@@ -74,6 +80,24 @@ final class ProductImages {
     }
 
     // MARK: - Thumb 用
+
+    /// 本机刚换的图（S22d）：开关开着、商品的版本没超过它才给
+    func preview(_ k: ImageKey) -> UIImage? {
+        guard enabled, let p = previews[k.productId] else { return nil }
+        if let v = p.ver, k.ver > v { return nil }
+        return p.image
+    }
+
+    func setPreview(_ image: UIImage, productId: UUID, ver: Int? = nil) {
+        guard !stopped else { return }
+        previews[productId] = Preview(image: image, ver: ver)
+    }
+
+    func confirmPreview(productId: UUID, ver: Int) {
+        guard !stopped, var p = previews[productId] else { return }
+        p.ver = ver
+        previews[productId] = p
+    }
 
     /// 内存里有就给（主线程上只做这个）
     func cached(_ k: ImageKey) -> UIImage? {
@@ -142,6 +166,9 @@ final class ProductImages {
         clearMemory()
         stopped = true
         enabled = false
+        previews.removeAll()
+        changes?.shutdown()
+        changes = nil
         let loader = loader
         Task { await loader.shutdown() }
     }
@@ -149,8 +176,9 @@ final class ProductImages {
     func enterBackground() { let l = loader; Task { await l.suspend() } }
     func enterForeground() { let l = loader; Task { await l.resume() } }
 
-    /// 留给 S22d-iOS：拍照上传成功后把这张图直接放进缓存
+    /// S22d：选图 / 拍照上传成功后把这张 200px 图直接放进缓存（同步拉回新的 `image_ver` 时不用再下载）
     func prime(_ data: Data, productId: UUID, ver: Int) {
+        guard !stopped else { return }
         let l = loader
         let k = ImageKey(productId, ver)
         waiting.insert(k)
@@ -169,9 +197,15 @@ extension ProductImages {
     /// 正常启动：一个会话一个。地址只用 `bases.current`，令牌从钥匙串现读
     static func live(db: LocalDB, session: LocalSession, services: AppServices, syncBusy: @escaping @Sendable () -> Bool) -> ProductImages {
         let api = services.api, tokens = services.tokens, ref = session.tokenRef
-        return ProductImages(db: db, disk: ProductImageDisk(storeId: session.storeId), enabled: services.imagesEnabled,
-                             blocked: services.isDemoSession(session.deviceId),
-                             base: { api.bases.current }, token: { (try? tokens.token(ref: ref)) ?? nil }, syncBusy: syncBusy)
+        let token: @Sendable () -> String? = { (try? tokens.token(ref: ref)) ?? nil }
+        let demo = services.isDemoSession(session.deviceId)
+        let images = ProductImages(db: db, disk: ProductImageDisk(storeId: session.storeId), enabled: services.imagesEnabled,
+                                   blocked: demo, base: { api.bases.current }, token: token, syncBusy: syncBusy)
+        // S22d：选图、拍照只给家用（收银员没有这个能力，演示店服务器 403）
+        if Capabilities(role: session.role).has(.productImages), !demo {
+            images.changes = ImageChanges.live(db: db, storeId: session.storeId, api: api, token: token)
+        }
+        return images
     }
 }
 

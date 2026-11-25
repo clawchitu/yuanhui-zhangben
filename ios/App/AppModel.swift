@@ -269,14 +269,28 @@ final class AppModel {
     func attachImages(_ images: ProductImages) {
         self.images = images
         if let sync {
-            sync.onSynced = { [weak images] in images?.prefetch() }
+            sync.onSynced = { [weak images] in images?.prefetch(); images?.changes?.flush() }
             sync.onRebuilt = { [weak images] in images?.reset() }
         }
-        services?.onImagesSwitch = { [weak images] on in images?.setEnabled(on) }
+        if let changes = images.changes {
+            changes.images = images
+            changes.kickSync = { [weak sync] in sync?.kick() }
+            changes.start()
+        }
+        services?.onImagesSwitch = { [weak images] on in
+            images?.setEnabled(on)
+            if on { images?.changes?.flush() }
+        }
         if sync?.catalogDone ?? false { images.prefetch() }
         #if DEBUG
         if sync == nil, ProcessInfo.processInfo.arguments.contains("-uiImagesPrefetch") { images.prefetch() }
         #endif
+    }
+
+    /// S22d：登记时能不能选图（家用、不是演示店、商品图开关开着）。能的话给这个会话的换图
+    var imageChanges: ImageChanges? {
+        guard capabilities.has(.productImages), let images, images.enabled else { return nil }
+        return images.changes
     }
 
     /// 04a 查名称用哪个：正常启动问服务器（真机热修），夹具 / Debug 的 `-uiOffline` 用桩

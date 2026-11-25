@@ -67,7 +67,8 @@ struct SellView: View {
             NewProductView(db: model.db, barcode: req.code, mode: fixture.newProduct.mode ?? .sell,
                            quick: model.registration == .quick, canLinkPack: app.capabilities.canSend(.barcodeLink),
                            lookup: app.nameLookup(offline: fixture.offline), pendingCount: app.figures.pendingCount,
-                           suggestedProduct: model.focusLine?.conversion.product, fixture: fixture.newProduct) { outcome in
+                           suggestedProduct: model.focusLine?.conversion.product, fixture: fixture.newProduct,
+                           changes: app.imageChanges) { outcome in
                 model.finishRegistration(outcome)
                 model.refreshPending()
             }

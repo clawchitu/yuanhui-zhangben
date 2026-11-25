@@ -36,7 +36,7 @@ final class RolesTests: XCTestCase {
         let c = Capabilities(role: .cashier)
         XCTAssertEqual(c.granted, [.sell, .void, .quickRegister, .barcodeLookup])
         for cap: Capability in [.stockIn, .viewReports, .manageProducts, .fullRegister, .opening, .reviewComplete,
-                                .count, .expiry, .pairing, .manageDevices, .renameDevice, .account, .heldOps] {
+                                .count, .expiry, .pairing, .manageDevices, .renameDevice, .account, .heldOps, .productImages] {
             XCTAssertFalse(c.has(cap), "收银员不该有 \(cap)")
         }
         // 撤销带条件：本机、当天（§6 原则 ③）
