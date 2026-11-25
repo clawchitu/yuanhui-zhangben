@@ -1,3 +1,4 @@
+import ImageIO
 import ShopCore
 import UIKit
 import XCTest
@@ -266,6 +267,40 @@ final class S22dTests: XCTestCase {
         XCTAssertEqual(max(pv.size.width, pv.size.height), 200)
         let small = UIGraphicsImageRenderer(size: CGSize(width: 300, height: 200), format: format).image { c in UIColor.red.setFill(); c.fill(CGRect(x: 0, y: 0, width: 300, height: 200)) }
         XCTAssertEqual(UIImage(data: try XCTUnwrap(PhotoCompressor.compress(small)).upload)?.size, CGSize(width: 300, height: 200), "不放大")
+    }
+
+    /// 方向真的烘进像素：原始像素上红下蓝、方向 `.right`（竖拿手机拍）→ 转正后应是左蓝右红（不是只把宽高对调、把图压扁）。
+    /// 相册那条路（JPEG 带 EXIF 方向 6）走 `downsample` 也一样
+    func testCompressorBakesOrientation() throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let raw = UIGraphicsImageRenderer(size: CGSize(width: 1600, height: 1200), format: format).image { c in
+            UIColor.red.setFill(); c.fill(CGRect(x: 0, y: 0, width: 1600, height: 600))
+            UIColor.blue.setFill(); c.fill(CGRect(x: 0, y: 600, width: 1600, height: 600))
+        }.cgImage!
+        func check(_ upload: Data, _ what: String) throws {
+            let cg = try XCTUnwrap(UIImage(data: upload)?.cgImage, what)
+            XCTAssertEqual(CGSize(width: cg.width, height: cg.height), CGSize(width: 768, height: 1024), what)
+            let left = try pixel(cg, x: 100, y: 200), right = try pixel(cg, x: 668, y: 200)
+            XCTAssertTrue(left.b > 200 && left.r < 60, "\(what)：左边应是蓝的，实际 \(left)")
+            XCTAssertTrue(right.r > 200 && right.b < 60, "\(what)：右边应是红的，实际 \(right)")
+        }
+        try check(try XCTUnwrap(PhotoCompressor.compress(UIImage(cgImage: raw, scale: 1, orientation: .right))).upload, "拍照")
+        let jpeg = NSMutableData()
+        let dest = try XCTUnwrap(CGImageDestinationCreateWithData(jpeg, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(dest, raw, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(dest))
+        let album = try XCTUnwrap(PhotoCompressor.downsample(jpeg as Data))
+        try check(try XCTUnwrap(PhotoCompressor.compress(album)).upload, "相册")
+    }
+
+    /// 读一个像素（RGBA8）
+    func pixel(_ cg: CGImage, x: Int, y: Int) throws -> (r: Int, g: Int, b: Int) {
+        var px = [UInt8](repeating: 0, count: 4)
+        let ctx = try XCTUnwrap(CGContext(data: &px, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.draw(cg, in: CGRect(x: -x, y: y - cg.height + 1, width: cg.width, height: cg.height))
+        return (Int(px[0]), Int(px[1]), Int(px[2]))
     }
 
     // MARK: 闸门接真的本机库
