@@ -58,6 +58,8 @@ def jpeg(seed):
     p = os.path.join(root, "tmp.png"); open(p, "wb").write(png)
     os.system(f"sips -s format jpeg {p} --out {p}.jpg >/dev/null 2>&1")
     d = open(p + ".jpg", "rb").read(); os.remove(p); os.remove(p + ".jpg"); return d
+# 第三个码（C）只有条码库行、没有候选：没图提示拍照 → PUT 上传
+print("INSERT INTO barcode_catalog (barcode, found, name, spec, source) VALUES ('6970000220035', true, 'E2E 选图测试 035', '500ml', 'e2e');")
 for code in codes:
     print(f"INSERT INTO barcode_catalog (barcode, found, name, spec, source) VALUES ('{code}', true, 'E2E 选图测试 {code[-3:]}', '500ml', 'e2e');")
     bh = hashlib.sha256(code.encode()).hexdigest()[:32]
@@ -79,9 +81,9 @@ for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:${port}/healthz" >/dev/null 
 log "服务端起来了：/healthz $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${port}/healthz)，/v1/config $(curl -s http://127.0.0.1:${port}/v1/config)"
 
 readdb() {
-  psql -c "SELECT coalesce(string_agg(b.barcode || ' → ver=' || p.image_ver || ' source=' || coalesce(p.image_source, '-') || ' sha=' || left(coalesce(p.image_sha256, '-'), 16), '; '), '（店里还没有这两个商品）')
+  psql -c "SELECT coalesce(string_agg(b.barcode || ' → ver=' || p.image_ver || ' source=' || coalesce(p.image_source, '-') || ' sha=' || left(coalesce(p.image_sha256, '-'), 16), '; '), '（店里还没有这三个商品）')
            FROM product_barcodes b JOIN products p ON p.store_id = b.store_id AND p.id = b.product_id
-           WHERE b.store_id = '${sid}' AND b.barcode IN ('6970000220011', '6970000220028')"
+           WHERE b.store_id = '${sid}' AND b.barcode IN ('6970000220011', '6970000220028', '6970000220035')"
 }
 log "写前读：$(readdb)"
 
@@ -95,6 +97,6 @@ xcodebuild -project YuanhuiZhangben.xcodeproj -scheme YuanhuiZhangben -destinati
 rc=${PIPESTATUS[0]}
 set -e
 log "写后读：$(readdb)"
-log "服务端日志里的选图请求：$(grep -c '/select' "${work}/server.log" || true) 条；image 相关告警：$(grep -c 'image_discard_failed' "${work}/server.log" || true)"
+log "服务端日志里的选图请求：$(grep -c '/select' "${work}/server.log" || true) 条、上传请求：$(grep -c '"PUT"' "${work}/server.log" || true) 条；image 相关告警：$(grep -c 'image_discard_failed' "${work}/server.log" || true)"
 log "xcodebuild 退出码 ${rc}"
 exit ${rc}

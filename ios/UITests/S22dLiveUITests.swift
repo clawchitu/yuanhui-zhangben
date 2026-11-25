@@ -1,16 +1,19 @@
 import Foundation
+import UIKit
 import XCTest
 
 /// S22d 联调（选商品图）：连本机服务端（图片开关开、本机目录对象存储、临时 Postgres），由 `scripts/s22d-live.sh` 建店、铺候选、起服务端。
 /// 平时跳过。用例按名字顺序跑：
 ///   1. 全新登录 → 卖出页扫码 A → 查码带回两张 ready 候选 → 04a 存好 → 选第二张 → 同步确认登记后发 select →
 ///      服务器上这个商品 image_ver = 1，`GET /v1/images` 的字节和第二张候选缩图逐字节一致；同步拉回新版本
+///   3. 扫码 C（条码库有、没有候选）→ 第三步「这个商品还没有图」→ 拍一张（`-uiFakeCamera`，真点快门）→ PUT 上传 →
+///      服务器上 C 的 image_ver = 1，`GET /v1/images` 回 200px JPEG（服务器存的缩图）
 ///   2. 扫码 B 选第二张时同步故意慢（`-uiSyncDelayMs`，登记还没传上去）→ 马上强杀 → 服务器上还没有 B →
 ///      正常重开 → 同步确认登记后补发 select → 服务器上 B 的 image_ver = 1（暂存跨重启）
 /// 服务器上的事实由测试进程自己以另一台设备登录核对（拉商品、取图）。
 @MainActor
 final class S22dLiveUITests: XCTestCase {
-    static let codeA = "6970000220011", codeB = "6970000220028"
+    static let codeA = "6970000220011", codeB = "6970000220028", codeC = "6970000220035"
     private var env: [String: String] { ProcessInfo.processInfo.environment }
 
     override func setUpWithError() throws {
@@ -153,5 +156,33 @@ final class S22dLiveUITests: XCTestCase {
         print("S22D 重开后读 B：ver=\(after.ver) 图和第二张候选逐字节一致=\(after.matchesSecond) 用时 \(Int(Date().timeIntervalSince(t0)))s")
         XCTAssertTrue(after.matchesSecond)
         again.terminate()
+    }
+
+    func test3PhotoWhenNoCandidates() throws {
+        let server = try Server.login(env)
+        XCTAssertEqual(try check(server, Self.codeC).ver, -1, "写前读：服务器上还没有 C")
+        let app = launch(["-uiRoute", "sell", "-uiScan", Self.codeC, "-uiProbe", "-uiFakeCamera"])
+        let field = el(app, "newProduct.name")
+        XCTAssertTrue(field.waitForExistence(timeout: 30))
+        wait("查码填上名称") { ((field.value as? String) ?? "").hasPrefix("E2E 选图测试") }
+        for c in "35" { app.buttons[String(c)].firstMatch.tap() }
+        app.buttons["newProduct.save"].firstMatch.tap()
+        XCTAssertTrue(el(app, "imageChoice.prompt").waitForExistence(timeout: 20), "没图：提示拍照")
+        app.buttons["photo.camera"].tap()
+        app.buttons["fakeCamera.shutter"].tap()
+        XCTAssertTrue(el(app, "page.sell").waitForExistence(timeout: 20))
+        let t0 = Date()
+        var pid: String?, ver = 0
+        try wait("服务器上 C 换好图", timeout: 60) {
+            let (vers, codes) = try server.catalog()
+            pid = codes[Self.codeC]; ver = pid.flatMap { vers[$0] } ?? 0
+            return ver == 1
+        }
+        let (img, status) = try server.get("/v1/images/\(pid ?? "")?v=\(ver)")
+        let size = UIImage(data: img)?.size ?? .zero
+        print("S22D 写后读 C：ver=\(ver) GET /v1/images=\(status) \(Int(size.width))×\(Int(size.height)) \(img.count) 字节 用时 \(Int(Date().timeIntervalSince(t0)))s")
+        XCTAssertEqual(status, 200)
+        XCTAssertEqual(max(size.width, size.height), 200, "服务器存的是 200px")
+        app.terminate()
     }
 }

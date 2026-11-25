@@ -210,6 +210,16 @@ public final class APIClient: Sendable {
         return r.image_ver
     }
 
+    /// `PUT /v1/images/:product_id`：拍照 / 相册的 JPEG 裸字节（手机端已压到长边 ≤ 1024、≤ 400 KB），回新的 `image_ver`。
+    /// 服务器按 EXIF 转正、去掉全部元数据、存 200px；内容相同不升版本（幂等），所以可以退回默认地址重发。
+    /// 不是 JPEG 或超过 1 MB 不发（服务器同样会回 400 / 413）
+    public func uploadImage(productId: UUID, jpeg: Data, token: String) async throws -> Int {
+        guard jpeg.count <= Self.uploadMaxBytes, ProductImageLoader.looksLikeJPEG(jpeg) else { throw APIError.badResponse(0) }
+        let data = try await sendRaw("PUT", "/v1/images/\(productId.uuidString.lowercased())", body: jpeg, contentType: "image/jpeg",
+                                     token: token, timeoutMs: 30_000)
+        do { return try JSONDecoder().decode(ImageVerBody.self, from: data).image_ver } catch { throw APIError.badResponse(200) }
+    }
+
     /// `PATCH /v1/devices/me`（§14 S15-2）。返回服务器定下的名字（重名会加序号）
     public func renameDevice(_ label: String, token: String) async throws -> String {
         let r: Label = try await send("PATCH", "/v1/devices/me", body: ["label": label], token: token)

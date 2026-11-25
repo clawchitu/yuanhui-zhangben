@@ -1,3 +1,4 @@
+import ImageIO
 import ShopCore
 import UIKit
 import XCTest
@@ -24,6 +25,7 @@ final class S22dTests: XCTestCase {
         let lock = NSLock()
         var replies: [Result<Int, Error>] = []
         var calls: [(UUID, String, String, String)] = []
+        var uploads: [(UUID, Data)] = []
         var gate: ImageGate = .ready
         var succeeded: [(UUID, Int, Data?)] = []
         var kicks = 0
@@ -37,6 +39,10 @@ final class S22dTests: XCTestCase {
             store: ps, gate: { _ in s.lock.withLock { s.gate } }, token: { "tok" },
             select: { id, code, cid, tok in
                 s.lock.withLock { s.calls.append((id, code, cid, tok)) }
+                return try s.next().get()
+            },
+            upload: { id, jpeg, tok in
+                s.lock.withLock { s.uploads.append((id, jpeg)) }
                 return try s.next().get()
             },
             enabled: { s.lock.withLock { s.enabled } },
@@ -92,7 +98,7 @@ final class S22dTests: XCTestCase {
     func testGateHoldsUntilUpsertConfirmed() async throws {
         let ps = PendingImageStore(root: root, storeId: store), s = Script()
         let id = UUID()
-        try ps.put(item(id), payload: Data([9]))
+        try ps.put(item(id), preview: Data([9]))
         s.gate = .waiting
         let u = uploader(s, store: ps)
         await u.flush(kickIfWaiting: true)
@@ -198,6 +204,145 @@ final class S22dTests: XCTestCase {
         await u.flush(kickIfWaiting: false)
         XCTAssertEqual(s.calls.count, 1, "过期的不发")
         XCTAssertEqual(ps.all().count, 0)
+    }
+
+    /// 照片：等登记确认后 PUT 暂存的上传件；成功回调带 200px 预览；同一商品后来的照片顶掉先前的选图；照片文件坏了丢掉不挡后面的
+    func testPhotoUploadsPayloadAndReplacesSelect() async throws {
+        let ps = PendingImageStore(root: root, storeId: store), s = Script()
+        let id = UUID(), jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 1, 2]), preview = Data([0xFF, 0xD8, 7])
+        try ps.put(item(id), preview: Data([9]))
+        try ps.put(PendingImage(kind: .photo, productId: id, createdAt: Date()), payload: jpeg, preview: preview)
+        let bad = UUID()
+        try ps.put(PendingImage(kind: .photo, productId: bad, createdAt: Date().addingTimeInterval(-1)), payload: Data("坏".utf8), preview: nil)
+        s.replies = [.success(4)]
+        await uploader(s, store: ps).flush(kickIfWaiting: false)
+        XCTAssertEqual(s.calls.count, 0, "照片顶掉了选图：不 select")
+        XCTAssertEqual(s.uploads.map(\.0), [id], "坏照片不发")
+        XCTAssertEqual(s.uploads.first?.1, jpeg)
+        XCTAssertEqual(s.succeeded.first?.1, 4)
+        XCTAssertEqual(s.succeeded.first?.2, preview, "prime 用 200px 预览")
+        XCTAssertEqual(ps.all().count, 0, "成功的删掉、坏的丢掉")
+    }
+
+    /// 照片也走闸门和重发：登记没确认不 PUT；确认后 PUT 碰上临时错误（5xx、连不上）照片留着，下一趟发同样的字节
+    func testPhotoWaitsForUpsertAndResendsAfterError() async throws {
+        for e in [Self.server(500), APIError.transport("x")] {
+            let ps = PendingImageStore(root: root, storeId: UUID()), s = Script()
+            let id = UUID(), jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 5, 6]), preview = Data([0xFF, 0xD8, 8])
+            try ps.put(PendingImage(kind: .photo, productId: id, createdAt: Date()), payload: jpeg, preview: preview)
+            let u = uploader(s, store: ps)
+            s.gate = .waiting
+            await u.flush(kickIfWaiting: true)
+            XCTAssertEqual(s.uploads.count, 0, "\(e)：登记没确认，不 PUT")
+            XCTAssertEqual(s.kicks, 1)
+            s.gate = .ready
+            s.replies = [.failure(e)]
+            await u.flush(kickIfWaiting: false)
+            XCTAssertEqual(s.uploads.count, 1)
+            XCTAssertEqual(ps.current(id)?.kind, .photo, "\(e)：临时错误，照片留着")
+            XCTAssertEqual(ps.payload(id), jpeg)
+            XCTAssertEqual(s.succeeded.count, 0)
+            await u.flush(kickIfWaiting: false)
+            XCTAssertEqual(s.uploads.map(\.1), [jpeg, jpeg], "\(e)：重发同样的字节")
+            XCTAssertEqual(s.succeeded.first?.2, preview)
+            XCTAssertNil(ps.current(id), "发成功删掉")
+        }
+    }
+
+    /// ① 存下的待发选图（json 里没有 token、缩图在 `.jpg`）：升级后照常读出来、照常发、成功时带缩图
+    func testEntriesFromFirstVersionStillWork() async throws {
+        let ps = PendingImageStore(root: root, storeId: store), s = Script()
+        let id = UUID()
+        try ps.put(item(id), payload: Data([0xFF, 0xD8, 4]))
+        let f = ps.dir.appendingPathComponent("\(id.uuidString.lowercased()).json")
+        var obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: f)) as? [String: Any])
+        obj.removeValue(forKey: "token")
+        try JSONSerialization.data(withJSONObject: obj).write(to: f)
+        XCTAssertNil(ps.current(id)?.token)
+        XCTAssertEqual(ps.preview(id), Data([0xFF, 0xD8, 4]), "没有 .thumb.jpg 时读 .jpg 里的缩图")
+        await uploader(s, store: ps).flush(kickIfWaiting: false)
+        XCTAssertEqual(s.calls.count, 1)
+        XCTAssertEqual(s.succeeded.first?.2, Data([0xFF, 0xD8, 4]))
+        XCTAssertNil(ps.current(id))
+    }
+
+    /// 旧照片还在上传时人又选了新图（同一秒里）：旧的成功后不删新的、不拿旧版本记预览；新的下一趟照常发
+    func testNewerChoiceSurvivesInFlightUpload() async throws {
+        let ps = PendingImageStore(root: root, storeId: store), s = Script()
+        let id = UUID(), t0 = Date()
+        try ps.put(PendingImage(kind: .photo, productId: id, createdAt: t0), payload: Data([0xFF, 0xD8, 0xFF, 0xE0, 1]), preview: Data([0xFF, 0xD8, 2]))
+        let u = ImageUploader(.init(
+            store: ps, gate: { _ in .ready }, token: { "tok" },
+            select: { _, _, cid, _ in s.lock.withLock { s.calls.append((id, "", cid, "")) }; return 2 },
+            upload: { _, _, _ in
+                // 上传途中：同一商品又选了一张候选图
+                try ps.put(PendingImage(kind: .select, productId: id, barcode: "6920152400319", candidateId: "1111111111111111",
+                                        createdAt: t0), preview: Data([0xFF, 0xD8, 3]))   // 同一秒（存盘只到秒）
+                return 1
+            },
+            enabled: { true }, succeeded: { i, v, d in s.lock.withLock { s.succeeded.append((i, v, d)) } }, needSync: {}))
+        await u.flush(kickIfWaiting: false)
+        XCTAssertEqual(ps.current(id)?.kind, .select, "新选的图还在")
+        XCTAssertEqual(s.succeeded.count, 0, "旧照片的结果不记预览")
+        await u.flush(kickIfWaiting: false)
+        XCTAssertEqual(s.calls.map(\.2), ["1111111111111111"], "新的下一趟发出去")
+        XCTAssertEqual(s.succeeded.first?.2, Data([0xFF, 0xD8, 3]))
+        XCTAssertNil(ps.current(id))
+    }
+
+    /// 压缩：竖拍 4032×3024（方向 .right）的大图 → 768×1024（方向烘进像素）、JPEG、≤ 400 KB；预览长边 200；小图不放大
+    func testCompressorMeetsSpec() throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let noisy = UIGraphicsImageRenderer(size: CGSize(width: 4032, height: 3024), format: format).image { c in
+            for y in stride(from: 0, to: 3024, by: 8) { for x in stride(from: 0, to: 4032, by: 8) {
+                UIColor(white: CGFloat((x * 7 + y * 13) % 255) / 255, alpha: 1).setFill(); c.fill(CGRect(x: x, y: y, width: 8, height: 8))
+            } }
+        }
+        let shot = UIImage(cgImage: noisy.cgImage!, scale: 1, orientation: .right)
+        let p = try XCTUnwrap(PhotoCompressor.compress(shot))
+        XCTAssertLessThanOrEqual(p.upload.count, PhotoCompressor.maxBytes)
+        let up = try XCTUnwrap(UIImage(data: p.upload))
+        XCTAssertEqual(up.size, CGSize(width: 768, height: 1024))
+        XCTAssertEqual(up.imageOrientation, .up)
+        let pv = try XCTUnwrap(UIImage(data: p.preview))
+        XCTAssertEqual(max(pv.size.width, pv.size.height), 200)
+        let small = UIGraphicsImageRenderer(size: CGSize(width: 300, height: 200), format: format).image { c in UIColor.red.setFill(); c.fill(CGRect(x: 0, y: 0, width: 300, height: 200)) }
+        XCTAssertEqual(UIImage(data: try XCTUnwrap(PhotoCompressor.compress(small)).upload)?.size, CGSize(width: 300, height: 200), "不放大")
+    }
+
+    /// 方向真的烘进像素：原始像素上红下蓝、方向 `.right`（竖拿手机拍）→ 转正后应是左蓝右红（不是只把宽高对调、把图压扁）。
+    /// 相册那条路（JPEG 带 EXIF 方向 6）走 `downsample` 也一样
+    func testCompressorBakesOrientation() throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let raw = UIGraphicsImageRenderer(size: CGSize(width: 1600, height: 1200), format: format).image { c in
+            UIColor.red.setFill(); c.fill(CGRect(x: 0, y: 0, width: 1600, height: 600))
+            UIColor.blue.setFill(); c.fill(CGRect(x: 0, y: 600, width: 1600, height: 600))
+        }.cgImage!
+        func check(_ upload: Data, _ what: String) throws {
+            let cg = try XCTUnwrap(UIImage(data: upload)?.cgImage, what)
+            XCTAssertEqual(CGSize(width: cg.width, height: cg.height), CGSize(width: 768, height: 1024), what)
+            let left = try pixel(cg, x: 100, y: 200), right = try pixel(cg, x: 668, y: 200)
+            XCTAssertTrue(left.b > 200 && left.r < 60, "\(what)：左边应是蓝的，实际 \(left)")
+            XCTAssertTrue(right.r > 200 && right.b < 60, "\(what)：右边应是红的，实际 \(right)")
+        }
+        try check(try XCTUnwrap(PhotoCompressor.compress(UIImage(cgImage: raw, scale: 1, orientation: .right))).upload, "拍照")
+        let jpeg = NSMutableData()
+        let dest = try XCTUnwrap(CGImageDestinationCreateWithData(jpeg, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(dest, raw, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(dest))
+        let album = try XCTUnwrap(PhotoCompressor.downsample(jpeg as Data))
+        try check(try XCTUnwrap(PhotoCompressor.compress(album)).upload, "相册")
+    }
+
+    /// 读一个像素（RGBA8）
+    func pixel(_ cg: CGImage, x: Int, y: Int) throws -> (r: Int, g: Int, b: Int) {
+        var px = [UInt8](repeating: 0, count: 4)
+        let ctx = try XCTUnwrap(CGContext(data: &px, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.draw(cg, in: CGRect(x: -x, y: y - cg.height + 1, width: cg.width, height: cg.height))
+        return (Int(px[0]), Int(px[1]), Int(px[2]))
     }
 
     // MARK: 闸门接真的本机库
