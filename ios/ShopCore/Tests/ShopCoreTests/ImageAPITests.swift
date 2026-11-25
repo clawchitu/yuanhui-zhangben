@@ -72,4 +72,22 @@ import Testing
         await #expect(throws: APIError.badResponse(200)) { _ = try await api.candidateImage("6920152400319", cid: "1111111111111111", token: "t") }
         #expect(stub.requests.map(\.path) == ["/v1/barcode-lookup/6920152400319/images", "/v1/barcode-lookup/6920152400319/images/1111111111111111"])
     }
+
+    /// 拍照上传：PUT /v1/images/<小写 id>，请求体就是 JPEG 字节，回 image_ver；不是 JPEG、超过 1 MB 不发
+    @Test func uploadPutsJPEGBytes() async throws {
+        let stub = try LocalStub { _ in .init(status: 200, body: #"{"image_ver":5}"#) }
+        defer { stub.stop() }
+        let api = client(stub.base), id = UUID()
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3])
+        #expect(try await api.uploadImage(productId: id, jpeg: jpeg, token: "t") == 5)
+        let r = try #require(stub.requests.first)
+        #expect(r.method == "PUT")
+        #expect(r.path == "/v1/images/\(id.uuidString.lowercased())")
+        #expect(r.body == jpeg)
+        await #expect(throws: APIError.badResponse(0)) { _ = try await api.uploadImage(productId: id, jpeg: Data("png".utf8), token: "t") }
+        await #expect(throws: APIError.badResponse(0)) {
+            _ = try await api.uploadImage(productId: id, jpeg: Data([0xFF, 0xD8]) + Data(count: APIClient.uploadMaxBytes), token: "t")
+        }
+        #expect(stub.requests.count == 1)
+    }
 }
