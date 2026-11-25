@@ -93,6 +93,12 @@ final class ProductImages {
         previews[productId] = Preview(image: image, ver: ver)
     }
 
+    /// 这次换图发不出去、丢掉了：预览撤掉，回到商品原来的图（或首字）
+    func dropPreview(productId: UUID) {
+        guard previews[productId]?.ver == nil else { return }
+        previews[productId] = nil
+    }
+
     func confirmPreview(productId: UUID, ver: Int) {
         guard !stopped, var p = previews[productId] else { return }
         p.ver = ver

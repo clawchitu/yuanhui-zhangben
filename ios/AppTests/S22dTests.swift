@@ -239,6 +239,62 @@ final class S22dTests: XCTestCase {
         XCTAssertFalse(try make(.family, demo: true))
     }
 
+    /// S22d-10：会话结束（`ProductImages.shutdown`）：这家店的暂存目录删掉，uploader 停住，之后再 flush 也不发
+    func testShutdownDropsPendingAndStops() async throws {
+        let ps = PendingImageStore(root: root, storeId: store), s = Script()
+        let u = uploader(s, store: ps)
+        let bases = APIBaseStore(defaultBase: "http://localhost:1", policy: APIEnvironment.policy, defaults: UserDefaults(suiteName: "S22dTests-shutdown")!)!
+        let changes = ImageChanges(store: ps, gate: { _ in .ready }, api: APIClient(bases: bases), token: { "tok" })
+        let images = ProductImages(db: nil, disk: ProductImageDisk(root: root.appendingPathComponent("disk"), storeId: store), enabled: true,
+                                   blocked: false, base: { URL(string: "http://localhost:1")! }, token: { "tok" }, syncBusy: { false })
+        images.changes = changes
+        changes.images = images
+        try ps.put(item(), payload: Data([1]))
+        changes.choose(productId: UUID(), barcode: "6920152400319", candidateId: "1111111111111111", thumbnail: nil)
+        images.shutdown()
+        XCTAssertNil(images.changes)
+        await waitUntil("暂存目录删掉") { !FileManager.default.fileExists(atPath: ps.dir.path) }
+        await changes.uploader.flush(kickIfWaiting: true)
+        let attempts = await changes.uploader.attempts
+        XCTAssertEqual(attempts, 0, "停住了：一个请求都不发")
+        _ = u
+    }
+
+    /// S22d-11：发成功 → prime 这张缩图、预览记下版本（商品版本追上后仍显示；别处换了更高版本就不用预览）；丢掉 → 预览撤掉
+    func testSucceededPrimesAndConfirmsPreview() async throws {
+        let ps = PendingImageStore(root: root, storeId: store)
+        let bases = APIBaseStore(defaultBase: "http://localhost:1", policy: APIEnvironment.policy, defaults: UserDefaults(suiteName: "S22dTests-ok")!)!
+        let changes = ImageChanges(store: ps, gate: { _ in .ready }, api: APIClient(bases: bases), token: { "tok" })
+        let images = ProductImages(db: nil, disk: ProductImageDisk(root: root.appendingPathComponent("disk"), storeId: store), enabled: true,
+                                   blocked: false, base: { URL(string: "http://localhost:1")! }, token: { "tok" }, syncBusy: { false })
+        images.changes = changes
+        changes.images = images
+        var kicks = 0
+        changes.kickSync = { kicks += 1 }
+        let id = UUID(), img = try XCTUnwrap(UIImage(data: Self.jpeg))
+        images.setPreview(img, productId: id)
+        XCTAssertNotNil(images.preview(ImageKey(id, 0)), "还没传上去：显示预览")
+        await changes.relayForTest.succeeded(id, 2, Self.jpeg)
+        XCTAssertEqual(kicks, 1, "成功后踢一趟同步拉回新版本")
+        XCTAssertNotNil(images.preview(ImageKey(id, 2)), "版本追上了：同一张图")
+        XCTAssertNil(images.preview(ImageKey(id, 3)), "别处又换了：不用预览")
+        await waitUntil("prime 落盘") { images.loader.disk.best(ImageKey(id, 2))?.0 == ImageKey(id, 2) }
+        let other = UUID()
+        images.setPreview(img, productId: other)
+        images.dropPreview(productId: other)
+        XCTAssertNil(images.preview(ImageKey(other, 0)), "丢掉的撤掉预览")
+        images.shutdown()
+    }
+
+    func waitUntil(_ what: String, timeout: TimeInterval = 5, _ ok: () async -> Bool) async {
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end {
+            if await ok() { return }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail("等不到：\(what)")
+    }
+
     // MARK: 候选轮询
 
     final class States: @unchecked Sendable {

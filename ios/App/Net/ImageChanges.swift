@@ -131,6 +131,8 @@ actor ImageUploader {
         let succeeded: @Sendable (UUID, Int, Data?) async -> Void
         /// 有要等登记确认的：踢一趟同步
         let needSync: @Sendable () async -> Void
+        /// 一条丢掉了（发不出去）：本机预览也撤掉
+        var dropped: @Sendable (UUID) async -> Void = { _ in }
         var now: @Sendable () -> Date = { Date() }
         var sleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     }
@@ -150,6 +152,21 @@ actor ImageUploader {
     init(_ deps: Deps) { self.deps = deps }
 
     func stop() { stopped = true }
+
+    /// 存一条再发一趟。写盘和「停住、全删」都在这个 actor 里串行做：会话结束之后迟到的暂存不会再把目录写回来
+    func enqueue(_ item: PendingImage, payload: Data?) async {
+        guard !stopped else { return }
+        do { try deps.store.put(item, payload: payload) } catch {
+            Self.logger.notice("换图暂存没写上：\(String(describing: error), privacy: .public)")
+        }
+        await flush(kickIfWaiting: true)
+    }
+
+    /// 会话结束：停住，这家店的暂存全删
+    func stopAndClear() {
+        stopped = true
+        deps.store.removeAll()
+    }
 
     /// 跑一趟。`kickIfWaiting`：有要等登记确认的就踢一趟同步（只在暂存当下传 true）
     func flush(kickIfWaiting: Bool) async {
@@ -171,9 +188,9 @@ actor ImageUploader {
         let now = deps.now()
         for item in deps.store.all() {
             guard !stopped else { return }
-            if now.timeIntervalSince(item.createdAt) > PendingImageStore.maxAge { deps.store.remove(item.productId); continue }
+            if now.timeIntervalSince(item.createdAt) > PendingImageStore.maxAge { await drop(item); continue }
             switch deps.gate(item.productId) {
-            case .gone: deps.store.remove(item.productId); continue
+            case .gone: await drop(item); continue
             case .waiting: waiting = true; continue
             case .ready: break
             }
@@ -183,15 +200,20 @@ actor ImageUploader {
                 deps.store.remove(item.productId)
                 await deps.succeeded(item.productId, ver, payload)
             case .keep: continue
-            case .drop: deps.store.remove(item.productId)
+            case .drop: await drop(item)
             case .notFound:
                 var next = item
                 next.notFound += 1
-                if next.notFound >= 3 { deps.store.remove(item.productId) } else { try? deps.store.update(next) }
+                if next.notFound >= 3 { await drop(item) } else { try? deps.store.update(next) }
             case .stopRound: return
             }
         }
         if waiting && kickIfWaiting { await deps.needSync() }
+    }
+
+    private func drop(_ item: PendingImage) async {
+        deps.store.remove(item.productId)
+        await deps.dropped(item.productId)
     }
 
     private func send(_ item: PendingImage, retried: Bool = false) async -> Outcome {
@@ -216,6 +238,8 @@ actor ImageUploader {
                     return await send(item, retried: true)
                 default: return .stopRound   // 429、5xx：这一趟先停
                 }
+            case .badResponse(0):
+                return .drop   // 本机就判出发不了（条码、cid 不合规）：丢掉，不挡后面的
             case .transport, .redirected, .badResponse:
                 return .stopRound
             }
@@ -235,6 +259,7 @@ final class ImageChanges {
     let api: APIClient
     let token: @Sendable () -> String?
     weak var images: ProductImages?
+    private let relay: Relay
     /// 踢一趟同步（夹具里没有同步，为 nil）
     var kickSync: (() -> Void)?
     private var stopped = false
@@ -244,12 +269,14 @@ final class ImageChanges {
         self.api = api
         self.token = token
         let relay = Relay()
+        self.relay = relay
         uploader = ImageUploader(.init(
             store: store, gate: gate, token: token,
             select: { try await api.selectImage(productId: $0, barcode: $1, candidateId: $2, token: $3) },
             enabled: { await relay.enabled() },
             succeeded: { id, ver, data in await relay.succeeded(id, ver, data) },
-            needSync: { await relay.needSync() }))
+            needSync: { await relay.needSync() },
+            dropped: { id in await relay.dropped(id) }))
         relay.target = self
     }
 
@@ -259,7 +286,13 @@ final class ImageChanges {
         @MainActor func enabled() -> Bool { target.map { !$0.stopped && ($0.images?.enabled ?? false) } ?? false }
         @MainActor func succeeded(_ id: UUID, _ ver: Int, _ data: Data?) { target?.succeeded(id, ver, data) }
         @MainActor func needSync() { target?.kickSync?() }
+        @MainActor func dropped(_ id: UUID) { target?.images?.dropPreview(productId: id) }
     }
+
+    #if DEBUG
+    /// 测试看：uploader 回调的中转
+    var relayForTest: Relay { relay }
+    #endif
 
     /// 正常启动：本机账本库做闸门（读不出来当「先等」）
     static func live(db: LocalDB, storeId: UUID, api: APIClient, token: @escaping @Sendable () -> String?) -> ImageChanges {
@@ -287,13 +320,8 @@ final class ImageChanges {
         guard !stopped else { return }
         if let thumbnail, let img = UIImage(data: thumbnail) { images?.setPreview(img, productId: productId) }
         let item = PendingImage(kind: .select, productId: productId, barcode: barcode, candidateId: candidateId, createdAt: Date())
-        let store = store, uploader = uploader
-        Task.detached(priority: .userInitiated) {
-            do { try store.put(item, payload: thumbnail) } catch {
-                ImageUploader.logger.notice("换图暂存没写上：\(String(describing: error), privacy: .public)")
-            }
-            await uploader.flush(kickIfWaiting: true)
-        }
+        let uploader = uploader
+        Task.detached(priority: .userInitiated) { await uploader.enqueue(item, payload: thumbnail) }
     }
 
     /// 同步成功之后、会话建立时：发一趟（不踢同步）
@@ -314,10 +342,7 @@ final class ImageChanges {
     func shutdown() {
         guard !stopped else { return }
         stopped = true
-        let store = store, uploader = uploader
-        Task.detached(priority: .utility) {
-            await uploader.stop()
-            store.removeAll()
-        }
+        let uploader = uploader
+        Task.detached(priority: .utility) { await uploader.stopAndClear() }
     }
 }

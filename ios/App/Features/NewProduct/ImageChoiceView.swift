@@ -73,7 +73,9 @@ final class ImageChoiceModel {
                 continue   // 连不上：到点为止接着试
             }
         }
-        await downloader?.value
+        // 缩图最多再等 3 秒（每张 5 秒超时、一张一张下，网慢时不让「还在找图」转太久）；迟到的照样显示
+        let cap = clock.now + .seconds(3)
+        while downloader != nil, clock.now < cap, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(100)) }
         settled = true
     }
 

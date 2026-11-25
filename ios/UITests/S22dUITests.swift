@@ -163,6 +163,22 @@ final class S22dUITests: XCTestCase {
         XCTAssertEqual(stub.requests(method: "POST").count, 0, "跳过：不发 select")
     }
 
+    /// S22d-7：第三步点返回键等于「跳过」：回卖出页，刚登记的这一件已在单子上（价签显示它），不发 select、不回 04a
+    func testBackOnImageStepSkips() {
+        readyLookup(Array(Self.cids.prefix(2)))
+        let app = launch(confirmAfter: 1)
+        register(app)
+        XCTAssertTrue(el(app, "page.newProductImage").waitForExistence(timeout: 10))
+        wait("缩图到了") { el(app, "imageChoice.option.1").exists }
+        app.buttons["返回"].firstMatch.tap()
+        XCTAssertTrue(el(app, "page.sell").waitForExistence(timeout: 5), "回卖出页，不回 04a")
+        XCTAssertFalse(el(app, "page.newProduct").exists)
+        XCTAssertTrue(el(app, "sell.tag").waitForExistence(timeout: 5), "这一件放进了单子")
+        XCTAssertTrue(el(app, "sell.tag").label.contains(Self.name) || app.staticTexts[Self.name].exists, "价签是刚登记的商品")
+        idle(4)
+        XCTAssertEqual(stub.requests(method: "POST").count, 0, "返回 = 跳过：不发 select")
+    }
+
     /// A6：登记一直没被确认（没有 `-uiConfirmUpsert`）：选了图也一个 select 都不发
     func testNoSelectBeforeUpsertConfirmed() {
         readyLookup(Array(Self.cids.prefix(2)))

@@ -196,7 +196,7 @@ public final class APIClient: Sendable {
     /// `GET /v1/barcode-lookup/:barcode/images/:cid`：一张候选缩图（JPEG 字节）。不是 JPEG 或超过上限按坏响应
     public func candidateImage(_ code: String, cid: String, token: String) async throws -> Data {
         guard Self.isLookupBarcode(code), ImageCandidates.isCandidateId(cid) else { throw APIError.badResponse(0) }
-        let data = try await sendRaw("GET", "/v1/barcode-lookup/\(code)/images/\(cid)", body: nil, token: token, timeoutMs: 10_000)
+        let data = try await sendRaw("GET", "/v1/barcode-lookup/\(code)/images/\(cid)", body: nil, token: token, timeoutMs: 5_000)
         guard data.count <= Self.candidateMaxBytes, ProductImageLoader.looksLikeJPEG(data) else { throw APIError.badResponse(200) }
         return data
     }
