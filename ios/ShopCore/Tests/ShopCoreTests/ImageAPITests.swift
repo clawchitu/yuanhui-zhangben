@@ -84,6 +84,8 @@ import Testing
         #expect(r.method == "PUT")
         #expect(r.path == "/v1/images/\(id.uuidString.lowercased())")
         #expect(r.body == jpeg)
+        #expect(r.headers["content-type"] == "image/jpeg", "服务器按 Content-Type 认图片裸体")
+        #expect(r.headers["authorization"] == "Bearer t")
         await #expect(throws: APIError.badResponse(0)) { _ = try await api.uploadImage(productId: id, jpeg: Data("png".utf8), token: "t") }
         await #expect(throws: APIError.badResponse(0)) {
             _ = try await api.uploadImage(productId: id, jpeg: Data([0xFF, 0xD8]) + Data(count: APIClient.uploadMaxBytes), token: "t")

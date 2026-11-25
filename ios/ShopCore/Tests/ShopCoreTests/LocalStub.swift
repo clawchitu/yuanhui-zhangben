@@ -8,6 +8,8 @@ final class LocalStub: @unchecked Sendable {
         let method: String
         let path: String
         let body: Data
+        /// 请求头（名字小写）
+        var headers: [String: String] = [:]
     }
     struct Reply: Sendable {
         var status: Int
@@ -73,13 +75,16 @@ final class LocalStub: @unchecked Sendable {
         let parts = lines.first?.split(separator: " ") ?? []
         guard parts.count >= 2 else { return nil }
         var length = 0
+        var headers: [String: String] = [:]
         for l in lines.dropFirst() {
             let kv = l.split(separator: ":", maxSplits: 1)
-            if kv.count == 2, kv[0].lowercased() == "content-length" { length = Int(kv[1].trimmingCharacters(in: .whitespaces)) ?? 0 }
+            guard kv.count == 2 else { continue }
+            headers[kv[0].lowercased()] = kv[1].trimmingCharacters(in: .whitespaces)
+            if kv[0].lowercased() == "content-length" { length = Int(kv[1].trimmingCharacters(in: .whitespaces)) ?? 0 }
         }
         let body = buf[end.upperBound...]
         guard body.count >= length else { return nil }
-        return Request(method: String(parts[0]), path: String(parts[1]), body: Data(body.prefix(length)))
+        return Request(method: String(parts[0]), path: String(parts[1]), body: Data(body.prefix(length)), headers: headers)
     }
 
     private static func send(_ c: NWConnection, _ r: Reply) {

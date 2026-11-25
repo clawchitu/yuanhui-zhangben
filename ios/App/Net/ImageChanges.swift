@@ -80,6 +80,10 @@ final class PendingImageStore: Sendable {
     }
 
     func payload(_ id: UUID) -> Data? { try? Data(contentsOf: jpg(id)) }
+    /// 这个商品现在暂存的那一条（发的过程中可能被新选的图、新拍的照片换掉）
+    func current(_ id: UUID) -> PendingImage? {
+        (try? Data(contentsOf: json(id))).flatMap { try? Self.decoder.decode(PendingImage.self, from: $0) }
+    }
     func preview(_ id: UUID) -> Data? { try? Data(contentsOf: thumb(id)) }
 
     func remove(_ id: UUID) {
@@ -199,9 +203,12 @@ actor ImageUploader {
             case .waiting: waiting = true; continue
             case .ready: break
             }
-            switch await send(item) {
+            let preview = deps.store.preview(item.productId)
+            let outcome = await send(item)
+            // 发的时候人又选了 / 拍了新的（同一个商品、同一个文件）：这一条的结果不再动暂存和预览，新的那条下一趟照常发
+            guard deps.store.current(item.productId)?.createdAt == item.createdAt else { continue }
+            switch outcome {
             case .sent(let ver):
-                let preview = deps.store.preview(item.productId)
                 deps.store.remove(item.productId)
                 await deps.succeeded(item.productId, ver, preview)
             case .keep: continue

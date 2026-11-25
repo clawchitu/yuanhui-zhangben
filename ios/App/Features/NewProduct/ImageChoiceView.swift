@@ -214,6 +214,8 @@ struct ImageChoiceView: View {
 struct ReplaceImageSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var choice: ImageChoiceModel
+    /// 点了关掉 / 就用这张：之后才压好的照片不再传（不盖掉刚才的选择）
+    @State private var closed = false
     let productId: UUID
     let changes: ImageChanges
 
@@ -227,12 +229,16 @@ struct ReplaceImageSheet: View {
 
     var body: some View {
         ImageChoiceView(choice: choice, mode: .stock, onUse: { cid in
+            guard !closed else { return }
+            closed = true
             changes.choose(productId: productId, barcode: choice.barcode, candidateId: cid, thumbnail: choice.bytes[cid])
             dismiss()
         }, onPhoto: { photo in
+            guard !closed else { return }
+            closed = true
             changes.upload(productId: productId, photo: photo)
             dismiss()
-        }, onSkip: { dismiss() }, replace: true)
+        }, onSkip: { closed = true; dismiss() }, replace: true)
         .padding(.top, 8)
         .background(Tokens.Palette.paper.ignoresSafeArea())
         .accessibilityElement(children: .contain)

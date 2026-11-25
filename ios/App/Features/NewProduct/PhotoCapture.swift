@@ -1,3 +1,5 @@
+import AVFoundation
+import ImageIO
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -16,6 +18,15 @@ enum PhotoCompressor {
     static let fallbackSide: CGFloat = 768
     static let maxBytes = 400 * 1024
     static let previewSide: CGFloat = 200
+
+    /// 相册原图（可能是 48MP、全景）不整张解开：ImageIO 直接按方向转正、缩到长边 1024 再交给 `compress`
+    static func downsample(_ data: Data) -> UIImage? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+                                     kCGImageSourceShouldCacheImmediately: true, kCGImageSourceThumbnailMaxPixelSize: Int(maxSide)]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        return UIImage(cgImage: cg)
+    }
 
     static func compress(_ image: UIImage) -> CompressedPhoto? {
         for side in [maxSide, fallbackSide] {
@@ -120,6 +131,8 @@ struct PhotoButtons: View {
     @State private var album: PhotosPickerItem?
     @State private var working = false
     @State private var failed = false
+    /// 相机权限被拒：不弹系统相机（会黑屏），提示去设置里打开；相册照常能用
+    @State private var cameraDenied = false
 
     static var fakeCamera: Bool {
         #if DEBUG
@@ -132,7 +145,9 @@ struct PhotoButtons: View {
     var body: some View {
         HStack(spacing: 10) {
             if CameraPicker.available || Self.fakeCamera {
-                PrimaryButton("拍一张", systemImage: "camera", mode: mode, style: .dark, size: .small) { camera = true }
+                PrimaryButton("拍一张", systemImage: "camera", mode: mode, style: .dark, size: .small) {
+                    if Self.cameraBlocked { cameraDenied = true } else { camera = true }
+                }
                     .disabled(working)
                     .accessibilityIdentifier("photo.camera")
             }
@@ -150,6 +165,14 @@ struct PhotoButtons: View {
         }
         .overlay { if working { ProgressView().accessibilityIdentifier("photo.working") } }
         .alert("这张图用不了，换一张试试", isPresented: $failed) { Button("好") {} }
+        .alert("相机没打开", isPresented: $cameraDenied) {
+            Button("去设置打开") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            }
+            Button("先从相册选", role: .cancel) {}
+        } message: {
+            Text("在「设置」里找到「元辉账本」，把「相机」打开就能拍照")
+        }
         .fullScreenCover(isPresented: $camera) {
             cameraView { img in
                 camera = false
@@ -162,10 +185,20 @@ struct PhotoButtons: View {
             working = true
             Task {
                 let data = try? await item.loadTransferable(type: Data.self)
-                let photo = await Task.detached(priority: .userInitiated) { data.flatMap(UIImage.init(data:)).flatMap(PhotoCompressor.compress) }.value
+                let photo = await Task.detached(priority: .userInitiated) { data.flatMap(PhotoCompressor.downsample).flatMap(PhotoCompressor.compress) }.value
                 finish(photo)
             }
         }
+    }
+
+    /// 相机权限被拒或受限（Debug 的 `-uiCamera denied` 当作被拒，和扫码页同一个参数）
+    static var cameraBlocked: Bool {
+        #if DEBUG
+        if let v = UIFixture.value(for: "-uiCamera", in: ProcessInfo.processInfo.arguments) { return v == "denied" }
+        if fakeCamera { return false }
+        #endif
+        let st = AVCaptureDevice.authorizationStatus(for: .video)
+        return st == .denied || st == .restricted
     }
 
     @ViewBuilder private func cameraView(_ done: @escaping (UIImage?) -> Void) -> some View {

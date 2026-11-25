@@ -310,6 +310,23 @@ final class S22dUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(probe(app)["shown"].flatMap(Int.init) ?? 0, 1, "价签上显示拍的图")
     }
 
+    /// 相机权限被拒：点「拍一张」不弹相机，提示「相机没打开」，可以去设置或先从相册选；不上传
+    func testCameraDeniedShowsHint() {
+        readyLookup([])
+        let app = launch(confirmAfter: 1, extra: ["-uiFakeCamera", "-uiCamera", "denied"])
+        register(app)
+        XCTAssertTrue(el(app, "page.newProductImage").waitForExistence(timeout: 10))
+        app.buttons["photo.camera"].tap()
+        XCTAssertTrue(app.alerts["相机没打开"].waitForExistence(timeout: 5), "提示去设置打开")
+        XCTAssertFalse(app.buttons["fakeCamera.shutter"].exists, "不弹相机")
+        XCTAssertTrue(app.alerts.buttons["去设置打开"].exists)
+        shot(app, "camera-denied")
+        app.alerts.buttons["先从相册选"].tap()
+        XCTAssertTrue(app.buttons["photo.album"].firstMatch.isHittable, "相册照样能点")
+        idle(2)
+        XCTAssertEqual(stub.requests(method: "PUT").count, 0)
+    }
+
     /// A4：没有候选时点「跳过」：零请求
     func testNoCandidatesSkip() {
         readyLookup([])
@@ -392,6 +409,41 @@ final class S22dUITests: XCTestCase {
         shoot(app)
         wait("PUT") { self.stub.requests(method: "PUT").count == 1 }
         XCTAssertTrue(el(app, "stockIn.image").waitForExistence(timeout: 5), "回到商品卡")
+    }
+
+    /// 换图页开着时扫码枪来的码不换掉商品卡；关掉以后扫码枪接着能用，新扫的商品照常记上进货（自审必须修 1：换图入口加进了进货页的扫码闸门）
+    func testStockInScanPausedWhileReplacingThenResumes() {
+        readyLookup(Array(Self.cids.prefix(2)))
+        // 农夫山泉 → 6 秒后二锅头（换图页开着）→ 12 秒后康师傅红烧牛肉面（换图页已关）。扫码枪速度逐键打进
+        let app = launch(route: "stockIn", confirmAfter: nil, scan: "6921168509256,6901234500011,6902514300011",
+                         extra: ["-uiFakeCamera", "-uiScanGap", "6"])
+        let name = el(app, "stockIn.name")
+        XCTAssertTrue(name.waitForExistence(timeout: 15))
+        let first = name.label
+        el(app, "stockIn.image").tap()
+        XCTAssertTrue(el(app, "page.replaceImage").waitForExistence(timeout: 5))
+        idle(7)
+        XCTAssertTrue(el(app, "page.replaceImage").exists, "换图页还开着")
+        app.buttons["imageChoice.skip"].tap()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        XCTAssertEqual(name.label, first, "换图页开着时扫到的码没有换掉商品卡")
+        wait("关掉以后扫码枪接着能用", timeout: 15) { name.exists && name.label.contains("牛肉面") }
+        el(app, "stockIn.qty").tap()
+        for c in "2" { app.buttons[String(c)].firstMatch.tap() }
+        el(app, "stockIn.cost").tap()
+        for c in "3" { app.buttons[String(c)].firstMatch.tap() }
+        el(app, "stockIn.commit").tap()
+        wait("记上一笔进货") { self.ledgerProbe(app)["stockIns"] == "1" }
+        XCTAssertEqual(stub.requests(method: "POST").count + stub.requests(method: "PUT").count, 0, "换图页点了关掉：不发")
+    }
+
+    private func ledgerProbe(_ app: XCUIApplication) -> [String: String] {
+        var out: [String: String] = [:]
+        for part in el(app, "debug.ledger").label.split(separator: ";") {
+            let kv = part.split(separator: "=", maxSplits: 1).map(String.init)
+            if kv.count == 2 { out[kv[0]] = kv[1] }
+        }
+        return out
     }
 
     /// A9：收银员进货页没有（收银员进不了进货）；开关关时商品卡上的图不能点

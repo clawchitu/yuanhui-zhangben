@@ -223,6 +223,30 @@ final class S22dTests: XCTestCase {
         XCTAssertEqual(ps.all().count, 0, "成功的删掉、坏的丢掉")
     }
 
+    /// 旧照片还在上传时人又选了新图：旧的成功后不删新的、不拿旧版本记预览；新的下一趟照常发
+    func testNewerChoiceSurvivesInFlightUpload() async throws {
+        let ps = PendingImageStore(root: root, storeId: store), s = Script()
+        let id = UUID(), t0 = Date()
+        try ps.put(PendingImage(kind: .photo, productId: id, createdAt: t0), payload: Data([0xFF, 0xD8, 0xFF, 0xE0, 1]), preview: Data([0xFF, 0xD8, 2]))
+        let u = ImageUploader(.init(
+            store: ps, gate: { _ in .ready }, token: { "tok" },
+            select: { _, _, cid, _ in s.lock.withLock { s.calls.append((id, "", cid, "")) }; return 2 },
+            upload: { _, _, _ in
+                // 上传途中：同一商品又选了一张候选图
+                try ps.put(PendingImage(kind: .select, productId: id, barcode: "6920152400319", candidateId: "1111111111111111",
+                                        createdAt: t0.addingTimeInterval(5)), preview: Data([0xFF, 0xD8, 3]))
+                return 1
+            },
+            enabled: { true }, succeeded: { i, v, d in s.lock.withLock { s.succeeded.append((i, v, d)) } }, needSync: {}))
+        await u.flush(kickIfWaiting: false)
+        XCTAssertEqual(ps.current(id)?.kind, .select, "新选的图还在")
+        XCTAssertEqual(s.succeeded.count, 0, "旧照片的结果不记预览")
+        await u.flush(kickIfWaiting: false)
+        XCTAssertEqual(s.calls.map(\.2), ["1111111111111111"], "新的下一趟发出去")
+        XCTAssertEqual(s.succeeded.first?.2, Data([0xFF, 0xD8, 3]))
+        XCTAssertNil(ps.current(id))
+    }
+
     /// 压缩：竖拍 4032×3024（方向 .right）的大图 → 768×1024（方向烘进像素）、JPEG、≤ 400 KB；预览长边 200；小图不放大
     func testCompressorMeetsSpec() throws {
         let format = UIGraphicsImageRendererFormat()
