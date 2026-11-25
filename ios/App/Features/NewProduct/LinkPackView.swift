@@ -95,7 +95,8 @@ struct LinkPackView: View {
     private var productCard: some View {
         HStack(spacing: 14) {
             if let p = model.product {
-                Thumb(initial: ProductNaming.isPlaceholder(p.name) ? nil : p.name.first.map(String.init), size: 52, fill: Tokens.Palette.line.opacity(0.6))
+                Thumb(initial: ProductNaming.isPlaceholder(p.name) ? nil : p.name.first.map(String.init), ref: Thumb.ref(p), size: 52,
+                      fill: Tokens.Palette.line.opacity(0.6))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(p.name).font(TypeScale.body.weight(.bold)).foregroundStyle(Tokens.Palette.ink)
                         .fixedSize(horizontal: false, vertical: true)

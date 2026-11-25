@@ -7,11 +7,16 @@ public struct RemoteConfig: Decodable, Equatable, Sendable {
     public let privacyURL: String
     public let supportURL: String
     public let apiBase: String?
+    /// 商品图开关（S22d-server 加，T11）。可选解析：缺字段（老服务器）当 false
+    public let productImagesEnabled: Bool?
 
     enum CodingKeys: String, CodingKey {
         case minBuild = "min_build", demoLoginEnabled = "demo_login_enabled", privacyURL = "privacy_url"
-        case supportURL = "support_url", apiBase = "api_base"
+        case supportURL = "support_url", apiBase = "api_base", productImagesEnabled = "product_images_enabled"
     }
+
+    /// 开关是否打开（缺字段当关）
+    public var imagesEnabled: Bool { productImagesEnabled ?? false }
 
     /// 本包的 build 号低于 `min_build` 时要显示「请更新」
     public func requiresUpdate(build: Int) -> Bool { build < minBuild }

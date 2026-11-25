@@ -92,6 +92,15 @@ extension LocalDB {
 
     // MARK: - 查
 
+    /// S22c：要有图的商品（`image_ver > 0`、未归档）和它们的图片版本，预取用。不在主线程调
+    public func imageWants() throws -> [ImageKey] {
+        try writer.read { db in
+            try Row.fetchAll(db, sql: "SELECT id, image_ver FROM product WHERE image_ver > 0 AND archived = 0").compactMap { r in
+                (r["id"] as String?).flatMap(UUID.init(uuidString:)).map { ImageKey($0, r["image_ver"]) }
+            }
+        }
+    }
+
     public func product(_ id: UUID) throws -> Product? {
         try writer.read { db in
             try Row.fetchOne(db, sql: "SELECT * FROM product WHERE id = ?", arguments: [id.uuidString]).map(Self.productFrom)

@@ -1,4 +1,6 @@
+import ShopCore
 import SwiftUI
+import UIKit
 
 /// 金额一律整数分；这里只负责显示。
 enum Money {
@@ -29,18 +31,54 @@ struct PriceText: View {
 }
 
 /// 商品缩略图；没图时显示商品名的首字（S16「64pt 小图或首字」），首字也没有才显示占位图标。
+/// S22c：给了 `ref`（商品 id + `image_ver`）就从 `ProductImages` 取真图。只同步读内存；没命中在后台读盘 / 下载，
+/// 加载中、没图（404）、开关关、演示店都显示首字，不转圈。
 struct Thumb: View {
     var image: Image?
     var initial: String?
+    /// 商品图（`image_ver` 为 0 = 没图）
+    var ref: ImageKey?
     var size: CGFloat = Tokens.Size.thumb
     /// 底色：放在白卡、价签上用米纸；直接放在米纸页面上时调深一点，不然看不出框（04a / 05）
     var fill: Color = Tokens.Palette.paper
 
+    @Environment(\.productImages) private var images
+    @State private var loaded: Loaded?
+
+    struct Loaded { let key: ImageKey; let generation: Int; let image: UIImage }
+
+    init(image: Image? = nil, initial: String? = nil, ref: ImageKey? = nil, size: CGFloat = Tokens.Size.thumb,
+         fill: Color = Tokens.Palette.paper) {
+        self.image = image; self.initial = initial; self.ref = ref; self.size = size; self.fill = fill
+    }
+
+    /// 商品 → Thumb 的图片引用（没图返回 nil）
+    static func ref(_ p: Product?) -> ImageKey? {
+        guard let p, p.imageVer > 0 else { return nil }
+        return ImageKey(p.id, p.imageVer)
+    }
+
+    private var remote: UIImage? {
+        guard let images, images.enabled, let ref, ref.ver > 0 else { return nil }
+        if let m = images.cached(ref) { return m }
+        if let l = loaded, l.generation == images.generation, l.key.productId == ref.productId, l.key.ver <= ref.ver { return l.image }
+        return nil
+    }
+
+    private struct LoadID: Equatable { let ref: ImageKey?; let generation: Int; let arrivals: Int; let enabled: Bool }
+
     var body: some View {
+        let remote = remote
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.2).fill(fill)
             if let image {
                 image.resizable().scaledToFill()
+            } else if let remote {
+                Image(uiImage: remote).resizable().scaledToFill()
+                    #if DEBUG
+                    .onAppear { images?.debugShown += 1 }
+                    .onDisappear { images?.debugShown -= 1 }
+                    #endif
             } else if let initial, !initial.isEmpty {
                 Text(initial)
                     .font(.system(size: size * 0.5, weight: .bold))
@@ -54,6 +92,14 @@ struct Thumb: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.2))
         .accessibilityHidden(true)
+        .task(id: LoadID(ref: ref, generation: images?.generation ?? 0, arrivals: ref.flatMap { images?.arrivals[$0] } ?? 0,
+                         enabled: images?.enabled ?? false)) {
+            guard let images, let ref, images.enabled, images.cached(ref) == nil else { return }
+            let gen = images.generation
+            if let img = await images.load(ref), !Task.isCancelled {
+                loaded = Loaded(key: ref, generation: gen, image: img)
+            }
+        }
     }
 }
 
@@ -74,6 +120,8 @@ struct PriceTag<Footer: View>: View {
     var thumb: Image?
     /// 没图时缩略图上显示的首字；nil = 占位图标
     var initial: String?
+    /// 商品图（S22c）
+    var imageRef: ImageKey?
     /// 下面一栏的上下留白（卖出页 03 的「买几个」栏比陈列页紧一点）
     var footerVerticalPadding: CGFloat = 12
     /// 紧凑版（卖出页 03）：黄底上下留白收小，单价收掉 DIN 多出来的行高，整块比原来矮约 23pt，贴近稿子
@@ -81,7 +129,8 @@ struct PriceTag<Footer: View>: View {
     let footer: Footer
 
     init(name: String, caption: String = "刚扫的 · 单价", unitPriceCents: Int, thumb: Image? = nil, initial: String? = nil,
-         footerVerticalPadding: CGFloat = 12, compact: Bool = false, @ViewBuilder footer: () -> Footer) {
+         imageRef: ImageKey? = nil, footerVerticalPadding: CGFloat = 12, compact: Bool = false, @ViewBuilder footer: () -> Footer) {
+        self.imageRef = imageRef
         self.footerVerticalPadding = footerVerticalPadding
         self.compact = compact
         self.name = name
@@ -95,7 +144,7 @@ struct PriceTag<Footer: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 14) {
-                Thumb(image: thumb, initial: initial)
+                Thumb(image: thumb, initial: initial, ref: imageRef)
                 VStack(alignment: .leading, spacing: compact ? 0 : 6) {
                     Text(name)
                         .font(TypeScale.title)

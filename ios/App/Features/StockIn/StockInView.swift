@@ -263,7 +263,7 @@ struct StockInView: View {
     private var productCard: some View {
         HStack(alignment: .top, spacing: 14) {
             Thumb(initial: model.product.flatMap { ProductNaming.isPlaceholder($0.name) ? nil : $0.name.first.map(String.init) },
-                  size: 64)
+                  ref: Thumb.ref(model.product), size: 64)
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.product?.name ?? "").font(.system(size: 26, weight: .bold)).foregroundStyle(Tokens.Palette.ink)
                     .fixedSize(horizontal: false, vertical: true)

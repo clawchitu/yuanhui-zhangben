@@ -9,6 +9,10 @@ enum AuthDefaults {
     static let lastUsername = "login.lastUsername"
     /// 本机改了名、还没报上服务器的手机名（§14 S15-2）。登录时带上；登录后改名失败也留在这里，回前台再报
     static let pendingDeviceLabel = "pendingDeviceLabel"
+    /// 上次取到的 `/v1/config` 商品图开关（S22c / T11）。从没取到过按关，离线沿用上次值
+    static let productImagesEnabled = "config.productImagesEnabled"
+    /// 演示店（审核号）会话的设备 id：商品图直接不请求（S22c，Fable 裁定 8）
+    static let demoDeviceId = "session.demoDeviceId"
 }
 
 /// 网络这一层的全局服务（S21）：服务器地址、API 客户端、钥匙串里的令牌、`/v1/config`。
@@ -34,6 +38,7 @@ final class AppServices {
         self.tokens = tokens
         self.defaults = defaults
         self.build = build
+        self.imagesEnabled = defaults.bool(forKey: AuthDefaults.productImagesEnabled)
     }
 
     /// 启动时建。包内默认地址不在白名单里（配置写错）时返回 nil，登录页提示「连不上」
@@ -59,6 +64,14 @@ final class AppServices {
         return config?.requiresUpdate(build: build) ?? false
     }
 
+    /// 商品图开关：上次取到的 `product_images_enabled`；从没取到过按关（T11）
+    private(set) var imagesEnabled = false
+    /// 开关变了的回调（当前会话的 `ProductImages.setEnabled`）
+    @ObservationIgnored var onImagesSwitch: ((Bool) -> Void)?
+
+    /// 这个设备的会话是不是演示店的（登录时记下）
+    func isDemoSession(_ deviceId: UUID) -> Bool { defaults.string(forKey: AuthDefaults.demoDeviceId) == deviceId.uuidString }
+
     /// 「看看演示」入口：服务器开关打开才显示（默认关；没取到配置也不显示）
     var demoLoginEnabled: Bool { config?.demoLoginEnabled ?? false }
 
@@ -75,6 +88,11 @@ final class AppServices {
             let c = try await api.config()
             api.bases.adopt(c.apiBase)
             config = c
+            if c.imagesEnabled != imagesEnabled || defaults.object(forKey: AuthDefaults.productImagesEnabled) == nil {
+                defaults.set(c.imagesEnabled, forKey: AuthDefaults.productImagesEnabled)
+                imagesEnabled = c.imagesEnabled
+                onImagesSwitch?(c.imagesEnabled)
+            }
         } catch {
             Self.logger.notice("取配置没成功：\(String(describing: error), privacy: .public)")
         }
@@ -87,6 +105,8 @@ final class AppServices {
     func establish(_ grant: SessionGrant, deviceId: UUID, db: LocalDB) async throws -> LocalSession {
         let ref = TokenRef.forDevice(deviceId)
         try tokens.save(grant.token, ref: ref)
+        if grant.store.isDemo == true { defaults.set(deviceId.uuidString, forKey: AuthDefaults.demoDeviceId) }
+        else { defaults.removeObject(forKey: AuthDefaults.demoDeviceId) }
         let s = try LocalSession(deviceId: deviceId, storeId: UUID(), role: grant.role, tokenRef: ref,
                                  storeName: grant.store.name, deviceLabel: grant.label)
         do {

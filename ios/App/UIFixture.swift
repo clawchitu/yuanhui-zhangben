@@ -27,6 +27,7 @@ import ShopCore
 ///   -uiCamera denied|authorized|notDetermined    把相机权限当成这个值（S14；卖出页同样认）
 ///   -uiScan / -uiScanSource / -uiScanGap / -uiScanDelay   FakeScanner 喂码，见 `FakeScanner`（S14；卖出页同样认）
 ///   卖出页的 -uiPaid / -uiAutoCommit / -uiHoldDone / -uiProbe 见 `SellFixture`
+///   -uiImages 地址 / -uiImagesOff / -uiImagesPrefetch / -uiFrameProbe   S22c 商品图和卡顿探针，见 `fixtureImages`
 /// Beta / Release 里这些参数一律不认：没有会话就出「还没登录」页。
 enum UIFixture {
     enum Screen: Equatable {
@@ -237,6 +238,21 @@ extension UIFixture {
     enum DemoSeedIds {
         static let water = UUID(uuidString: "5EED0000-0000-4000-8000-000000000206")!
         static let cola = UUID(uuidString: "5EED0000-0000-4000-8000-000000000204")!
+    }
+
+    /// S22c：夹具里开商品图（只在 Debug）。
+    ///   -uiImages http://localhost:端口   下载器连这个地址（UI 测试的桩），演示商品全部当作 image_ver = 1，先清空缓存目录
+    ///   -uiImagesOff                      开关当作关（显示首字、不请求）
+    ///   -uiImagesPrefetch                 启动就预取一轮（当作同步刚成功）
+    @MainActor static func fixtureImages(db: LocalDB, session: LocalSession, args: [String]) throws -> ProductImages? {
+        guard let raw = value(for: "-uiImages", in: args), let base = URL(string: raw),
+              APIBase.accept(raw, policy: APIEnvironment.policy) != nil else { return nil }
+        try db.writer.write { try $0.execute(sql: "UPDATE product SET image_ver = 1") }
+        let root = ProductImageDisk.defaultRoot()
+        try? FileManager.default.removeItem(at: root)
+        let images = ProductImages(db: db, disk: ProductImageDisk(root: root, storeId: session.storeId), enabled: !args.contains("-uiImagesOff"),
+                                   blocked: false, base: { base }, token: { "fixture-token" }, syncBusy: { false })
+        return images
     }
 
     /// 25a 未同步首页：前天记的 n 笔卖出（农夫山泉 1 瓶），一直没传上去（超过一天）

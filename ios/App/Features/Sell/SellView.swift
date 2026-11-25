@@ -237,7 +237,8 @@ struct FocusLineCard: View {
 
     var body: some View {
         PriceTag(name: line.name, caption: caption, unitPriceCents: Int(SellModel.unitPriceFen(line)),
-                 initial: ProductNaming.isPlaceholder(line.name) ? nil : line.name.first.map(String.init), footerVerticalPadding: 6, compact: true) {
+                 initial: ProductNaming.isPlaceholder(line.name) ? nil : line.name.first.map(String.init),
+                 imageRef: Thumb.ref(line.conversion.product), footerVerticalPadding: 6, compact: true) {
             HStack {
                 Text("买几个").font(TypeScale.body.weight(.bold)).foregroundStyle(Tokens.Palette.ink)
                 Spacer(minLength: 8)
