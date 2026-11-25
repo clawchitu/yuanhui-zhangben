@@ -13,6 +13,8 @@ struct PendingImage: Codable, Equatable, Sendable {
     var barcode: String?
     var candidateId: String?
     var createdAt: Date
+    /// 每一条自己的号：`createdAt` 存盘只到秒，同一秒里换了一次也要认得出「不是发出去的那一条」（① 存下的旧条目没有，读出来是 nil）
+    var token: UUID? = UUID()
     /// 能发了（登记已确认）之后服务器回 404 的次数：满 3 次丢掉
     var notFound = 0
 }
@@ -84,7 +86,8 @@ final class PendingImageStore: Sendable {
     func current(_ id: UUID) -> PendingImage? {
         (try? Data(contentsOf: json(id))).flatMap { try? Self.decoder.decode(PendingImage.self, from: $0) }
     }
-    func preview(_ id: UUID) -> Data? { try? Data(contentsOf: thumb(id)) }
+    /// 200px 预览；① 存下的选图把候选缩图放在 `.jpg`，没有 `.thumb.jpg` 时退回去读它
+    func preview(_ id: UUID) -> Data? { (try? Data(contentsOf: thumb(id))) ?? (current(id)?.kind == .select ? payload(id) : nil) }
 
     func remove(_ id: UUID) {
         try? FileManager.default.removeItem(at: json(id))
@@ -206,7 +209,7 @@ actor ImageUploader {
             let preview = deps.store.preview(item.productId)
             let outcome = await send(item)
             // 发的时候人又选了 / 拍了新的（同一个商品、同一个文件）：这一条的结果不再动暂存和预览，新的那条下一趟照常发
-            guard deps.store.current(item.productId)?.createdAt == item.createdAt else { continue }
+            guard let cur = deps.store.current(item.productId), cur.createdAt == item.createdAt, cur.token == item.token else { continue }
             switch outcome {
             case .sent(let ver):
                 deps.store.remove(item.productId)

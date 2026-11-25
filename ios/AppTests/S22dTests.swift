@@ -224,7 +224,49 @@ final class S22dTests: XCTestCase {
         XCTAssertEqual(ps.all().count, 0, "成功的删掉、坏的丢掉")
     }
 
-    /// 旧照片还在上传时人又选了新图：旧的成功后不删新的、不拿旧版本记预览；新的下一趟照常发
+    /// 照片也走闸门和重发：登记没确认不 PUT；确认后 PUT 碰上临时错误（5xx、连不上）照片留着，下一趟发同样的字节
+    func testPhotoWaitsForUpsertAndResendsAfterError() async throws {
+        for e in [Self.server(500), APIError.transport("x")] {
+            let ps = PendingImageStore(root: root, storeId: UUID()), s = Script()
+            let id = UUID(), jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 5, 6]), preview = Data([0xFF, 0xD8, 8])
+            try ps.put(PendingImage(kind: .photo, productId: id, createdAt: Date()), payload: jpeg, preview: preview)
+            let u = uploader(s, store: ps)
+            s.gate = .waiting
+            await u.flush(kickIfWaiting: true)
+            XCTAssertEqual(s.uploads.count, 0, "\(e)：登记没确认，不 PUT")
+            XCTAssertEqual(s.kicks, 1)
+            s.gate = .ready
+            s.replies = [.failure(e)]
+            await u.flush(kickIfWaiting: false)
+            XCTAssertEqual(s.uploads.count, 1)
+            XCTAssertEqual(ps.current(id)?.kind, .photo, "\(e)：临时错误，照片留着")
+            XCTAssertEqual(ps.payload(id), jpeg)
+            XCTAssertEqual(s.succeeded.count, 0)
+            await u.flush(kickIfWaiting: false)
+            XCTAssertEqual(s.uploads.map(\.1), [jpeg, jpeg], "\(e)：重发同样的字节")
+            XCTAssertEqual(s.succeeded.first?.2, preview)
+            XCTAssertNil(ps.current(id), "发成功删掉")
+        }
+    }
+
+    /// ① 存下的待发选图（json 里没有 token、缩图在 `.jpg`）：升级后照常读出来、照常发、成功时带缩图
+    func testEntriesFromFirstVersionStillWork() async throws {
+        let ps = PendingImageStore(root: root, storeId: store), s = Script()
+        let id = UUID()
+        try ps.put(item(id), payload: Data([0xFF, 0xD8, 4]))
+        let f = ps.dir.appendingPathComponent("\(id.uuidString.lowercased()).json")
+        var obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: f)) as? [String: Any])
+        obj.removeValue(forKey: "token")
+        try JSONSerialization.data(withJSONObject: obj).write(to: f)
+        XCTAssertNil(ps.current(id)?.token)
+        XCTAssertEqual(ps.preview(id), Data([0xFF, 0xD8, 4]), "没有 .thumb.jpg 时读 .jpg 里的缩图")
+        await uploader(s, store: ps).flush(kickIfWaiting: false)
+        XCTAssertEqual(s.calls.count, 1)
+        XCTAssertEqual(s.succeeded.first?.2, Data([0xFF, 0xD8, 4]))
+        XCTAssertNil(ps.current(id))
+    }
+
+    /// 旧照片还在上传时人又选了新图（同一秒里）：旧的成功后不删新的、不拿旧版本记预览；新的下一趟照常发
     func testNewerChoiceSurvivesInFlightUpload() async throws {
         let ps = PendingImageStore(root: root, storeId: store), s = Script()
         let id = UUID(), t0 = Date()
@@ -235,7 +277,7 @@ final class S22dTests: XCTestCase {
             upload: { _, _, _ in
                 // 上传途中：同一商品又选了一张候选图
                 try ps.put(PendingImage(kind: .select, productId: id, barcode: "6920152400319", candidateId: "1111111111111111",
-                                        createdAt: t0.addingTimeInterval(5)), preview: Data([0xFF, 0xD8, 3]))
+                                        createdAt: t0), preview: Data([0xFF, 0xD8, 3]))   // 同一秒（存盘只到秒）
                 return 1
             },
             enabled: { true }, succeeded: { i, v, d in s.lock.withLock { s.succeeded.append((i, v, d)) } }, needSync: {}))
