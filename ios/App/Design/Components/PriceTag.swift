@@ -52,14 +52,16 @@ struct Thumb: View {
         self.image = image; self.initial = initial; self.ref = ref; self.size = size; self.fill = fill
     }
 
-    /// 商品 → Thumb 的图片引用（没图返回 nil）
+    /// 商品 → Thumb 的图片引用。`image_ver` 为 0（服务器上还没图）也给：本机刚选 / 刚拍的图先显示（S22d）
     static func ref(_ p: Product?) -> ImageKey? {
-        guard let p, p.imageVer > 0 else { return nil }
+        guard let p else { return nil }
         return ImageKey(p.id, p.imageVer)
     }
 
     private var remote: UIImage? {
-        guard let images, images.enabled, let ref, ref.ver > 0 else { return nil }
+        guard let images, images.enabled, let ref else { return nil }
+        if let p = images.preview(ref) { return p }
+        guard ref.ver > 0 else { return nil }
         if let m = images.cached(ref) { return m }
         if let l = loaded, l.generation == images.generation, l.key.productId == ref.productId, l.key.ver <= ref.ver { return l.image }
         return nil
@@ -94,7 +96,7 @@ struct Thumb: View {
         .accessibilityHidden(true)
         .task(id: LoadID(ref: ref, generation: images?.generation ?? 0, arrivals: ref.flatMap { images?.arrivals[$0] } ?? 0,
                          enabled: images?.enabled ?? false)) {
-            guard let images, let ref, images.enabled, images.cached(ref) == nil else { return }
+            guard let images, let ref, ref.ver > 0, images.enabled, images.cached(ref) == nil else { return }
             let gen = images.generation
             if let img = await images.load(ref), !Task.isCancelled {
                 loaded = Loaded(key: ref, generation: gen, image: img)

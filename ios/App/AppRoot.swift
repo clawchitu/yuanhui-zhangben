@@ -426,7 +426,11 @@ struct AppRoot: View {
         }
         model.pendingReasonFixture = UIFixture.value(for: "-uiPendingReason", in: args).flatMap(PendingReason.init(rawValue:))
         if args.contains("-uiFirstSync") { model.firstSyncFixture = (194, 312) }  // 29 稿子上的数
-        if let images = try UIFixture.fixtureImages(db: db, session: session, args: args) { model.attachImages(images) }
+        if let images = try UIFixture.fixtureImages(db: db, session: session, args: args) {
+            model.services = UIFixture.fixtureServices(session: session, args: args)   // S22d：查码打桩
+            model.attachImages(images)
+            UIFixture.confirmUpserts(db: db, session: session, images: images, args: args)
+        }
         return model
     }
     #endif

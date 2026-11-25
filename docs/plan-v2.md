@@ -1518,3 +1518,13 @@ S22d-server 的 PR（#42）按 Fable 方案实现，负责人四点暂按默认�
 | S22d-4 | 开关几个 | 单开关 `PRODUCT_IMAGES_ENABLED`：关掉后候选、选图、上传、读图全部 404，`/v1/config.product_images_enabled=false`，连自拍图也不显示。若条款只禁第三方图又想保留拍照，要拆成两个开关，另开一段、需负责人定 | `config.ts`、`routes/config.ts` |
 | S22d-5 | 转存怎么做 | 异步：查码只插行、立刻唤醒进程内 worker（并发 1），不等下载（查码 2.5 秒预算，单图最长 8 秒）。重试共 3 次，隔 30 秒、5 分钟；永久性失败沿用 `PERMANENT`。下载和校验全部复用 `fetchImage` / `makeThumbnail`。键 `images/_catalog/<sha256(条码)前 32 位>/<cid>.jpg`，仍在 `images/` 下，RAM 不用改；不属于任何店，注销清除碰不到它。`last_error` 只记原因代码，`source_url` 不进日志、不下发。兜底任务（只在 `image_ver=0` 时落第一张）优先复制已 ready 的候选，没有才下载 | `lookup/candidates.ts`、`jobs/image-fetch.ts`、`jobs/scheduler.ts` |
 | S22d-6 | 选图、上传的写回 | 都在 `withStoreLock` 里：`image_ver`+1、`nextRev()`、`image_source` 记 `kuainiao` / `upload`；内容哈希与当前图相同不升版本。上传前查 `storeGone`、锁内复查，店没了走 `dropLateObject`。换图后尽力删旧对象和本机缓存，删不掉记 `image_discard_failed`（T34） | `routes/product-images.ts` |
+
+S22d-iOS 按 Fable 方案（11/25）分两个 PR：① 选图（候选、第三步选图页、暂存重发）；② 拍照和相册、没图时提示拍照、进货页商品卡重拍。裁定如下：
+
+| # | 问题 | 裁定 | 改在哪里 |
+|---|---|---|---|
+| S22d-7 | 选图放在登记哪一步 | 存好之后的第三步「选一张商品图」（04a 不动，SE 最大字号下已无余量）；返回键等于「跳过」，不回 04a。两张及以上出选图页，默认选中第一张；只有一张不问、直接 select；没有就照常回去。收银员（04c）、演示店、开关关没有这一步 | `NewProductView`、`ImageChoiceView` |
+| S22d-8 | 候选什么时候问 | 查码一回来就在后台问，不等存好：`pending` 每秒问一次 `/images`，最多 8 秒；存好时还没定就在第三步显示「还在找图…」，「跳过」随时可点，定了只剩 0 / 1 张就自己往下走。查码没带回候选（进程内记过的码、查码出错）先问一次；没网当没有 | `ImageChoiceModel` |
+| S22d-9 | 待发的选图存哪、什么时候发 | 不进账本库：`Application Support/pending-images/<本机店 id>/<商品>.json`（+ 候选缩图 `.jpg`，成功后 prime）。闸门 `LocalDB.imageGate`：本店 outbox 里这个商品的 `product_upsert` 还没拿到结果就等；被拒或本机没这个商品就丢。暂存当下、每次同步成功后、会话建立时各发一趟；只有暂存当下发现要等才踢一次同步。401 / 429 / 5xx / 连不上留到下一趟，503 等 `retry_after_s`（≤ 5 秒）再试一次，404 能发之后累计 3 次丢，400 / 403 / 413 丢，放 14 天丢，每店最多 100 条 | `App/Net/ImageChanges.swift`、`LocalDB/ImageGate.swift` |
+| S22d-10 | 会话切换时暂存怎么办 | 跟着会话走：退出、被踢、换身份时整个目录删掉；本机店 id 每次登录都是新的，下次登录认不出是同一家店。暂存的选图 / 照片没传上去就丢，**按 Fable 裁定不算 REVIEW 12.1 第②类**（②指账本和 op；图能重选重拍，不影响钱和库存），负责人要升级需改 REVIEW.md | 同上 |
+| S22d-11 | 选完马上看得到 | 本机预览：`ProductImages.previews`，Thumb 先显示它（离线也有），服务器回版本后记下，商品的 `image_ver` 超过它就不再用；会话结束清掉。不改本地 `product.image_ver`，成功后 prime 200px 缩图 + 踢一趟同步拉回新版本 | `ProductImages`、`Thumb` |

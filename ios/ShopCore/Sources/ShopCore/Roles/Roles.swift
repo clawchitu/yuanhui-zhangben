@@ -57,6 +57,7 @@ public enum Capability: String, Hashable, Sendable, CaseIterable {
     case renameDevice      // 改手机名
     case account           // 账号与密码、注销
     case heldOps           // 处理被踢设备暂存的账
+    case productImages     // 选商品图、拍照换图（S22d；收银员没有）
 
     /// 这项能力依赖的权限表行 id
     public var ruleIds: [String] {
@@ -78,6 +79,9 @@ public enum Capability: String, Hashable, Sendable, CaseIterable {
         case .renameDevice: return ["PATCH /v1/devices/me"]
         case .account: return ["POST /v1/account/password", "POST /v1/account/delete-request", "POST /v1/account/delete-cancel"]
         case .heldOps: return ["GET /v1/held-ops", "POST /v1/held-ops/{id}/resolve"]
+        case .productImages:
+            return ["GET /v1/barcode-lookup/{barcode}/images", "GET /v1/barcode-lookup/{barcode}/images/{cid}",
+                    "POST /v1/images/{product_id}/select", "PUT /v1/images/{product_id}"]
         }
     }
 }
