@@ -29,7 +29,9 @@ import ShopCore
 ///   卖出页的 -uiPaid / -uiAutoCommit / -uiHoldDone / -uiProbe 见 `SellFixture`
 ///   -uiImages 地址 / -uiImagesOff / -uiImagesPrefetch / -uiFrameProbe   S22c 商品图和卡顿探针，见 `fixtureImages`
 ///   -uiConfirmUpsert 秒                          S22d：登记放够这么多秒当作服务器已确认（见 `confirmUpserts`）
-///   -uiAPI 地址                                  S23a：开通页、已登录的手机连这个桩（令牌 fixture-token）
+///   -uiAPI 地址                                  S23a：开通页、已登录的手机连这个桩（令牌 fixture-token）；S23b 账号与密码、注销同样
+///   -uiUsername 名字                             S23b：这台手机登录用的账号名（家用 / 审核默认 yuanhui；none = 扫码登录的，不知道账号名）
+///   -uiDeletePending ISO 时间                    S23b：账号在注销申请中（当作服务器给了 delete_pending_until）
 /// Beta / Release 里这些参数一律不认：没有会话就出「还没登录」页。
 enum UIFixture {
     enum Screen: Equatable {

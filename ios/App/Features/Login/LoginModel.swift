@@ -18,6 +18,8 @@ final class LoginModel {
     /// 扫码登录页的一句话（过期码、用过的码、不是登录码……）
     private(set) var scanMessage: String?
     var scanOpen = false
+    /// 登录页顶上的一句说明（S23b：刚申请了注销，「X 之前用账号密码登录，可以撤回」）
+    var notice: String?
 
     let services: AppServices?
     let db: LocalDB
@@ -94,7 +96,9 @@ final class LoginModel {
             services.defaults.set(user, forKey: AuthDefaults.lastUsername)
             // 带着去的名字已经报上去了（重名时服务器会加序号，以响应为准）
             if pending != nil { services.pendingDeviceLabel = nil }
-            finish(try await services.establish(grant, deviceId: deviceId, db: db))
+            let session = try await services.establish(grant, deviceId: deviceId, db: db)
+            services.rememberUsername(user, deviceId: deviceId)
+            finish(session)
         } catch let e as APIError {
             Self.logger.notice("登录没成功：\(String(describing: e), privacy: .public)")
             handle(e)
@@ -189,6 +193,7 @@ final class LoginModel {
 
     private func finish(_ session: LocalSession) {
         password = ""
+        notice = nil
         onSignedIn(session)
     }
 

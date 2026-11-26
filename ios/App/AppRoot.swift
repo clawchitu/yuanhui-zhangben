@@ -119,6 +119,8 @@ struct AppRoot: View {
             guard let db = note.object as? LocalDB else { return }
             if case .app(let model, _) = boot { model.sync?.stop(); model.images?.shutdown() }
             boot = AppRoot.afterSignOut(db: db, services: services)
+            // S23b：刚申请了注销，登录页顶上说一句怎么撤回
+            if case .signedOut(let login) = boot, let notice = note.userInfo?["notice"] as? String { login.notice = notice }
             Task { await recoverSignedOut() }
         }
         .onReceive(NotificationCenter.default.publisher(for: AppRoot.showLogin)) { note in
@@ -353,6 +355,7 @@ struct AppRoot: View {
         figures.lastRecord = HomeFigures.LastRecord.today(try db.lastRecord(), now: Date())
         let model = AppModel(db: db, session: session, figures: figures)
         model.services = services
+        model.accountName = services?.username(deviceId: session.deviceId)
         model.pendingDelay = AppModel.pendingDelayLive  // 顶栏 0 → N 等 4 秒（Fable 裁定 1）
         #if DEBUG
         // 联调（S22a XCUITest）：真会话下也能用假扫码、调试探针；-uiInjectDemo 往本机塞服务器上没有的演示商品（卖它会被拒）
@@ -420,6 +423,13 @@ struct AppRoot: View {
                              fixedNow: UIFixture.designNow)
         model.liveRecent = liveRecent
         model.sellFixture = SellFixture.from(args)
+        // S23b：账号名、注销申请中
+        let username = UIFixture.value(for: "-uiUsername", in: args) ?? (role == .cashier ? "none" : "yuanhui")
+        model.accountName = username == "none" ? nil : username
+        if let until = UIFixture.value(for: "-uiDeletePending", in: args) {
+            try db.setMeta(.deletePendingUntil, until)
+            model.figures.deletePendingUntil = until
+        }
         // 顶栏待传的 4 秒延迟：夹具里默认不等，带 -uiPendingDelay [秒] 才开
         if args.contains("-uiPendingDelay") {
             model.pendingDelay = .seconds(UIFixture.value(for: "-uiPendingDelay", in: args).flatMap(Double.init) ?? 4)

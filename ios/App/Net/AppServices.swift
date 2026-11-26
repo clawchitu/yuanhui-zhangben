@@ -13,6 +13,8 @@ enum AuthDefaults {
     static let productImagesEnabled = "config.productImagesEnabled"
     /// 演示店（审核号）会话的设备 id：商品图直接不请求（S22c，Fable 裁定 8）
     static let demoDeviceId = "session.demoDeviceId"
+    /// S23b：账号密码登录的会话用的账号名，值是「设备 id 换行 账号名」（只认同一个设备 id 的，换了会话就不算）
+    static let sessionUsername = "session.username"
 }
 
 /// 网络这一层的全局服务（S21）：服务器地址、API 客户端、钥匙串里的令牌、`/v1/config`。
@@ -111,15 +113,31 @@ final class AppServices {
                                  storeName: grant.store.name, deviceLabel: grant.label)
         do {
             let epoch = grant.epoch
+            let deletePending = grant.deletePendingUntil
             try await Task.detached(priority: .userInitiated) {
                 try db.beginSession(s)
                 try db.setMeta(.serverEpoch, epoch)
+                // S23b：账号在注销申请中（7 天内登录）：开会话时就记下，首页马上提示、可撤回；第一趟同步之前就不推（§14 S04-2）
+                try db.setMeta(.deletePendingUntil, deletePending)
             }.value
         } catch {
             tokens.delete(ref: ref)
             throw error
         }
         return s
+    }
+
+    /// S23b：账号密码登录成功后记下账号名（「账号与密码」页、23 注销页显示）
+    func rememberUsername(_ name: String, deviceId: UUID) {
+        defaults.set("\(deviceId.uuidString)\n\(name)", forKey: AuthDefaults.sessionUsername)
+    }
+
+    /// 这个会话的账号名（不是账号密码登录的会话为 nil）
+    func username(deviceId: UUID) -> String? {
+        guard let v = defaults.string(forKey: AuthDefaults.sessionUsername) else { return nil }
+        let parts = v.split(separator: "\n", maxSplits: 1).map(String.init)
+        guard parts.count == 2, parts[0] == deviceId.uuidString else { return nil }
+        return parts[1]
     }
 
     /// 还没报上服务器的手机名（§14 S15-2）

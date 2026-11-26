@@ -311,6 +311,30 @@ final class SyncEngineTests: XCTestCase, @unchecked Sendable {
         XCTAssertNotNil(try db.syncStatus().deletePendingUntil)
     }
 
+    /// S23b：登录响应带 `delete_pending_until`（7 天内重新登录）时开会话就记下：第一趟就不推；
+    /// 撤回后（本机清掉注销状态、服务器响应不再带）下一趟把留在 outbox 的全部补传
+    func testDeletePendingFromLoginStopsFirstPushAndResumesAfterCancel() throws {
+        let db = try makeDB()
+        try db.setMeta(.deletePendingUntil, "2026-11-29T10:00:00.000Z")
+        _ = try sell(db); _ = try sell(db)
+        let pushed = Box<[Int]>([])
+        let pending = Box<String?>("2026-11-29T10:00:00.000Z")
+        let e = SyncEngine(db: db, appBuild: 1) { body in
+            pushed.value.append(self.ops(body).count)
+            return (200, try self.response(ops: self.ops(body), deletePending: pending.value))
+        }
+        try e.sync()
+        XCTAssertEqual(pushed.value, [0], "注销中：第一趟也不推")
+        XCTAssertEqual(try db.syncStatus().pendingCount, 2)
+        // 撤回：本机清掉（AppModel.setDeletePending），服务器不再带
+        try db.setMeta(.deletePendingUntil, nil)
+        pending.value = nil
+        try e.sync()
+        XCTAssertEqual(pushed.value, [0, 2], "撤回后补传")
+        XCTAssertEqual(try db.syncStatus().pendingCount, 0)
+        XCTAssertNil(try db.syncStatus().deletePendingUntil)
+    }
+
     func testBatchUpsertKeepsLinesAndLocalReversalReplacedByOpId() throws {
         let db = try makeDB()
         let (batch, _) = try sell(db)

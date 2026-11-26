@@ -8,7 +8,7 @@ final class S15UITests: XCTestCase {
     /// 收银员到不了的页（S15 验收逐项列出的 6 个 + 设备管理、账号、改名）
     static let cashierForbidden: Set<String> = ["page.stockIn", "page.reports", "page.products", "page.count",
                                                 "page.expiry", "page.pairing", "page.devices", "page.account",
-                                                "page.deviceName"]
+                                                "page.deleteAccount", "page.deviceName"]
 
     private func launch(_ args: [String]) -> XCUIApplication {
         let app = XCUIApplication()

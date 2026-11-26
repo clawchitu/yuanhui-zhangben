@@ -41,6 +41,18 @@ struct SellView: View {
             let layout = ScanLayout(size: geo.size, insets: geo.safeAreaInsets, compact: compactFinder)
             VStack(spacing: 0) {
                 ModeBar(title: "卖出", mode: .sell, pendingCount: app.figures.pendingCount, onBack: { dismiss() })
+                if app.figures.deletePendingUntil != nil {
+                    // S23b：注销申请期间服务器不收（§14 S04-2）：照样能记，先存在本机，撤回后补传
+                    Text("账号正在注销：记的账先存在这台手机上，撤回后会自动补传")
+                        .font(TypeScale.secondary.weight(.semibold))
+                        .foregroundStyle(Tokens.Palette.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Tokens.Palette.tag)
+                        .accessibilityIdentifier("sell.deleting")
+                }
                 basketArea
                     .frame(maxHeight: .infinity)
                     .overlay(alignment: .top) { if let n = model.notice { noticeBanner(n) } }
