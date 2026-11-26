@@ -129,6 +129,8 @@ final class S23aLiveUITests: XCTestCase {
     private func waitRecord(_ app: XCUIApplication, _ text: String, timeout: TimeInterval) {
         if !el(app, "page.records").exists {
             el(app, "home.reports").tap()
+            // S24 起看账页先取账，「记了 N 笔」卡（或没网时的「记的账」）出来了才点
+            XCTAssertTrue(el(app, "reports.records").waitForExistence(timeout: 20))
             el(app, "reports.records").tap()
         }
         XCTAssertTrue(el(app, "page.records").waitForExistence(timeout: 10))

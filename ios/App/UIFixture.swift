@@ -29,7 +29,9 @@ import ShopCore
 ///   卖出页的 -uiPaid / -uiAutoCommit / -uiHoldDone / -uiProbe 见 `SellFixture`
 ///   -uiImages 地址 / -uiImagesOff / -uiImagesPrefetch / -uiFrameProbe   S22c 商品图和卡顿探针，见 `fixtureImages`
 ///   -uiConfirmUpsert 秒                          S22d：登记放够这么多秒当作服务器已确认（见 `confirmUpserts`）
-///   -uiAPI 地址                                  S23a：开通页、已登录的手机连这个桩（令牌 fixture-token）；S23b 账号与密码、注销同样
+///   -uiAPI 地址                                  S23a：开通页、已登录的手机连这个桩（令牌 fixture-token）；S23b 账号与密码、注销同样；S24 看账同样
+///   -uiReportGoods                               S24：多登记稿子 09「快没货了」的红牛（罐）、双汇王中王（根）
+///   -uiReportDate YYYY-MM-DD / -uiReportMonth YYYY-MM / -uiReportTab month   S24：看账看某一天 / 某个月、一进来就看本月
 ///   -uiUsername 名字                             S23b：这台手机登录用的账号名（家用 / 审核默认 yuanhui；none = 本机没记着，等 `/v1/me` 给）
 ///   -uiDeletePending ISO 时间                    S23b：账号在注销申请中（当作服务器给了 delete_pending_until）
 /// Beta / Release 里这些参数一律不认：没有会话就出「还没登录」页。
@@ -328,6 +330,21 @@ extension UIFixture {
                                 priceFen: Fen(200))
             try db.applyBaseline(CatalogBaseline(products: [p], barcodes: [
                 try BarcodeRecord(barcode: wrapNameBarcode, productId: p.id, packQty: 1, unitName: "瓶", packPriceFen: nil)]))
+        }
+        if args.contains("-uiReportGoods") {
+            // S24：稿子 09「快没货了」的两样（单位「罐」「根」从本机商品表查）
+            let items: [(Int, String, String, Int64, String)] = [
+                (0x2F1, "红牛 250ml", "罐", 600, "6920202888883"),
+                (0x2F2, "双汇王中王 60g", "根", 250, "6902890218000"),
+            ]
+            var products: [Product] = [], codes: [BarcodeRecord] = []
+            for (n, name, unit, price, code) in items {
+                let p = try Product(id: UUID(uuidString: String(format: "5EED0000-0000-4000-8000-%012X", n))!, name: name,
+                                    baseUnit: unit, priceFen: Fen(price))
+                products.append(p)
+                codes.append(try BarcodeRecord(barcode: code, productId: p.id, packQty: 1, unitName: unit, packPriceFen: nil))
+            }
+            try db.applyBaseline(CatalogBaseline(products: products, barcodes: codes))
         }
         if args.contains("-uiMoreGoods") {
             // S17：同厂商另一个面（前缀 69025143 命中两个商品，prefix.json 同款）、按名称找的几样牛奶、一个零价商品
