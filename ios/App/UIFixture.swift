@@ -29,6 +29,7 @@ import ShopCore
 ///   卖出页的 -uiPaid / -uiAutoCommit / -uiHoldDone / -uiProbe 见 `SellFixture`
 ///   -uiImages 地址 / -uiImagesOff / -uiImagesPrefetch / -uiFrameProbe   S22c 商品图和卡顿探针，见 `fixtureImages`
 ///   -uiConfirmUpsert 秒                          S22d：登记放够这么多秒当作服务器已确认（见 `confirmUpserts`）
+///   -uiAPI 地址                                  S23a：开通页、已登录的手机连这个桩（令牌 fixture-token）
 /// Beta / Release 里这些参数一律不认：没有会话就出「还没登录」页。
 enum UIFixture {
     enum Screen: Equatable {
@@ -271,8 +272,9 @@ extension UIFixture {
     }
 
     /// S22d：夹具里查码也打桩（`-uiImages` 的地址），令牌是 fixture-token
+    /// S23a：`-uiAPI 地址` 只接网络桩（开通页、已登录的手机），不开商品图
     @MainActor static func fixtureServices(session: LocalSession, args: [String]) -> AppServices? {
-        guard let raw = value(for: "-uiImages", in: args), let api = fixtureAPI(base: raw) else { return nil }
+        guard let raw = value(for: "-uiImages", in: args) ?? value(for: "-uiAPI", in: args), let api = fixtureAPI(base: raw) else { return nil }
         let tokens = MemoryTokenStore()
         try? tokens.save("fixture-token", ref: session.tokenRef)
         return AppServices(api: api, tokens: tokens, defaults: UserDefaults(suiteName: "ui-fixture-api")!)

@@ -17,6 +17,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
     case count           // 12 盘点
     case pairing         // 17a / 17b 开通
     case devices         // 已登录的手机
+    case held            // 待确认的账（被退出的手机补传的，S23a）
     case deviceName      // 这台手机的名字
     case scanner         // 扫码枪
     case account         // 账号与密码、注销（23）
@@ -36,6 +37,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .count: .count
         case .pairing: .pairing
         case .devices: .manageDevices
+        case .held: .heldOps
         case .deviceName: .renameDevice
         case .account: .account
         case .settings, .records, .scanner, .privacy, .logout, .pending: nil
@@ -64,6 +66,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .count: "盘点"
         case .pairing: "给家里人 / 收银员开通"
         case .devices: "已登录的手机"
+        case .held: "待确认的账"
         case .deviceName: "这台手机的名字"
         case .scanner: "扫码枪"
         case .account: "账号与密码"
@@ -80,10 +83,9 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .products: "S25"
         case .expiry: "S27"
         case .count: "S26"
-        case .pairing, .devices: "S23a"
         case .account: "S23b"
         case .privacy: "S21"
-        case .logout, .pending: nil
+        case .logout, .pending, .pairing, .devices, .held: nil
         case .sell, .manualCode, .discount, .stockIn, .settings, .deviceName, .scanner, .records, .undoLast: nil
         }
     }
@@ -105,7 +107,7 @@ struct RouteView: View {
 
     /// 这条路由在这些能力下出哪种页面（纯函数，单元测试逐个路由 × 身份测）
     enum Content: Equatable {
-        case denied, sell, manualCode, discountEntry, stockIn, settings, deviceName, scanner, records, logout, pending, placeholder
+        case denied, sell, manualCode, discountEntry, stockIn, settings, deviceName, scanner, records, logout, pending, pairing, devices, held, placeholder
     }
 
     static func content(for route: Route, capabilities: Capabilities) -> Content {
@@ -121,6 +123,9 @@ struct RouteView: View {
         case .records, .undoLast: return .records
         case .logout: return .logout
         case .pending: return .pending
+        case .pairing: return .pairing
+        case .devices: return .devices
+        case .held: return .held
         default: return .placeholder
         }
     }
@@ -142,6 +147,9 @@ struct RouteView: View {
                 RecordsView(db: model.db, cashier: model.layout == .cashier, route: route, clock: { [model] in model.now })
             case .logout: LogoutView()
             case .pending: PendingView(db: model.db, clock: { [model] in model.now })
+            case .pairing: PairingView()
+            case .devices: DevicesView()
+            case .held: HeldListView()
             // 看账（S24 之前是占位页）：家用首页没有「刚记的」条时从这里进记的账（§14 S15-6）
             case .placeholder: PlaceholderPage(route: route, layout: model.layout, link: route == .reports ? .records : nil)
             }

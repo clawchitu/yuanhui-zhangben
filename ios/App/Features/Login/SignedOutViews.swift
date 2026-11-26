@@ -86,6 +86,9 @@ struct LogoutView: View {
     @Environment(\.dismiss) private var dismiss
     enum Phase: Equatable { case confirm, working, pending(Int) }
     @State private var phase = Phase.confirm
+    /// 26 通用确认面板：进这一页就弹（S23a）；「不退了」或把面板拉下去 = 回到上一页
+    struct Ask: Identifiable { let id = 0 }
+    @State private var ask: Ask? = Ask()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -94,6 +97,18 @@ struct LogoutView: View {
                 .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
         }
         .background(Tokens.Palette.paper.ignoresSafeArea())
+        .confirmSheet(item: $ask, page: .logout) { _ in
+            ConfirmPanel(title: "退出登录？", message: "退出以后，这台手机上的账要重新登录才能看。待传的账会先传上去。",
+                         confirmTitle: "退出登录", cancelTitle: "不退了", mode: .neutral,
+                         confirmStyle: .dark, confirmImage: nil, confirmId: "logout.confirm", cancelId: "logout.cancel",
+                         busy: phase != .confirm,
+                         // 面板收起的动画里再点一下不会再退一次
+                         onConfirm: { guard phase == .confirm else { return }; phase = .working; ask = nil; Task { await run() } },
+                         onCancel: { ask = nil })
+        }
+        .onChange(of: ask == nil) { _, closed in
+            if closed, phase == .confirm { dismiss() }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("page.logout")
     }
@@ -101,13 +116,7 @@ struct LogoutView: View {
     @ViewBuilder private var content: some View {
             switch phase {
             case .confirm:
-                Text("退出以后，这台手机上的账要重新登录才能看。待传的账会先传上去。")
-                    .font(TypeScale.body).fixedSize(horizontal: false, vertical: true)
-                Spacer()
-                PrimaryButton("退出登录", style: .dark) { Task { await run() } }
-                    .accessibilityIdentifier("logout.confirm")
-                PrimaryButton("不退了", style: .ghost) { dismiss() }
-                    .accessibilityIdentifier("logout.cancel")
+                Spacer()   // 确认在 26 面板里
             case .working:
                 HStack(spacing: 12) { ProgressView(); Text("正在把待传的账传上去…").font(TypeScale.body) }
                 Spacer()
