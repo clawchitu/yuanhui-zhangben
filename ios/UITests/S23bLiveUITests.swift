@@ -61,9 +61,19 @@ final class S23bLiveUITests: XCTestCase {
         try call("POST", "/v1/auth/login", ["username": user, "password": pw, "device_id": UUID().uuidString.lowercased(), "label": "S23B 乙"])
     }
 
-    private func type(_ app: XCUIApplication, _ id: String, _ text: String) {
+    /// `next: true`：上一个框刚打完字，按键盘上的「下一项」（回车）跳到这个框，和老人的用法一样；
+    /// 从一个密码框直接点另一个密码框，模拟器上常常焦点进不去（系统的密码自动填充接管了键盘）
+    private func type(_ app: XCUIApplication, _ id: String, _ text: String, next: Bool = false) {
         let f = app.secureTextFields[id]
         XCTAssertTrue(f.waitForExistence(timeout: 10), "\(id) 存在")
+        if next {
+            app.typeText("\n")
+            let end = Date().addingTimeInterval(3)
+            while Date() < end, (f.value(forKey: "hasKeyboardFocus") as? Bool) != true {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+            }
+            if (f.value(forKey: "hasKeyboardFocus") as? Bool) == true { f.typeText(text); return }
+        }
         reveal(app, f)
         f.tap()
         // 点下去焦点没进框（键盘、自动填充条刚弹出来时位置还在变）：再摆一次、再点，最多 3 次
@@ -136,8 +146,8 @@ final class S23bLiveUITests: XCTestCase {
 
         let newPassword = password + "-new"
         type(app, "account.old", password)
-        type(app, "account.new", newPassword)
-        type(app, "account.again", newPassword)
+        type(app, "account.new", newPassword, next: true)
+        type(app, "account.again", newPassword, next: true)
         let change = app.buttons["account.changePassword"]
         reveal(app, change)
         change.tap()

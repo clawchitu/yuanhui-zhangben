@@ -55,9 +55,19 @@ final class S23bUITests: XCTestCase {
     }
 
     /// 往一个密码框里打字（真点框、真打字）
-    private func type(_ app: XCUIApplication, _ id: String, _ text: String) {
+    /// `next: true`：上一个框刚打完字，按键盘上的「下一项」（回车）跳到这个框，和老人的用法一样；
+    /// 从一个密码框直接点另一个密码框，模拟器上常常焦点进不去（系统的密码自动填充接管了键盘）
+    private func type(_ app: XCUIApplication, _ id: String, _ text: String, next: Bool = false) {
         let f = app.secureTextFields[id]
         XCTAssertTrue(f.waitForExistence(timeout: 10), "\(id) 存在")
+        if next {
+            app.typeText("\n")
+            let end = Date().addingTimeInterval(3)
+            while Date() < end, (f.value(forKey: "hasKeyboardFocus") as? Bool) != true {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+            }
+            if (f.value(forKey: "hasKeyboardFocus") as? Bool) == true { f.typeText(text); return }
+        }
         reveal(app, f)
         f.tap()
         // 点下去焦点没进框（键盘、自动填充条刚弹出来时位置还在变）：再摆一次、再点，最多 3 次
@@ -152,8 +162,8 @@ final class S23bUITests: XCTestCase {
         let btn = app.buttons["account.changePassword"]
         XCTAssertFalse(btn.isEnabled, "没填时是灰的")
         type(app, "account.old", "oldpass1")
-        type(app, "account.new", "newpass88")
-        type(app, "account.again", "newpass88")
+        type(app, "account.new", "newpass88", next: true)
+        type(app, "account.again", "newpass88", next: true)
         scrollTo(app, btn)
         XCTAssertTrue(btn.isEnabled)
         btn.tap()
@@ -173,13 +183,13 @@ final class S23bUITests: XCTestCase {
     func testPasswordRulesCheckedBeforeSending() {
         let app = launch()
         type(app, "account.old", "oldpass1")
-        type(app, "account.new", "abc")
-        type(app, "account.again", "abc")
+        type(app, "account.new", "abc", next: true)
+        type(app, "account.again", "abc", next: true)
         scrollTo(app, app.buttons["account.changePassword"])
         app.buttons["account.changePassword"].tap()
         XCTAssertEqual(el(app, "account.passwordMessage").label, "新密码太短了，至少 8 位")
         type(app, "account.new", "defghijk")       // 新密码 = abcdefghijk
-        type(app, "account.again", "defghijX")
+        type(app, "account.again", "defghijX", next: true)
         scrollTo(app, app.buttons["account.changePassword"])
         app.buttons["account.changePassword"].tap()
         XCTAssertEqual(el(app, "account.passwordMessage").label, "两次输的新密码不一样，再输一次")
@@ -191,8 +201,8 @@ final class S23bUITests: XCTestCase {
     func testWrongOldPasswordAndRateLimit() {
         let app = launch()
         type(app, "account.old", "wrongpw")
-        type(app, "account.new", "newpass88")
-        type(app, "account.again", "newpass88")
+        type(app, "account.new", "newpass88", next: true)
+        type(app, "account.again", "newpass88", next: true)
         scrollTo(app, app.buttons["account.changePassword"])
         app.buttons["account.changePassword"].tap()
         let msg = el(app, "account.passwordMessage")
@@ -237,8 +247,8 @@ final class S23bUITests: XCTestCase {
         let app = launch(extra: Self.maxAX)
         XCTAssertTrue(el(app, "page.account").waitForExistence(timeout: 10))
         type(app, "account.old", "oldpass1")
-        type(app, "account.new", "newpass88")
-        type(app, "account.again", "newpass88")
+        type(app, "account.new", "newpass88", next: true)
+        type(app, "account.again", "newpass88", next: true)
         let change = app.buttons["account.changePassword"]
         scrollTo(app, change)
         assertOnScreen(app, change, "改密码")
