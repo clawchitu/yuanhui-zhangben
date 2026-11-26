@@ -30,7 +30,8 @@
     "账号注销期间（accounts.delete_requested_at 非空）禁止写账和开通设备（§7）",
     "所有身份的 op 还要过 §5.0 的上限校验，超出 rejected: invalid（§4.4）",
     "op 行带 match 时按 payload 字段选行（product_upsert 按 quick 分两行）；每种 op 的行必须覆盖它的全部取值",
-    "权限表不允许留待定的格子（§6.1）；contracts:check 遇到待定会失败"
+    "权限表不允许留待定的格子（§6.1）；contracts:check 遇到待定会失败",
+    "revoked 列之外，被踢设备的 op 还要按它被踢前的身份（family / cashier / review）复核：那一列是 deny / not_applicable、或没满足的条件里有和收到时间无关的（quick_only、own_device_sale），就拒 forbidden；已经暂存的这类 op 在 held-ops 里 can_accept = false、确认返回 403（T37，S23a）"
   ],
   "rules": [
     {

@@ -10,6 +10,7 @@ import { EpochMismatch, pushOps, type DeviceState, type IncomingOp, type OpResul
 import { resultOut, scopeOfRole, SCOPES, type Scope } from "../sync/projection.ts";
 import { strictValidatorCompiler, syncBodySchema } from "../sync/validate.ts";
 import { identityOf } from "../auth/authenticate.ts";
+import type { Identity } from "../auth/permissions.ts";
 import { sendError } from "./errors.ts";
 
 interface SyncBody {
@@ -43,6 +44,7 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
         role: a.device.role,
         label: a.device.label,
         identity: identityOf({ role: a.device.role, revoked_at: a.device.revokedAt }, a.account.kind),
+        originalIdentity: identityOf({ role: a.device.role, revoked_at: null }, a.account.kind) as Exclude<Identity, "revoked">,
         revokedAt: a.device.revokedAt,
         revokeReason: a.device.revokeReason,
         deletePending: a.account.deleteRequestedAt !== null,

@@ -60,6 +60,8 @@ export interface DeviceState {
   role: "family" | "cashier";
   label: string;
   identity: Identity;
+  /** 被踢前的身份（没被踢时同 identity）：T37 复核用 */
+  originalIdentity: Exclude<Identity, "revoked">;
   revokedAt: Date | null;
   revokeReason: string | null;
   deletePending: boolean;
@@ -244,6 +246,7 @@ async function readDevice(tx: StoreTx, auth: AuthContext): Promise<DeviceState> 
     role: d.role,
     label: d.label,
     identity: identityOf(d, d.kind),
+    originalIdentity: identityOf({ role: d.role, revoked_at: null }, d.kind) as Exclude<Identity, "revoked">,
     revokedAt: d.revoked_at,
     revokeReason: d.revoke_reason,
     deletePending: d.delete_requested_at !== null,
@@ -308,7 +311,7 @@ async function processOp(
 
   // 3. 权限。payload 缺了选行用的字段（product_upsert 的 quick）就是格式不对
   if (!guard.opRule(op.type, op.payload)) return reject("invalid");
-  const v = guard.decideOp(op.type, op.payload, device.identity, {
+  const facts = {
     now,
     config,
     callerDeviceId: deviceId,
@@ -317,9 +320,12 @@ async function processOp(
     deletePending: device.deletePending,
     // 收银员撤销：只认本机、服务器收到那天（上海）的卖出，不信 op 的 occurred_at（§6 第③条）
     ...(op.type === "void" ? { targetSale: await voidTargetSale(tx, op.payload) } : {}),
-  });
+  };
+  const v = guard.decideOp(op.type, op.payload, device.identity, facts);
   // 注销期间在 pushOps 里整批跳过，到不了这里（§14 S04-2）
   if (!v.ok) return reject("forbidden");
+  // 被踢设备：被踢前的身份做不了的，补传也不收（T37）
+  if (device.identity === "revoked" && !guard.originalRoleAllows(op.type, op.payload, device.originalIdentity, facts)) return reject("forbidden");
 
   // 4. 格式与上限
   if (!opSchemaValid(op)) return reject("invalid");

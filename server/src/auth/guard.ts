@@ -25,6 +25,9 @@ const QUICK_FIELDS = new Set(["product_id", "barcode", "name", "price_fen", "qui
  * 「注销期间禁止写账和开通设备」（permissions.json global 第 3 条）落到哪些规则上：
  * 所有 op、出开通码、确认暂存账、恢复导入。兑码（public）在路由里另查。
  */
+/** 按「服务器收到的时间」判的条件：事后补传、事后确认时不复核（originalRoleAllows） */
+const TIME_OF_RECEIPT_CONDITIONS = new Set<Condition>(["sale_day_eq_server_receive_day"]);
+
 const WRITE_HTTP_RULES = new Set(["POST /v1/pairing-tokens", "POST /v1/held-ops/{id}/resolve", "POST /v1/recovery/import"]);
 
 export interface Facts {
@@ -194,6 +197,20 @@ export class Guard {
     if (!rule) return { ok: false, decision: "deny", held: false, failed: [], status: 403, code: "forbidden" };
     const v = this.decide(rule, identity, { ...f, payload });
     return v.ok || v.code === "delete_pending" ? v : { ...v, status: 403, code: "forbidden" };
+  }
+
+  /**
+   * 被踢设备的 op 再按它被踢前的身份复核一次（T37，S23a）：被踢的收银员不能借「补传 → 家里人记上」做收银员本来做不了的事
+   * （进货、盘点、改商品、带家用字段的 quick 登记、撤别人的卖出）。只看和时间无关的条件：`sale_day_eq_server_receive_day`
+   * 按「服务器收到那天」判，补传和确认都在事后，这条不复核（被踢那台的撤销本来就是 held，由家里人逐笔看）。
+   */
+  originalRoleAllows(type: string, payload: Record<string, unknown> | undefined, original: Exclude<Identity, "revoked">, f: Facts): boolean {
+    const rule = this.opRule(type, payload);
+    if (!rule) return false;
+    const v = this.decide(rule, original, { ...f, payload, deletePending: false });
+    if (v.ok) return true;
+    if (v.decision !== "allow" && v.decision !== "held") return false;
+    return v.failed.length > 0 && v.failed.every((c) => TIME_OF_RECEIPT_CONDITIONS.has(c));
   }
 
   /** 拉取：允许时带 scope（full_store / cashier_projection），被踢设备 ok=false */

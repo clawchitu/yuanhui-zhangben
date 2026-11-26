@@ -606,7 +606,7 @@ paths:
       tags: [设备与开通]
       operationId: resolveHeldOp
       summary: 记上 / 不要
-      description: 盘点、期初类版本已变的只能丢弃；accept 时返回 409 `stale`。
+      description: 盘点、期初类版本已变的只能丢弃，accept 时返回 409 `stale`；补传它的手机被退出前的角色本来做不了这种操作的（被踢的收银员补传的进货等，T37）也只能丢弃，accept 时返回 403 `forbidden`。
       x-permission: POST /v1/held-ops/{id}/resolve
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1210,12 +1210,13 @@ components:
     HeldOp:
       type: object
       additionalProperties: false
-      required: [id, device_id, device_label, type, occurred_at, payload, can_accept]
+      required: [id, device_id, device_label, device_role, type, occurred_at, payload, can_accept]
       properties:
         id: { $ref: "#/components/schemas/Uuid", description: op id }
         device_id: { $ref: "#/components/schemas/Uuid" }
         device_label: { type: string }
+        device_role: { enum: [family, cashier], description: 补传这笔的手机被退出前的角色（T37） }
         type: { type: string }
         occurred_at: { $ref: "#/components/schemas/DateTime" }
         payload: { type: object }
-        can_accept: { type: boolean, description: 盘点、期初类版本已变时为 false，只能丢弃 }
+        can_accept: { type: boolean, description: 盘点、期初类版本已变时为 false，只能丢弃；补传它的手机被退出前的角色本来做不了这种操作时也为 false（T37） }
