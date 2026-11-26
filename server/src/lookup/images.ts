@@ -213,13 +213,14 @@ function getOnce(url: URL, policy: FetchPolicy, deadline: number): Promise<{ kin
           return fail(new ImageRejected("bad_type", "不是图片"));
         }
         const limit = html ? policy.maxBytes * HTML_BYTES_FACTOR : policy.maxBytes;
+        const tooLarge = () => new ImageRejected("too_large", html ? "图片页面超过 20 MB" : "图片超过 5 MB");
         const declared = Number(res.headers["content-length"]);
-        if (Number.isFinite(declared) && declared > limit) return fail(new ImageRejected("too_large", "图片超过 5 MB"));
+        if (Number.isFinite(declared) && declared > limit) return fail(tooLarge());
         const chunks: Buffer[] = [];
         let n = 0;
         res.on("data", (c: Buffer) => {
           n += c.length;
-          if (n > limit) return fail(new ImageRejected("too_large", "图片超过 5 MB"));
+          if (n > limit) return fail(tooLarge());
           chunks.push(c);
         });
         res.on("end", () => {
@@ -239,28 +240,35 @@ function getOnce(url: URL, policy: FetchPolicy, deadline: number): Promise<{ kin
 
 // ───────── text/html 里内嵌的 base64 图 ─────────
 
-const DATA_SRC = /\ssrc=(["'])data:image\/(jpeg|png|webp);base64,/gi;
+const IMG_TAG = /<img\s/gi;
+const DATA_SRC = /\ssrc=(["'])data:image\/(jpeg|png|webp);base64,/i;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
 /**
- * 从 HTML 页面里取出 <img src="data:image/(jpeg|png|webp);base64,…"> 的那张图（第一个这样的 <img>）。
- * 不解析任意 HTML：只找固定的 ` src="data:image/<类型>;base64,` 前缀，再确认它在一个 <img 标签里（往前最近的 < 是 <img、中间没有 >），
- * 取到同一种引号为止；base64 严格校验（字符集、长度是 4 的倍数、解码后再编码一致），解出来 ≤ maxBytes，文件头和声明的类型一致。
- * 取不到或校验失败 → bad_type；超大 → too_large。
+ * 从 HTML 页面里取出 <img src="data:image/(jpeg|png|webp);base64,…"> 的那张图（第一个 src 是这种 data URI 的 <img>）。
+ * 不解析任意 HTML：游标只往前走（PR #52 评审：每个匹配往回找 < 是平方复杂度，构造的页面能卡住事件循环）——
+ * 逐个找 `<img` 加空白，标签范围到下一个 `>`（没有就到结尾），只在这个范围里找固定前缀 ` src="data:image/<类型>;base64,`，
+ * 下一次从这个 `>` 之后接着找；每个字节只扫常数次。取到同一种引号为止；base64 严格校验（字符集、长度是 4 的倍数、
+ * 解码后再编码一致），解出来 ≤ maxBytes，文件头和声明的类型一致。取不到或校验失败 → bad_type；超大 → too_large。
  */
 export function extractEmbeddedImage(page: Buffer, maxBytes: number = MAX_IMAGE_BYTES): Buffer {
   const s = page.toString("latin1");
-  DATA_SRC.lastIndex = 0;
-  for (let m = DATA_SRC.exec(s); m; m = DATA_SRC.exec(s)) {
-    const lt = s.lastIndexOf("<", m.index);
-    if (lt < 0 || !/^<img\s/i.test(s.slice(lt, lt + 5))) continue;
-    const gt = s.indexOf(">", lt);
-    if (gt !== -1 && gt < m.index) continue;
+  IMG_TAG.lastIndex = 0;
+  for (let t = IMG_TAG.exec(s); t; t = IMG_TAG.exec(s)) {
+    const gt = s.indexOf(">", t.index);
+    const tagEnd = gt === -1 ? s.length : gt;
+    const m = DATA_SRC.exec(s.slice(t.index, tagEnd));
+    if (!m) {
+      if (gt === -1) break;
+      IMG_TAG.lastIndex = gt + 1;
+      continue;
+    }
     const declared = m[2]!.toLowerCase() as "jpeg" | "png" | "webp";
-    const start = m.index + m[0].length;
+    const start = t.index + m.index + m[0].length;
     const end = s.indexOf(m[1]!, start);
-    if (end < 0) throw new ImageRejected("bad_type", "内嵌图片没有结束");
+    if (end < 0 || end > tagEnd) throw new ImageRejected("bad_type", "内嵌图片没有结束");
     const len = end - start;
+    // 先按 base64 长度挡掉超大的，免得整段解码；解码后再精确比一次
     if (len > Math.ceil(maxBytes / 3) * 4) throw new ImageRejected("too_large", "图片超过 5 MB");
     const b64 = s.slice(start, end);
     if (len === 0 || len % 4 !== 0 || !BASE64.test(b64)) throw new ImageRejected("bad_type", "内嵌图片的 base64 不合法");

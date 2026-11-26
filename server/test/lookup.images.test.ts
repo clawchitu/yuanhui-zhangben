@@ -91,6 +91,22 @@ describe("extractEmbeddedImage（getPic 返回 HTML 内嵌 base64 图）", () =>
     const p = await png(64, 48);
     expect(extractEmbeddedImage(apiYunPage(dataUri("png", p))).equals(p)).toBe(true);
   });
+  it("HTML 嵌 WebP；大写标签、单引号、没有 >；第一个 <img> 不是 data 图、第二个才是 → 都取得到", async () => {
+    const w = await sharp({ create: { width: 40, height: 30, channels: 3, background: "#118844" } }).webp().toBuffer();
+    expect(extractEmbeddedImage(apiYunPage(dataUri("webp", w))).equals(w)).toBe(true);
+    const j = await jpeg(32, 32);
+    expect(extractEmbeddedImage(Buffer.from(`<IMG ID=x SRC='${dataUri("JPEG", j)}'>`)).equals(j)).toBe(true);
+    expect(extractEmbeddedImage(Buffer.from(`<img src="${dataUri("jpeg", j)}"`)).equals(j)).toBe(true);
+    expect(extractEmbeddedImage(Buffer.from(`<img src="/logo.png"><p>x</p><img alt="a" src="${dataUri("jpeg", j)}" />`)).equals(j)).toBe(true);
+  });
+  it("恶意页面：大量 src=\"data:… 前缀而不在 <img> 里 → 线性时间内 bad_type（PR #52 评审）", () => {
+    const unit = ' src="data:image/png;base64,';
+    for (const page of [unit.repeat(200_000), "<img>" + unit.repeat(200_000), "<img a>".repeat(400_000), `<img ${"x".repeat(5_000_000)}`]) {
+      const t0 = performance.now();
+      expect(rejectReason(() => extractEmbeddedImage(Buffer.from(page, "latin1")))).toBe("bad_type");
+      expect(performance.now() - t0).toBeLessThan(1000);
+    }
+  });
   it("HTML 里没有图（链接过期时 src 是空的）、只有 __VIEWSTATE、不在 <img> 里、data-src → bad_type", async () => {
     const j = await jpeg(32, 32);
     expect(rejectReason(() => extractEmbeddedImage(apiYunPage("")))).toBe("bad_type");
@@ -300,6 +316,11 @@ describe("fetchImage（本机假图床）", () => {
     routes["/getPic-expired"] = (_q, s) => s.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(apiYunPage(""));
     routes["/getPic-big"] = (_q, s) =>
       s.writeHead(200, { "content-type": "text/html", "content-length": String(MAX_IMAGE_BYTES * 4 + 1) }).end();
+    routes["/getPic-big-chunked"] = (_q, s) => {
+      s.writeHead(200, { "content-type": "text/html" });
+      s.on("error", () => {});
+      s.end(Buffer.alloc(MAX_IMAGE_BYTES * 4 + 1024, 0x20));
+    };
     routes["/plain.png"] = (_q, s) => s.writeHead(200, { "content-type": "image/png" }).end(goodPng);
     routes["/png-as-html"] = (_q, s) => s.writeHead(200, { "content-type": "text/html" }).end(goodPng);
     expect((await fetchImage(`http://img.test:${port}/getPic-jpeg`, policy())).equals(j)).toBe(true);
@@ -307,6 +328,7 @@ describe("fetchImage（本机假图床）", () => {
     expect((await sharp(await makeThumbnail(await fetchImage(`http://img.test:${port}/getPic-jpeg`, policy()))).metadata()).format).toBe("jpeg");
     expect(await reason(fetchImage(`http://img.test:${port}/getPic-expired`, policy()))).toBe("bad_type");
     expect(await reason(fetchImage(`http://img.test:${port}/getPic-big`, policy()))).toBe("too_large");
+    expect(await reason(fetchImage(`http://img.test:${port}/getPic-big-chunked`, policy({ timeoutMs: 5000 })))).toBe("too_large");
     expect(await reason(fetchImage(`http://img.test:${port}/png-as-html`, policy()))).toBe("bad_type");
     expect((await fetchImage(`http://img.test:${port}/plain.png`, policy())).equals(goodPng)).toBe(true);
   });
