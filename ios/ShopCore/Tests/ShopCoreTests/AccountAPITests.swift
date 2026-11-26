@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import ShopCore
 
-/// S23b-1 网络层：改密码、让其他手机全部退出、`/v1/me`（契约 openapi.yaml「账号」）。
+/// S23b 网络层：改密码、申请 / 撤回注销、让其他手机全部退出、`/v1/me`（契约 openapi.yaml「账号」）。
 /// 每个接口都对着本机桩：请求的方法、路径、令牌、请求体逐项核对；服务器回的各种状态码映射成 `AccountFailure`。
 @Suite(.serialized) struct AccountAPITests {
     let debug = APIBasePolicy(hosts: ["api.yuanhuishop.cn"], allowLoopbackHTTP: true)
@@ -70,6 +70,8 @@ import Testing
         defer { fallback.stop() }
         let api = client("http://127.0.0.1:9", fallback: fallback.base)
         #expect(await failure { try await api.changePassword(old: "a", new: "abcdefgh", token: "t") } == .network)
+        #expect(await failure { _ = try await api.requestAccountDeletion(password: "a", token: "t") } == .network)
+        #expect(await failure { try await api.cancelAccountDeletion(token: "t") } == .network)
         #expect(fallback.requests.isEmpty)
     }
 
@@ -90,6 +92,55 @@ import Testing
         // 一个带 ZWJ 的表情是 1 个字符、好几个码点：按码点截
         let family = "👨‍👩‍👧"
         #expect(PasswordRule.length(family) == 5)
+    }
+
+    // MARK: 注销
+
+    /// 申请注销：请求体 {password}，回 delete_pending_until
+    @Test func requestDeletion() async throws {
+        let stub = try LocalStub { _ in .init(status: 200, body: #"{"delete_pending_until":"2026-12-02T08:00:00.000Z"}"#) }
+        defer { stub.stop() }
+        let until = try await client(stub.base).requestAccountDeletion(password: "pw", token: "tok")
+        #expect(until == "2026-12-02T08:00:00.000Z")
+        let r = try #require(stub.requests.first)
+        #expect(r.method == "POST" && r.path == "/v1/account/delete-request")
+        #expect(r.headers["authorization"] == "Bearer tok")
+        #expect(try JSONSerialization.jsonObject(with: r.body) as? [String: String] == ["password": "pw"])
+    }
+
+    /// 申请注销的密码错、限速与改密码共用一个计数（同样的码）；回包看不懂按坏响应
+    @Test func requestDeletionFailures() async throws {
+        for (status, body, want) in [(401, #"{"code":"bad_credentials"}"#, AccountFailure.wrongPassword),
+                                     (429, #"{"code":"rate_limited","retry_after_s":120}"#, .rateLimited(retryAfterS: 120)),
+                                     (403, #"{"code":"forbidden"}"#, .forbidden),
+                                     (200, #"{}"#, .other)] {
+            let stub = try LocalStub { _ in .init(status: status, body: body) }
+            let got = await failure { _ = try await client(stub.base).requestAccountDeletion(password: "pw", token: "t") }
+            stub.stop()
+            #expect(got == want, "\(status) \(body)")
+        }
+    }
+
+    /// 撤回：204 成功；409 not_delete_pending（不在注销中 / 过了 7 天）
+    @Test func cancelDeletion() async throws {
+        let stub = try LocalStub { _ in .init(status: 204, body: "") }
+        try await client(stub.base).cancelAccountDeletion(token: "tok")
+        #expect(stub.requests.first?.method == "POST" && stub.requests.first?.path == "/v1/account/delete-cancel")
+        #expect(stub.requests.first?.headers["authorization"] == "Bearer tok")
+        stub.stop()
+        let gone = try LocalStub { _ in .init(status: 409, body: #"{"code":"not_delete_pending","message":"已经超过 7 天，不能撤回"}"#) }
+        defer { gone.stop() }
+        #expect(await failure { try await client(gone.base).cancelAccountDeletion(token: "t") } == .notDeletePending)
+    }
+
+    /// 注销状态：到期之前（含恰好到期那一刻）能撤回；过了就是「正在删除」；没有就是不在注销中
+    @Test func deletionState() {
+        let until = "2026-12-02T08:00:00.000Z"
+        let d = APIClient.date(until)!
+        #expect(DeletionState.of(nil, now: d) == .none)
+        #expect(DeletionState.of(until, now: d.addingTimeInterval(-60)) == .pending(until: d))
+        #expect(DeletionState.of(until, now: d) == .pending(until: d), "恰好第 7 天整仍可撤回")
+        #expect(DeletionState.of(until, now: d.addingTimeInterval(1)) == .deleting)
     }
 
     // MARK: 让其他手机全部退出、/v1/me

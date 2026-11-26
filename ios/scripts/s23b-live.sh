@@ -3,7 +3,7 @@
 # 用法：scripts/s23b-live.sh <UDID> [测试名,…]（先 build-for-testing 到 ${DD}，默认 /tmp/yh-s23b-dd）
 # 做的事：建临时库 → 迁移（跑两遍，第二遍应「没有新的迁移」）→ 建店「E2E-S23b-<时间>」和家用号 → 起服务端 →
 # 测试前后各读一次库里的设备、流水、注销状态、密码改没改过 → 停服务端、删库、删临时目录（REVIEW.md 12.6）。
-# 测试进程自己以另一台手机的身份走 API（登录、核对密码、/v1/me）。口令随机生成，只在环境变量里，不写文件、不打印。
+# 测试进程自己以另一台手机的身份走 API（登录、核对密码、/v1/me、登记商品、数流水）。口令随机生成，只在环境变量里，不写文件、不打印。
 set -euo pipefail
 export LC_ALL=en_US.UTF-8   # 不设的话 Postgres 启动时报「postmaster became multithreaded during startup」
 udid="$1"; tests="${2:-}"
@@ -76,7 +76,7 @@ xcodebuild -project YuanhuiZhangben.xcodeproj -scheme YuanhuiZhangben -destinati
 rc=${PIPESTATUS[0]}
 set -e
 log "写后读：$(readdb)"
-log "服务端日志里的改密码：$(grep -c '/v1/account/password' "${work}/server.log" || true) 条、/v1/me：$(grep -c '/v1/me' "${work}/server.log" || true) 条"
+log "服务端日志里的改密码：$(grep -c '/v1/account/password' "${work}/server.log" || true) 条、申请注销：$(grep -c '/v1/account/delete-request' "${work}/server.log" || true) 条、撤回：$(grep -c '/v1/account/delete-cancel' "${work}/server.log" || true) 条"
 log "xcodebuild 退出码 ${rc}"
 [[ ${rc} -ne 0 ]] && { log "服务端日志最后 30 行："; tail -30 "${work}/server.log" | cut -c1-400; }
 exit ${rc}

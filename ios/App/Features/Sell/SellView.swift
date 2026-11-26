@@ -143,6 +143,22 @@ struct SellView: View {
                         DoneCard(done: d).padding(12).transition(.opacity)
                     }
                 }
+                .overlay(alignment: .top) {
+                    // S23b：注销申请期间服务器不收（§14 S04-2）：照样能记，先存在本机，撤回后补传。
+                    // 只在空篮时浮在虚线框上、不参与布局：篮里有货时不挤价签和加减按钮（#60，Opus #62 建议 1 在 SE 最大字号实测会挤掉）
+                    if app.figures.deletePendingUntil != nil, model.done == nil {
+                        Text("账号正在注销：记的账先存在这台手机上，撤回后会自动补传")
+                            .font(TypeScale.secondary.weight(.semibold))
+                            .foregroundStyle(Tokens.Palette.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Tokens.Palette.tag, in: RoundedRectangle(cornerRadius: 12))
+                            .padding(12)
+                            .accessibilityIdentifier("sell.deleting")
+                    }
+                }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
                 .padding(.bottom, 4)

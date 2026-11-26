@@ -1,7 +1,7 @@
 import Network
 import XCTest
 
-/// S23b-1 账号与密码（plan-v2 §8 S23b 验收，夹具 + 本机桩服务器；注销在 S23b-2）。全部走真实输入：在输入框里打字、点按钮，
+/// S23b 账号与密码、注销（plan-v2 §8 S23b 验收，夹具 + 本机桩服务器）。全部走真实输入：在输入框里打字、点按钮，
 /// 断言桩收到的请求。服务器那一侧（改密码不强制其他手机退出、注销期间不应用 op、7 天内可撤回）由 server 的 Vitest 钉住，
 /// 这里钉手机：发对请求、不发多余的请求（改密码后不去踢别的手机）、按服务器回的码出对的话、页面去对的地方。
 @MainActor
@@ -143,7 +143,7 @@ final class S23bUITests: XCTestCase {
         XCTAssertTrue(el(app, "page.settings").waitForExistence(timeout: 10))
         XCTAssertFalse(el(app, "settings.item.account").exists)
         app.terminate()
-        for route in ["account"] {
+        for route in ["account", "deleteAccount"] {
             let a = launch(route: route, role: "cashier")
             XCTAssertTrue(el(a, "page.denied").waitForExistence(timeout: 10), route)
             XCTAssertFalse(el(a, "page.\(route)").exists)
@@ -157,8 +157,8 @@ final class S23bUITests: XCTestCase {
     func testReviewHasAccountEntry() {
         let app = launch(route: "settings", role: "review")
         XCTAssertTrue(el(app, "settings.item.account").waitForExistence(timeout: 10))
-        let a2 = launch(route: "account", role: "review")
-        XCTAssertTrue(el(a2, "page.account").waitForExistence(timeout: 10))
+        let a2 = launch(route: "deleteAccount", role: "review")
+        XCTAssertTrue(el(a2, "page.deleteAccount").waitForExistence(timeout: 10))
     }
 
     // MARK: 改密码
@@ -249,6 +249,126 @@ final class S23bUITests: XCTestCase {
         XCTAssertEqual(stub.requests(method: "POST", path: "/v1/devices/revoke-others").first?.auth, "Bearer fixture-token")
     }
 
+    // MARK: 23 注销账号
+
+    private func openDeletePage(_ app: XCUIApplication) {
+        let link = el(app, "settings.item.deleteAccount")
+        scrollTo(app, link)
+        link.tap()
+        XCTAssertTrue(el(app, "page.deleteAccount").waitForExistence(timeout: 10))
+    }
+
+    /// 23：「不注销了」实心在上、「确认注销」描边在下；期限文字与 §9.4 一致；没输密码时确认是灰的；点「不注销了」回去、什么都不发
+    func testDeletePageLayoutAndKeep() {
+        let app = launch()
+        openDeletePage(app)
+        XCTAssertEqual(el(app, "deleteAccount.title").label, "注销「yuanhui」")
+        let deadline = el(app, "deleteAccount.deadline").label
+        XCTAssertTrue(deadline.contains("提交后 7 天内可以撤回"), deadline)
+        XCTAssertTrue(deadline.contains("7 天后删除线上数据"), deadline)
+        XCTAssertTrue(deadline.contains("备份在之后 35 天内清除"), deadline)
+        XCTAssertTrue(el(app, "deleteAccount.what").label.contains("所有登录的手机都会退出，包括收银员的"))
+        let keep = app.buttons["deleteAccount.keep"], confirm = app.buttons["deleteAccount.confirm"]
+        XCTAssertEqual(keep.value as? String, "实心")
+        XCTAssertEqual(confirm.value as? String, "描边")
+        XCTAssertLessThan(keep.frame.minY, confirm.frame.minY, "不注销了在上")
+        XCTAssertFalse(confirm.isEnabled, "没输密码时确认注销是灰的")
+        shot(app, "23")
+        keep.tap()
+        XCTAssertTrue(el(app, "page.account").waitForExistence(timeout: 5))
+        idle(1)
+        XCTAssertTrue(stub.requests(method: "POST", path: "/v1/account/delete-request").isEmpty)
+    }
+
+    /// 密码不对：留在这页，说「密码不对」；限速同改密码
+    func testDeleteWrongPassword() {
+        let app = launch(route: "deleteAccount")
+        XCTAssertTrue(el(app, "page.deleteAccount").waitForExistence(timeout: 10))
+        type(app, "deleteAccount.password", "wrongpw")
+        app.buttons["deleteAccount.confirm"].tap()
+        let msg = el(app, "deleteAccount.message")
+        XCTAssertTrue(msg.waitForExistence(timeout: 10))
+        XCTAssertEqual(msg.label, "密码不对，再输一次")
+        XCTAssertTrue(el(app, "page.deleteAccount").exists)
+        stub.rateLimited = true
+        type(app, "deleteAccount.password", "oldpass1")
+        app.buttons["deleteAccount.confirm"].tap()
+        wait("限速") { msg.label == "密码错了太多次，11 分钟以后再试" }
+    }
+
+    /// 输对密码确认注销：发 {password}，回到登录页，顶上说 7 天内登录可以撤回
+    func testDeleteGoesToLogin() throws {
+        let app = launch()
+        openDeletePage(app)
+        type(app, "deleteAccount.password", "oldpass1")
+        app.buttons["deleteAccount.confirm"].tap()
+        XCTAssertTrue(el(app, "page.login").waitForExistence(timeout: 15), "回到登录页")
+        let notice = el(app, "login.notice")
+        XCTAssertTrue(notice.waitForExistence(timeout: 5))
+        XCTAssertTrue(notice.label.hasPrefix("已经申请注销。") && notice.label.hasSuffix("用账号密码登录，可以撤回。"), notice.label)
+        let reqs = stub.requests(method: "POST", path: "/v1/account/delete-request")
+        XCTAssertEqual(reqs.count, 1)
+        XCTAssertEqual(reqs.first?.json as? [String: String], ["password": "oldpass1"])
+        XCTAssertEqual(reqs.first?.auth, "Bearer fixture-token")
+        shot(app, "login-after-delete")
+    }
+
+    // MARK: 注销申请中：撤回、提示
+
+    private static func iso(_ d: Date) -> String {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.string(from: d)
+    }
+
+    /// 7 天内登录后：首页最上面「账号正在注销」→ 点进「账号与密码」→「撤回注销」→ 发 delete-cancel，提示条消失；
+    /// 注销申请中不再给「注销账号」入口
+    func testCancelDeletionFromHome() {
+        let until = Self.iso(Date().addingTimeInterval(3 * 86_400))
+        stub.deletePendingUntil = until
+        let app = launch(route: "", extra: ["-uiDeletePending", until])
+        let banner = el(app, "home.banner.deleting")
+        XCTAssertTrue(banner.waitForExistence(timeout: 10))
+        XCTAssertTrue(banner.label.contains("账号正在注销"), banner.label)
+        shot(app, "home-deleting")
+        banner.tap()
+        XCTAssertTrue(el(app, "page.account").waitForExistence(timeout: 10))
+        XCTAssertTrue(el(app, "account.deletePending").waitForExistence(timeout: 5))
+        XCTAssertFalse(el(app, "settings.item.deleteAccount").exists, "注销中不再给注销入口")
+        shot(app, "account-deletePending")
+        let cancel = app.buttons["account.cancelDeletion"]
+        XCTAssertTrue(cancel.isHittable)
+        cancel.tap()
+        let msg = el(app, "account.cancelMessage")
+        XCTAssertTrue(msg.waitForExistence(timeout: 10))
+        XCTAssertEqual(msg.label, "已经撤回，账号照常用。没传上去的账会自动补传")
+        XCTAssertEqual(stub.requests(method: "POST", path: "/v1/account/delete-cancel").count, 1)
+        XCTAssertEqual(stub.requests(method: "POST", path: "/v1/account/delete-cancel").first?.auth, "Bearer fixture-token")
+        XCTAssertTrue(el(app, "settings.item.deleteAccount").waitForExistence(timeout: 5), "撤回后注销入口回来了")
+        app.buttons["返回"].firstMatch.tap()
+        XCTAssertTrue(el(app, "page.home").waitForExistence(timeout: 5))
+        wait("提醒条消失") { !self.el(app, "home.banner.deleting").exists }
+    }
+
+    /// 过了 7 天还没删掉：显示「正在删除」，没有撤回按钮（§14 S03-4）
+    func testPastGraceShowsDeleting() {
+        let until = Self.iso(Date().addingTimeInterval(-3600))
+        stub.deletePendingUntil = until
+        let app = launch(extra: ["-uiDeletePending", until])
+        XCTAssertTrue(el(app, "account.deleting").waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["account.cancelDeletion"].exists)
+        XCTAssertTrue(stub.requests(method: "POST", path: "/v1/account/delete-cancel").isEmpty)
+    }
+
+    /// 注销申请期间卖出页顶上提示：记的账先存在手机上（服务器不收、手机不推，§14 S04-2）
+    func testSellPageShowsDeleting() {
+        let until = Self.iso(Date().addingTimeInterval(3 * 86_400))
+        let app = launch(route: "sell", extra: ["-uiDeletePending", until, "-uiCamera", "denied"])
+        let strip = el(app, "sell.deleting")
+        XCTAssertTrue(strip.waitForExistence(timeout: 10))
+        XCTAssertEqual(strip.label, "账号正在注销：记的账先存在这台手机上，撤回后会自动补传")
+    }
+
     // MARK: 最大辅助字号、小屏：关键按钮都在屏幕里、能点
 
     func testMaxTextAccount() {
@@ -266,6 +386,32 @@ final class S23bUITests: XCTestCase {
         let revoke = el(app, "account.revokeOthers")
         scrollTo(app, revoke)
         assertOnScreen(app, revoke, "让其他手机全部退出")
+        let del = el(app, "settings.item.deleteAccount")
+        scrollTo(app, del)
+        assertOnScreen(app, del, "注销账号")
+    }
+
+    func testMaxTextDeletePage() {
+        let app = launch(route: "deleteAccount", extra: Self.maxAX)
+        XCTAssertTrue(el(app, "page.deleteAccount").waitForExistence(timeout: 10))
+        assertOnScreen(app, app.buttons["deleteAccount.keep"], "不注销了")
+        assertOnScreen(app, app.buttons["deleteAccount.confirm"], "确认注销")
+        shot(app, "23-ax")
+        type(app, "deleteAccount.password", "oldpass1")
+        // 键盘弹起后两个按钮仍在键盘上面、能点
+        assertOnScreen(app, app.buttons["deleteAccount.confirm"], "确认注销（键盘弹起）")
+        assertOnScreen(app, app.buttons["deleteAccount.keep"], "不注销了（键盘弹起）")
+        shot(app, "23-ax-keyboard")
+    }
+
+    func testMaxTextDeletePending() {
+        let until = Self.iso(Date().addingTimeInterval(3 * 86_400))
+        stub.deletePendingUntil = until
+        let app = launch(extra: Self.maxAX + ["-uiDeletePending", until])
+        let cancel = app.buttons["account.cancelDeletion"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10))
+        assertOnScreen(app, cancel, "撤回注销")
+        shot(app, "account-deletePending-ax")
     }
 }
 

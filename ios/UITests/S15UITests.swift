@@ -8,9 +8,10 @@ final class S15UITests: XCTestCase {
     /// 收银员到不了的页（S15 验收逐项列出的 6 个 + 设备管理、账号、改名）
     static let cashierForbidden: Set<String> = ["page.stockIn", "page.reports", "page.products", "page.count",
                                                 "page.expiry", "page.pairing", "page.devices", "page.account",
-                                                "page.deviceName", "page.held"]
-    /// 收银员禁区里 S15 演示数据下家用也进不去的页：「待确认的账」要有被退出的手机补传的账才出入口（S23a，由 S23aHeldUITests 测）
-    static let familyNeedsData: Set<String> = ["page.held"]
+                                                "page.deleteAccount", "page.deviceName", "page.held"]
+    /// 收银员禁区里 S15 演示数据下家用也进不去的页：「待确认的账」要有被退出的手机补传的账才出入口（S23a，由 S23aHeldUITests 测）；
+    /// 「注销账号」在「账号与密码」页里，要连得上服务器（夹具 -uiAPI 桩）才出入口（S23b-2，由 S23bUITests 测）
+    static let familyNeedsData: Set<String> = ["page.held", "page.deleteAccount"]
 
     private func launch(_ args: [String]) -> XCUIApplication {
         let app = XCUIApplication()

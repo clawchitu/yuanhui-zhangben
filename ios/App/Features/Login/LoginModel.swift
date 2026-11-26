@@ -18,6 +18,8 @@ final class LoginModel {
     /// 扫码登录页的一句话（过期码、用过的码、不是登录码……）
     private(set) var scanMessage: String?
     var scanOpen = false
+    /// 登录页顶上的一句说明（S23b：刚申请了注销，「X 之前用账号密码登录，可以撤回」）
+    var notice: String?
 
     let services: AppServices?
     let db: LocalDB
@@ -192,6 +194,7 @@ final class LoginModel {
 
     private func finish(_ session: LocalSession) {
         password = ""
+        notice = nil
         onSignedIn(session)
     }
 

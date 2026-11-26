@@ -115,8 +115,43 @@ struct HomeView: View {
 
     // MARK: 提醒条
 
+    /// 注销中提醒条的字（S22a 的口径：账号正在注销，N 笔还没记上，撤回后会自动补传）
+    static func deletingText(pending n: Int, canCancel: Bool) -> String {
+        let head = n > 0 ? "账号正在注销，\(n) 笔还没记上" : "账号正在注销，现在记的账传不上去"
+        return head + "，撤回后会自动补传。" + (canCancel ? "点这里撤回" : "")
+    }
+
+    /// 提醒条上写不写「点这里撤回」：要有撤回能力，而且还在 7 天内（过了就是「正在删除」，§14 S03-4；Opus #62 建议 4）
+    static func canCancel(_ caps: Capabilities, until: String?, now: Date) -> Bool {
+        guard caps.has(.account), case .pending = DeletionState.of(until, now: now) else { return false }
+        return true
+    }
+
     @ViewBuilder private func reminderBanner(_ r: HomeReminder) -> some View {
         switch r {
+        case .deleting(let n):
+            // S23b：注销申请期间服务器一笔都不收（§14 S04-2）。有撤回能力的点进「账号与密码」撤回，别的进「待传的账」
+            NavigationLink(value: caps.has(.account) ? Route.account : Route.pending) {
+                HStack(alignment: .center, spacing: 12) {
+                    Image(systemName: "exclamationmark.octagon").font(.system(size: 22, weight: .semibold))
+                    Text(Self.deletingText(pending: n, canCancel: Self.canCancel(caps, until: model.figures.deletePendingUntil, now: Date())))
+                        .font(TypeScale.body.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.system(size: 20, weight: .semibold))
+                }
+                .foregroundStyle(Tokens.Palette.ink)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .frame(minHeight: 60)
+                .background(Tokens.Palette.tag, in: RoundedRectangle(cornerRadius: Tokens.Radius.banner))
+                .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.banner).strokeBorder(Tokens.Palette.ink, lineWidth: 2.5))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PressDimStyle())
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("home.banner.deleting")
         case .unsynced(let n, let m):
             // 点了开「待传的账」（Fable 裁定 9）
             NavigationLink(value: Route.pending) {
