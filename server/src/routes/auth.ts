@@ -23,6 +23,8 @@ interface SessionInfo {
   label: string;
   epoch: string;
   deleteRequestedAt: Date | null;
+  /** 账号名（S23b「账号与密码」页显示）。只发给家用设备：收银员手机不该知道家里人的登录名 */
+  username?: string;
 }
 
 function sessionBody(s: SessionInfo) {
@@ -33,6 +35,7 @@ function sessionBody(s: SessionInfo) {
     store: s.store,
     label: s.label,
     epoch: s.epoch,
+    ...(s.role === "family" && s.username !== undefined ? { username: s.username } : {}),
     ...(until ? { delete_pending_until: until } : {}),
   };
 }
@@ -83,6 +86,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           "a.id",
           "a.store_id",
           "a.password_hash",
+          "a.username",
           "a.kind",
           "a.locked_until",
           "s.name as store_name",
@@ -156,6 +160,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         label: out.ok.label,
         epoch: acct.epoch,
         deleteRequestedAt: out.ok.deleteRequestedAt,
+        // 库里存的写法（登录时大小写不敏感，回的是开户时的原样）
+        username: acct.username,
       });
     },
   );
@@ -204,6 +210,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
               "p.expires_at",
               "p.used_at",
               "a.delete_requested_at",
+              "a.username",
               "s.name as store_name",
               "s.is_demo",
               "s.epoch",
@@ -241,6 +248,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
               label: d.label,
               epoch: pt.epoch,
               deleteRequestedAt: null,
+              username: pt.username,
             },
           };
         });
@@ -266,7 +274,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       const acct = await db
         .selectFrom("accounts as a")
         .innerJoin("stores as s", "s.id", "a.store_id")
-        .select(["a.id", "a.store_id", "s.name as store_name", "s.epoch"])
+        .select(["a.id", "a.store_id", "a.username", "s.name as store_name", "s.epoch"])
         .where("a.kind", "=", "review")
         .where("s.is_demo", "=", true)
         .orderBy("a.created_at")
@@ -300,6 +308,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
           label: d.label,
           epoch: acct.epoch,
           deleteRequestedAt: d.deleteRequestedAt,
+          username: acct.username,
         });
       } catch (e) {
         if (e instanceof DeviceIdTaken) return sendError(reply, 400, "invalid", { message: "device_id 已经用过，请重新生成" });
@@ -327,6 +336,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       role: a.device.role,
       store: { name: a.store.name, is_demo: a.store.isDemo },
       label: a.device.label,
+      // 账号名只给家用设备（S23b；收银员手机上没有「账号与密码」，也不该知道家里人的登录名）
+      ...(a.device.role === "family" ? { username: a.account.username } : {}),
       ...(until ? { delete_pending_until: until } : {}),
     };
   });

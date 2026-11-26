@@ -36,12 +36,15 @@ describe("POST /v1/auth/login", () => {
     expect(body.delete_pending_until).toBeUndefined();
   });
 
-  it("用户名不分大小写", async () => {
+  it("用户名不分大小写；响应里的 username 是库里存的原样（S23b）", async () => {
     const shop = await makeLoginShop(tdb);
     const app = makeApp(tdb);
     const res = await app.inject({ method: "POST", url: "/v1/auth/login", payload: loginBody(shop.username.toUpperCase(), PASSWORD) });
     await app.close();
     expect(res.statusCode).toBe(200);
+    expect(res.json().username).toBe(shop.username);
+    const v = await sessionValidator();
+    expect(v(res.json()), JSON.stringify(v.errors)).toBe(true);
   });
 
   it("错误信息不区分「账号不存在」和「密码错」", async () => {
@@ -229,9 +232,10 @@ describe("POST /v1/auth/demo", () => {
     expect(r.statusCode).toBe(200);
     const v = await sessionValidator();
     expect(v(r.json()), JSON.stringify(v.errors)).toBe(true);
-    expect(r.json()).toMatchObject({ role: "family", epoch: demo.epoch, store: { is_demo: true } });
+    expect(r.json()).toMatchObject({ role: "family", epoch: demo.epoch, store: { is_demo: true }, username: demo.username });
     const me = await app.inject({ method: "GET", url: "/v1/me", headers: bearer(r.json().token) });
     expect(me.json().store.is_demo).toBe(true);
+    expect(me.json().username).toBe(demo.username);
     const devices = await tdb.kysely.selectFrom("devices").select("store_id").where("label", "like", "演示手机%").execute();
     expect(devices.map((d) => d.store_id)).toEqual([demo.storeId]);
     await app.close();
@@ -239,14 +243,14 @@ describe("POST /v1/auth/demo", () => {
 });
 
 describe("POST /v1/auth/logout 与 GET /v1/me", () => {
-  it("/v1/me 返回角色、店名、设备名，符合契约", async () => {
+  it("/v1/me 返回角色、店名、设备名、账号名（S23b），符合契约", async () => {
     const shop = await makeLoginShop(tdb);
     const app = makeApp(tdb);
     const s = await login(app, shop.username, { label: "柜台" });
     const r = await app.inject({ method: "GET", url: "/v1/me", headers: bearer(s.token) });
     await app.close();
     expect(r.statusCode).toBe(200);
-    expect(r.json()).toEqual({ role: "family", store: { name: "元辉烟酒店", is_demo: false }, label: "柜台" });
+    expect(r.json()).toEqual({ role: "family", store: { name: "元辉烟酒店", is_demo: false }, label: "柜台", username: shop.username });
     const api = await loadOpenApi();
     const v = validatorFor(api.components.schemas.Me);
     expect(v(r.json()), JSON.stringify(v.errors)).toBe(true);

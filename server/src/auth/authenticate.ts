@@ -7,7 +7,7 @@ import { sha256Hex } from "./tokens.ts";
 export interface AuthContext {
   identity: Identity;
   device: { id: string; role: "family" | "cashier"; label: string; revokedAt: Date | null; revokeReason: string | null };
-  account: { id: string; kind: "family" | "review"; deleteRequestedAt: Date | null };
+  account: { id: string; kind: "family" | "review"; username: string; deleteRequestedAt: Date | null };
   store: { id: string; name: string; isDemo: boolean; epoch: string };
 }
 
@@ -44,6 +44,7 @@ export async function authenticate(db: Kysely<Database>, token: string, now: Dat
       "d.last_seen_at",
       "a.id as account_id",
       "a.kind",
+      "a.username",
       "a.delete_requested_at",
       "s.id as store_id",
       "s.name as store_name",
@@ -70,7 +71,7 @@ export async function authenticate(db: Kysely<Database>, token: string, now: Dat
       revokedAt: row.revoked_at,
       revokeReason: row.revoke_reason,
     },
-    account: { id: row.account_id, kind: row.kind, deleteRequestedAt: row.delete_requested_at },
+    account: { id: row.account_id, kind: row.kind, username: row.username, deleteRequestedAt: row.delete_requested_at },
     store: { id: row.store_id, name: row.store_name, isDemo: row.is_demo, epoch: row.epoch },
   };
 }

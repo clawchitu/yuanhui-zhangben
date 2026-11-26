@@ -13,6 +13,8 @@ enum AuthDefaults {
     static let productImagesEnabled = "config.productImagesEnabled"
     /// 演示店（审核号）会话的设备 id：商品图直接不请求（S22c，Fable 裁定 8）
     static let demoDeviceId = "session.demoDeviceId"
+    /// S23b：这个会话的账号名（服务器给的 `username`），值是「设备 id 换行 账号名」（只认同一个设备 id 的，换了会话就不算）
+    static let sessionUsername = "session.username"
 }
 
 /// 网络这一层的全局服务（S21）：服务器地址、API 客户端、钥匙串里的令牌、`/v1/config`。
@@ -106,6 +108,8 @@ final class AppServices {
         let ref = TokenRef.forDevice(deviceId)
         try tokens.save(grant.token, ref: ref)
         if grant.store.isDemo == true { defaults.set(deviceId.uuidString, forKey: AuthDefaults.demoDeviceId) }
+        // S23b：服务器给了账号名（家用设备的会话）就记下，「账号与密码」页显示
+        if let name = grant.username { rememberUsername(name, deviceId: deviceId) }
         else { defaults.removeObject(forKey: AuthDefaults.demoDeviceId) }
         let s = try LocalSession(deviceId: deviceId, storeId: UUID(), role: grant.role, tokenRef: ref,
                                  storeName: grant.store.name, deviceLabel: grant.label)
@@ -120,6 +124,19 @@ final class AppServices {
             throw error
         }
         return s
+    }
+
+    /// S23b：记下这个会话的账号名（「账号与密码」页、23 注销页显示）。来自登录 / 兑码响应或 `/v1/me` 的 `username`
+    func rememberUsername(_ name: String, deviceId: UUID) {
+        defaults.set("\(deviceId.uuidString)\n\(name)", forKey: AuthDefaults.sessionUsername)
+    }
+
+    /// 这个会话的账号名（服务器没给过的，比如收银员，为 nil）
+    func username(deviceId: UUID) -> String? {
+        guard let v = defaults.string(forKey: AuthDefaults.sessionUsername) else { return nil }
+        let parts = v.split(separator: "\n", maxSplits: 1).map(String.init)
+        guard parts.count == 2, parts[0] == deviceId.uuidString else { return nil }
+        return parts[1]
     }
 
     /// 还没报上服务器的手机名（§14 S15-2）

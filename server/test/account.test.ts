@@ -26,6 +26,23 @@ describe("改密码", () => {
     await app.close();
   });
 
+  it("注销申请中也能改密码（§14 S23b-2：撤回之前账号要能保持安全）；改完仍在注销中，用新密码登录后能撤回", async () => {
+    const shop = await makeLoginShop(tdb);
+    const app = makeApp(tdb);
+    const boss = await login(app, shop.username);
+    const req = await app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(boss.token), payload: { password: PASSWORD } });
+    const until = req.json().delete_pending_until;
+    const again = await login(app, shop.username);
+    const r = await app.inject({ method: "POST", url: "/v1/account/password", headers: bearer(again.token), payload: { old: PASSWORD, new: "new-password-9" } });
+    expect(r.statusCode).toBe(204);
+    expect((await app.inject({ method: "GET", url: "/v1/me", headers: bearer(again.token) })).json().delete_pending_until).toBe(until);
+    await expect(login(app, shop.username)).rejects.toThrow(/401/);
+    const relog = await login(app, shop.username, { password: "new-password-9" });
+    const cancel = await app.inject({ method: "POST", url: "/v1/account/delete-cancel", headers: bearer(relog.token) });
+    expect(cancel.statusCode).toBe(204);
+    await app.close();
+  });
+
   it("原密码错 → 401 bad_credentials；新密码短于 8 位 → 400", async () => {
     const shop = await makeLoginShop(tdb);
     const app = makeApp(tdb);

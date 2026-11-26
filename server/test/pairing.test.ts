@@ -44,6 +44,12 @@ describe("开通码", () => {
     expect(cas).toMatchObject({ role: "cashier", label: "小王" });
     const me = await app.inject({ method: "GET", url: "/v1/me", headers: bearer(cas.token) });
     expect(me.json()).toMatchObject({ role: "cashier", label: "小王" });
+    // S23b：账号名只给家用设备，收银员的兑码响应和 /v1/me 都不带
+    expect(cas.username).toBeUndefined();
+    expect(me.json().username).toBeUndefined();
+    expect(fam.username).toBe(shop.username);
+    const famMe = await app.inject({ method: "GET", url: "/v1/me", headers: bearer(fam.token) });
+    expect(famMe.json().username).toBe(shop.username);
     const rows = await tdb.kysely.selectFrom("devices").select(["id", "role"]).where("store_id", "=", shop.storeId).execute();
     expect(rows.find((r) => r.id === cas.deviceId)?.role).toBe("cashier");
     expect(rows.find((r) => r.id === fam.deviceId)?.role).toBe("family");
