@@ -103,9 +103,7 @@ final class S24LiveUITests: XCTestCase {
         let discount = Self.int(t["discount_fen"])
         if discount == 0 { XCTAssertFalse(el(app, "reports.discount").exists, "没有优惠不显示优惠卡") }
         else { figure(app, "reports.discount", label: Self.money(discount), raw: discount) }
-        let missing = Self.int(t["cost_missing_count"])
-        XCTAssertEqual(el(app, "reports.costMissing").exists, missing > 0)
-        if missing > 0 { XCTAssertTrue(el(app, "reports.costMissing").label.contains("有 \(missing) 样进价没填")) }
+        checkMissing(app, t)
         for (i, it) in ((t["top_sellers"] as? [[String: Any]]) ?? []).enumerated() {
             figure(app, "reports.top.\(i)", label: "\(it["name"] as! String) \(Self.int(it["qty"]))", raw: Self.int(it["qty"]))
         }
@@ -125,6 +123,16 @@ final class S24LiveUITests: XCTestCase {
         }
     }
 
+    /// 「有 N 样进价没填」「有 N 笔损耗没算进价」：N 和接口一致，为 0 不显示
+    private func checkMissing(_ app: XCUIApplication, _ r: [String: Any]) {
+        let missing = Self.int(r["cost_missing_count"]), loss = Self.int(r["loss_cost_missing_count"])
+        XCTAssertEqual(el(app, "reports.costMissing").exists, missing > 0)
+        if missing > 0 { XCTAssertEqual(el(app, "reports.costMissing").label, "有 \(missing) 样进价没填，卖的钱没算进「赚了」") }
+        XCTAssertEqual(el(app, "reports.lossMissing").exists, loss > 0)
+        if loss > 0 { XCTAssertEqual(el(app, "reports.lossMissing").label, "有 \(loss) 笔损耗没算进价") }
+        log("没填进价 \(missing) 样、损耗没算进价 \(loss) 笔")
+    }
+
     private func checkMonth(_ app: XCUIApplication, _ m: [String: Any], current: Bool) {
         figure(app, "reports.sold", label: Self.money(Self.int(m["sold_fen"])), raw: Self.int(m["sold_fen"]))
         figure(app, "reports.profit", label: Self.compact(Self.int(m["profit_fen"])), raw: Self.int(m["profit_fen"]))
@@ -138,6 +146,7 @@ final class S24LiveUITests: XCTestCase {
         if discount == 0 { XCTAssertFalse(el(app, "reports.discount").exists) }
         else { figure(app, "reports.discount", label: Self.compact(discount), raw: discount) }
         figure(app, "reports.expireLoss", label: Self.compact(Self.int(m["expire_loss_fen"])), raw: Self.int(m["expire_loss_fen"]))
+        checkMissing(app, m)
         // 对账：第一行 = 月初 + 进货，其余每行 = 接口那一行；各行相加 = 最后一行 = 接口的月末货值
         let start = Self.int(rec["stock_value_start_fen"])
         var expect = [start + stockIn]
@@ -230,7 +239,7 @@ final class S24LiveUITests: XCTestCase {
         return app
     }
 
-    /// 服务器开着、账也有，但手机没网：只显示「要联网才能看账」，换栏、再试都一样，一个旧数都不出（真实的「没网」输入：同步协调器）
+    /// 服务器开着、账也有，但手机没网：只显示「要联网才能看账」，换栏也一样，一个旧数都不出（真实的「没网」输入：同步协调器）
     func testC_offlineShowsNeedNetworkNotNumbers() throws {
         let app = openReports(["-uiOffline"])
         XCTAssertTrue(el(app, "reports.offline").waitForExistence(timeout: 15))
