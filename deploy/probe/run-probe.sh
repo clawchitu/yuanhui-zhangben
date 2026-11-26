@@ -18,7 +18,7 @@ owner=$(stat -c %u "$CONF" 2>/dev/null || stat -f %u "$CONF")
 [ "$owner" = "$(id -u)" ] || { echo "$CONF 的属主不是当前用户" >&2; exit 2; }
 
 # 只认这几个变量，别的行忽略（配置文件不当 shell 脚本 source，里面写什么都不会被执行）
-allowed=" PROBE_URL PROBE_STATE_DIR PROBE_SSH_TARGET PROBE_REMOTE_OUTBOX PROBE_NOTIFY_CMD PROBE_WEBHOOK_URL PROBE_WEBHOOK_TOKEN "
+allowed=" PROBE_URL PROBE_SITES PROBE_STATE_DIR PROBE_SSH_TARGET PROBE_REMOTE_OUTBOX PROBE_NOTIFY_CMD PROBE_WEBHOOK_URL PROBE_WEBHOOK_TOKEN "
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in ''|'#'*) continue ;; esac
   k=${line%%=*}; v=${line#*=}

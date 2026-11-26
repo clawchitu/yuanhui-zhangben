@@ -6,10 +6,10 @@ import { describe, expect, it } from "vitest";
 import { buildMessage, sanitizeDetails, scrub } from "../src/monitor/alert.ts";
 import { Alerter, emptyState } from "../src/monitor/alerter.ts";
 import { LogTap } from "../src/monitor/logtap.ts";
-import { certVerdict, heartbeatVerdict, noSyncVerdict, parseMetrics, readNewLines, recordOpsSample, renewalOverdue, shanghaiAt, THRESHOLDS } from "../src/monitor/checks.ts";
+import { certVerdict, heartbeatVerdict, noSyncVerdict, parseMetrics, readNewLines, recordOpsSample, renewalOverdue, shanghaiAt, THRESHOLDS, domainCertVerdict, type CertInfo } from "../src/monitor/checks.ts";
 import { CommandSink, MultiSink, OutboxSink, WebhookSink } from "../src/monitor/sinks.ts";
 import { sinkFromConfig } from "../src/monitor/setup.ts";
-import { forwardOutbox, outboxTailCmd, runProbe, type ProbeDeps } from "../scripts/probe.ts";
+import { forwardOutbox, outboxTailCmd, parseSites, runProbe, type ProbeDeps } from "../scripts/probe.ts";
 import { spawnSync } from "node:child_process";
 import { chmodSync } from "node:fs";
 import { loadConfig, ConfigError } from "../src/config.ts";
@@ -537,5 +537,72 @@ describe("本机探测（scripts/probe.ts）", () => {
     t.setSsh(true);
     await runProbe(t.deps);
     expect(t.sink.kinds()).toEqual(["fire:outbox_unreachable", "resolved:outbox_unreachable"]);
+  });
+  it("域名站点：每个站点各自连续 2 次失败才告警、恢复发恢复；证书剩 < 14 天或不受信任告警；换证书记 renewed（带 host）", async () => {
+    const D = 24 * H;
+    const t = setup();
+    const health: Record<string, { ok: boolean; status: number | string }> = { "api.x.cn": { ok: true, status: 200 }, "x.cn": { ok: true, status: 200 } };
+    const certs: Record<string, CertInfo> = {
+      "api.x.cn": { notBefore: new Date(t.clock.t - 10 * D), notAfter: new Date(t.clock.t + 80 * D), serial: "A1", authorized: true },
+      "x.cn": { notBefore: new Date(t.clock.t - 10 * D), notAfter: new Date(t.clock.t + 80 * D), serial: "B1", authorized: true },
+    };
+    const lines: string[] = [];
+    const site = (host: string, path: string) => ({ url: `https://${host}${path}`, host, health: async () => health[host]!, cert: async () => certs[host]! });
+    // IP 证书给一张很长的，免得快进几十天后 IP 证书的告警混进来
+    const ipCert = { notBefore: new Date(t.clock.t - D), notAfter: new Date(t.clock.t + 365 * D), serial: "IP", authorized: true };
+    const deps = { ...t.deps, cert: async () => ipCert, sites: [site("api.x.cn", "/healthz"), site("x.cn", "/")], info: (l: string) => lines.push(l) };
+    await runProbe(deps);
+    expect(t.sink.kinds()).toEqual([]);
+    expect(lines.join("\n")).toMatch(/api\.x\.cn 证书：到期 .*（剩 80 天）/);
+    // 只有首页挂了：只告首页那条；另一个站点、IP 的探活不受影响
+    health["x.cn"] = { ok: false, status: 404 };
+    await runProbe(deps);
+    expect(t.sink.kinds()).toEqual([]);
+    await runProbe(deps);
+    expect(t.sink.kinds()).toEqual(["fire:site_down:x.cn"]);
+    expect(t.sink.sent[0]!.text).toContain("status：404");
+    health["x.cn"] = { ok: true, status: 200 };
+    await runProbe(deps);
+    expect(t.sink.kinds()).toEqual(["fire:site_down:x.cn", "resolved:site_down:x.cn"]);
+    // 证书：剩 15 天不告，剩 13 天告；续上新证书后恢复并记 renewed
+    t.clock.advance(65 * D);
+    await runProbe(deps);
+    expect(t.sink.kinds()).toHaveLength(2);
+    t.clock.advance(2 * D);
+    await runProbe(deps);
+    const certFires = t.sink.kinds().filter((k) => k.startsWith("fire:site_cert"));
+    expect(certFires.sort()).toEqual(["fire:site_cert:api.x.cn", "fire:site_cert:x.cn"]);
+    const fired = t.sink.sent.find((m) => m.key === "site_cert:api.x.cn")!.text;
+    expect(fired).toContain("days_left：13");
+    expect(fired).toContain("host：api.x.cn");
+    certs["api.x.cn"] = { notBefore: t.clock.now(), notAfter: new Date(t.clock.t + 90 * D), serial: "A2", authorized: true };
+    await runProbe(deps);
+    expect(t.sink.kinds()).toContain("resolved:site_cert:api.x.cn");
+    expect(t.sink.kinds()).not.toContain("resolved:site_cert:x.cn");
+    const renewals = readFileSync(join(t.stateDir, "cert-renewals.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(renewals.filter((r) => r.host).map((r) => `${r.event}:${r.host}`)).toEqual(["first_seen:api.x.cn", "first_seen:x.cn", "renewed:api.x.cn"]);
+    // 域名对不上 / 链不受信任（authorized=false）：剩多少天都告
+    certs["api.x.cn"] = { ...certs["api.x.cn"]!, serial: "A3", authorized: false };
+    await runProbe(deps);
+    expect(t.sink.sent.filter((m) => m.key === "site_cert:api.x.cn").at(-1)!.text).toContain("证书链不受信任或域名对不上");
+  });
+  it("域名证书阈值：取 14 天和有效期 1/4 里小的（90 天证书 14 天告；45 天证书约 11 天才告，Caddy 剩 15 天续时不误报）", () => {
+    const D = 86_400_000;
+    const now = new Date("2026-11-26T00:00:00Z");
+    const cert = (lifeDays: number, leftDays: number): CertInfo => ({ notBefore: new Date(now.getTime() - (lifeDays - leftDays) * D), notAfter: new Date(now.getTime() + leftDays * D), serial: "S", authorized: true });
+    expect(domainCertVerdict(cert(90, 15), now).active).toBe(false);
+    expect(domainCertVerdict(cert(90, 13.9), now).active).toBe(true);
+    expect(domainCertVerdict(cert(45, 15), now).active).toBe(false);
+    expect(domainCertVerdict(cert(45, 12), now).active).toBe(false);
+    expect(domainCertVerdict(cert(45, 11), now).active).toBe(true);
+    expect(domainCertVerdict({ ...cert(90, 80), authorized: false }, now).active).toBe(true);
+  });
+  it("PROBE_SITES 解析：逗号分隔、去空白、空 = 没有；不是 https 或带用户名口令就整个不认", () => {
+    expect(parseSites(undefined)).toEqual([]);
+    expect(parseSites(" ")).toEqual([]);
+    expect(parseSites("https://api.x.cn/healthz, https://x.cn/")!.map((u) => u.href)).toEqual(["https://api.x.cn/healthz", "https://x.cn/"]);
+    expect(parseSites("https://api.x.cn/healthz,http://x.cn/")).toBeNull();
+    expect(parseSites("https://u:p@x.cn/")).toBeNull();
+    expect(parseSites("不是地址")).toBeNull();
   });
 });
