@@ -44,7 +44,10 @@ final class S23aLiveUITests: XCTestCase {
         let app = launch(["-uiLoginCode", code], fresh: true)
         XCTAssertTrue(el(app, "page.login").waitForExistence(timeout: 20))
         el(app, "login.scan").tap()
-        XCTAssertTrue(el(app, "page.scanLogin").waitForExistence(timeout: 10))
+        // 假相机一进页就认出码：兑码成功时扫码页可能一闪就换成 16 / 首页，三者之一出现就算进了扫码路径
+        wait("扫码页（或兑码后已进 16 / 首页）", timeout: 15) {
+            el(app, "page.scanLogin").exists || el(app, "page.onboarding").exists || el(app, "page.home").exists
+        }
         return app
     }
 
@@ -129,9 +132,11 @@ final class S23aLiveUITests: XCTestCase {
             el(app, "reports.records").tap()
         }
         XCTAssertTrue(el(app, "page.records").waitForExistence(timeout: 10))
-        wait("记的账里出现「\(text)」", timeout: timeout) {
-            app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'records.card.' AND label CONTAINS %@", text)).count > 0
-        }
+        let found = { app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'records.card.' AND label CONTAINS %@", text)).count > 0 }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, !found() { RunLoop.current.run(until: Date().addingTimeInterval(0.5)) }
+        if !found() { shot(app, "records-timeout"); print(app.debugDescription) }
+        XCTAssertTrue(found(), "记的账里出现「\(text)」")
     }
 
     // MARK: 用例
