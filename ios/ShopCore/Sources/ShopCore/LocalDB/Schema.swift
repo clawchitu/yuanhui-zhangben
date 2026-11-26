@@ -233,7 +233,7 @@ enum LocalSchema {
     static let projectionTables = ["device_label", "entry", "sale_batch", "lot", "barcode_pending", "barcode", "product_private", "product"]
     /// meta 里属于投影的键
     static let projectionMetaKeys = [MetaKey.catalogCursor, .ledgerCursor, .serverEpoch, .lastSyncAt, .catalogDone, .serverTimeAtSync,
-                                     .deletePendingUntil]
+                                     .deletePendingUntil, .lowStockDefault]
 }
 
 /// `meta` 表的键（§3.4：游标、server_epoch；角色、店名、设备名在 `session` 表里）
@@ -251,6 +251,8 @@ public enum MetaKey: String, Sendable {
     case catalogDone = "sync.catalog_done"
     /// S22a：账号注销期间（§14 S04-2），值是服务器给的 `delete_pending_until`
     case deletePendingUntil = "sync.delete_pending_until"
+    /// S25：店里默认的快没货提醒线（同步响应 `store.low_stock_default`，只发给家用 / 审核；11「快没货」与 09 同一条件，§14 S07-6）
+    case lowStockDefault = "store.low_stock_default"
     /// S22b：为什么没有当前会话（被踢 `kicked_family` / `kicked_cashier`，演示店重置 `demo_reset`）。启动时据此进 25b / 25f；
     /// 开新会话时清掉。不属于投影
     case signedOutReason = "identity.signed_out"

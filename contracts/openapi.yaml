@@ -971,6 +971,10 @@ components:
           required: [name]
           properties:
             name: { type: string }
+            low_stock_default:
+              type: integer
+              minimum: 0
+              description: 店里默认的快没货提醒线（商品没设 `low_at` 时用它）。只发给家用 / 审核，收银员的响应里没有这个键。手机 11「快没货」筛选与 09 同一条件（§14 S07-6）
     Product:
       type: object
       additionalProperties: false
