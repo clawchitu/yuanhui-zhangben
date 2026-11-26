@@ -132,6 +132,9 @@ extension UIFixture {
     /// 长名商品的码（S16 验收：商品名很长时换行不截断、金额不出右边距）
     static let longNameBarcode = "6900000000017"
     static let longName = "贵州茅台酒（飞天）53%vol 500ml 礼盒装 附赠两只小酒杯 生肖纪念版"
+    /// 真机 11/26 截图里的名字（价签上折两行、把「买几个」挤到结算条底下）
+    static let wrapNameBarcode = "6900000000024"
+    static let wrapName = "农夫山泉 饮用天然水550ml"
 
     /// `-uiMoreGoods` 加的码：和康师傅红烧牛肉面（6902514300011）同前缀的另一个商品、零价商品
     static let sameMakerBarcode = "6902514300028"
@@ -315,6 +318,12 @@ extension UIFixture {
                                 priceFen: Fen(999_999))
             try db.applyBaseline(CatalogBaseline(products: [p], barcodes: [
                 try BarcodeRecord(barcode: longNameBarcode, productId: p.id, packQty: 1, unitName: "瓶", packPriceFen: nil)]))
+        }
+        if args.contains("-uiWrapName") {
+            let p = try Product(id: UUID(uuidString: "5EED0000-0000-4000-8000-0000000002FE")!, name: wrapName, baseUnit: "瓶",
+                                priceFen: Fen(200))
+            try db.applyBaseline(CatalogBaseline(products: [p], barcodes: [
+                try BarcodeRecord(barcode: wrapNameBarcode, productId: p.id, packQty: 1, unitName: "瓶", packPriceFen: nil)]))
         }
         if args.contains("-uiMoreGoods") {
             // S17：同厂商另一个面（前缀 69025143 命中两个商品，prefix.json 同款）、按名称找的几样牛奶、一个零价商品

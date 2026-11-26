@@ -49,6 +49,8 @@ struct ScanLayout: Equatable {
     static let buttonSpacing: CGFloat = 12
     /// 按钮底到底部安全区的最小留白（屏幕矮时相机区至少留这么多）
     static let bottomPadding: CGFloat = 16
+    /// 给上面让高度时取景框最矮收到多少（一维条码横着扫，框矮一点不影响识别）
+    static let minFinderHeight: CGFloat = 72
 
     let finder: CGSize
     /// 底部安全区高度：相机区的深色背景要铺到屏幕底
@@ -58,19 +60,26 @@ struct ScanLayout: Equatable {
     var buttonWidth: CGFloat { (finder.width - Self.buttonSpacing) / 2 }
 
     /// - size: 页面安全区内的大小；insets: 安全区（GeometryReader 读到的）
-    init(size: CGSize, insets: EdgeInsets, compact: Bool) {
+    /// - minTop: 相机区上沿至少在安全区顶往下多少（上面的顶栏 + 购物篮要的高度 + 结算条）；不够时取景框连按钮先往下沉，
+    ///   再把框收矮，最矮 `minFinderHeight`（卖出页：价签「买几个」那一栏不能被结算条盖住，真机 11/26）。0 = 不要求
+    init(size: CGSize, insets: EdgeInsets, compact: Bool, minTop: CGFloat = 0) {
         let fullH = size.height + insets.top + insets.bottom
         let fullW = size.width + insets.leading + insets.trailing
         let normalH = (fullH * Self.finderHeightRatio).rounded()
-        let h = compact ? (fullH * Self.compactFinderHeightRatio).rounded() : normalH
-        finder = CGSize(width: (fullW * Self.finderWidthRatio).rounded(), height: h)
+        var h = compact ? (fullH * Self.compactFinderHeightRatio).rounded() : normalH
         bottomInset = insets.bottom
         // 取景框下沿换到安全区坐标。收小时取景框连同按钮往下沉，用掉按钮下面的空地（按钮底离安全区 16pt），
         // 上沿下移得更多，让上面的清单多露一行；只沉不升（屏幕矮、本来就没空地时下沿不动）
         let normalBottom = fullH * Self.finderCenterRatio + normalH / 2 - insets.top
         let lowest = size.height - Self.bottomPadding - Self.buttonHeight - Self.buttonGap
-        let bottom = compact ? max(normalBottom, lowest) : normalBottom
-        let top = bottom - h - Self.topPadding
+        var bottom = compact ? max(normalBottom, lowest) : normalBottom
+        var top = bottom - h - Self.topPadding
+        if minTop > top {
+            bottom = max(bottom, lowest)
+            h = min(h, max(Self.minFinderHeight, (bottom - Self.topPadding - minTop).rounded(.down)))
+            top = bottom - h - Self.topPadding
+        }
+        finder = CGSize(width: (fullW * Self.finderWidthRatio).rounded(), height: h)
         let minBand = Self.topPadding + h + Self.buttonGap + Self.buttonHeight + Self.bottomPadding
         bandHeight = max(minBand, size.height - top).rounded()
     }

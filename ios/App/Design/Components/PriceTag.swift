@@ -128,13 +128,19 @@ struct PriceTag<Footer: View>: View {
     var footerVerticalPadding: CGFloat = 12
     /// 紧凑版（卖出页 03）：黄底上下留白收小，单价收掉 DIN 多出来的行高，整块比原来矮约 23pt，贴近稿子
     var compact = false
+    /// 收紧档（卖出页按购物篮区的可用高度挑，真机 11/26：长名折两行把「买几个」挤到结算条底下）。
+    /// 0 照稿子；1 名称用正文字号、最多两行，缩略图 48；2 名称一行（放不下先缩小、再截尾），不要说明行，缩略图 40；
+    /// 3 不要缩略图，名称和单价同一行。下面一栏（步进器）每一档都一样大
+    var tight: Int = 0
     let footer: Footer
 
     init(name: String, caption: String = "刚扫的 · 单价", unitPriceCents: Int, thumb: Image? = nil, initial: String? = nil,
-         imageRef: ImageKey? = nil, footerVerticalPadding: CGFloat = 12, compact: Bool = false, @ViewBuilder footer: () -> Footer) {
+         imageRef: ImageKey? = nil, footerVerticalPadding: CGFloat = 12, compact: Bool = false, tight: Int = 0,
+         @ViewBuilder footer: () -> Footer) {
         self.imageRef = imageRef
         self.footerVerticalPadding = footerVerticalPadding
         self.compact = compact
+        self.tight = tight
         self.name = name
         self.caption = caption
         self.unitPriceCents = unitPriceCents
@@ -145,29 +151,40 @@ struct PriceTag<Footer: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 14) {
-                Thumb(image: thumb, initial: initial, ref: imageRef)
+            HStack(alignment: .top, spacing: tight == 0 ? 14 : 10) {
+                if tight < 3 {
+                    Thumb(image: thumb, initial: initial, ref: imageRef, size: Self.thumbSize(tight))
+                }
                 VStack(alignment: .leading, spacing: compact ? 0 : 6) {
-                    Text(name)
-                        .font(TypeScale.title)
-                        .fixedSize(horizontal: false, vertical: true)
-                    ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .lastTextBaseline) {
-                            captionText
-                            Spacer(minLength: 8)
+                    if tight >= 3 {
+                        HStack(alignment: .center, spacing: 8) {
+                            nameText.frame(maxWidth: .infinity, alignment: .leading)
                             price
                         }
-                        VStack(alignment: .leading, spacing: 2) {
-                            captionText
-                            price
+                    } else {
+                        nameText
+                    }
+                    if tight == 2 {
+                        price
+                    } else if tight < 2 {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(alignment: .lastTextBaseline) {
+                                captionText
+                                Spacer(minLength: 8)
+                                price
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                captionText
+                                price
+                            }
                         }
                     }
                 }
             }
             .foregroundStyle(Tokens.Palette.ink)
             .padding(.horizontal, 16)
-            .padding(.top, compact ? 12 : 16)
-            .padding(.bottom, compact ? 14 : 16)
+            .padding(.top, tight > 0 ? 8 : (compact ? 12 : 16))
+            .padding(.bottom, tight > 0 ? 8 : (compact ? 14 : 16))
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Tokens.Palette.tag)
             if Footer.self != EmptyView.self {
@@ -183,6 +200,21 @@ struct PriceTag<Footer: View>: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.card))
         .overlay(RoundedRectangle(cornerRadius: Tokens.Radius.card).strokeBorder(Tokens.Palette.ink, lineWidth: 2.5))
+    }
+
+    static func thumbSize(_ tight: Int) -> CGFloat {
+        switch tight { case 0: Tokens.Size.thumb; case 1: 48; default: 40 }
+    }
+
+    /// 名称：0 档照稿子不限行；1 档两行；2、3 档一行，放不下先缩到七成再截尾（开头永远可见）
+    private var nameText: some View {
+        Text(name)
+            .font(tight == 0 ? TypeScale.title : TypeScale.body.weight(.semibold))
+            .lineLimit(tight == 0 ? nil : (tight == 1 ? 2 : 1))
+            .minimumScaleFactor(tight >= 2 ? 0.7 : 1)
+            .truncationMode(.tail)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("priceTag.name")
     }
 
     private var price: some View {
