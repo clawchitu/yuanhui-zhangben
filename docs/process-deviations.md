@@ -55,3 +55,9 @@
 ## D-S22b-1 ios-ci 时限 45 → 75 分钟（2026-11-23）
 
 PR #41 的 ios-ci 两次都在 45 分钟时被取消：`xcodebuild test` 本身全部通过（约 40 分钟，S15 遍历四条就占约 15 分钟），被砍在随后的 Release 构建检查上（Release、Beta 各约 6 分钟）。`ios.yml` 的 `timeout-minutes` 改成 75。检查内容不变。
+
+## D-1126-1 ios-ci 关掉测试后的诊断收集（2026-11-26）
+
+**现象**：PR #50、#51 和 main 上 #49 合并后的 ios-ci 都在 75 分钟时被取消，测试本身全过。三次 `xcodebuild test`（全量测试、Release 检查、Beta 检查）在打出 `** TEST SUCCEEDED **` 之后都不退出，挂着一个 `simctl diagnose -l -b --timeout=600 …`，每次卡满 600 秒才结束（PR #50 run 45727332462：Release 检查 19:23:36 测完、19:33:37 才退出；全量测试最后一条用例 03:11:34、步骤 03:21:46 结束）。三次共多出约 30 分钟，加上约 40 分钟测试和两次构建，超过 75 分钟。
+
+**改为**：`ios.yml` 的 `xcodebuild test` 和 `ios/scripts/release-check.sh` 加 `-collect-test-diagnostics never`。检查内容、时限不变。代价：用例失败时 xcresult 里不再附 sysdiagnose 级别的模拟器诊断（失败用例本身的日志、截图照样在）。

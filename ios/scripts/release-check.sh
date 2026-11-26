@@ -23,8 +23,10 @@ set -o pipefail
 # 必然失败（-34018），按 PR #35 评审修 3 读失败不结束会话，会停在「手机还没准备好」而不是登录页。
 # 本检查验证的是「没有会话时」的表现，从干净安装开始
 xcrun simctl uninstall "$udid" cn.yuanhuishop.zhangben 2>/dev/null || true
+# -collect-test-diagnostics never：不让 xcodebuild 测完再跑 `simctl diagnose`（这台 Mac 上每次卡 600 秒，D-1126-1）
 xcodebuild test -project YuanhuiZhangben.xcodeproj -scheme "$scheme" \
   -destination "id=$udid" -derivedDataPath "$dd" CODE_SIGNING_ALLOWED=NO \
+  -collect-test-diagnostics never \
   -only-testing:YuanhuiZhangbenUITests/ReleaseBuildUITests \
   | tee "$log" | grep -E "error:|Test Case|Executed|\*\* TEST" || true
 grep -q "\*\* TEST SUCCEEDED \*\*" "$log" || { echo "$config 构建的 UI 检查没过" >&2; exit 1; }
