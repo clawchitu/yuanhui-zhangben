@@ -9,6 +9,7 @@
 //   has_image = image_candidates.state != none（演示店、开关关着永远 false）。
 // - 候选（S22d）：GET .../images 只读库、不调快鸟，供轮询（每设备每分钟 60 次）；GET .../images/:cid 出缩图，强缓存一年。
 //   开关关着都 404；演示店候选恒为 none、读图 404。收银员由 guard 拒。
+//   例外（真机 11/26 修复 2）：一张能用的都没有、条码库地址已过期时，重新问一次快鸟、重登记（candidate-refresh.ts：每条码每天一次、占额度）。
 // - 商品图：总开关关着一律 404（手机显示首字）；带的 v 等于当前 image_ver 时强缓存一年，否则不缓存。
 import type { FastifyInstance } from "fastify";
 import { authOf } from "../auth/plugin.ts";
@@ -16,6 +17,7 @@ import { SlidingWindowLimiter } from "../auth/ratelimit.ts";
 import { LookupQuotaExceeded, urlsOf } from "../lookup/catalog.ts";
 import { candidateView, CID_RE, ensureCandidates, type CandidateView } from "../lookup/candidates.ts";
 import { ImageCache } from "../lookup/images.ts";
+import { candidatesWithRefresh, lookupCandidates } from "../lookup/candidate-refresh.ts";
 import { cacheFillGuard } from "../jobs/account-purge.ts";
 import { isCandidateKey, isImageKey } from "../lookup/oss.ts";
 import { sendError } from "./errors.ts";
@@ -66,8 +68,16 @@ export async function lookupRoutes(app: FastifyInstance): Promise<void> {
       if (imagesOn && !auth.store.isDemo) {
         // 候选出错不影响查码结果（S22d ⑥-2）
         try {
-          if ((await ensureCandidates(cand, req.params.barcode, urlsOf(r.hit))) > 0) app.candidates.wake();
-          view = await candidateView(cand, req.params.barcode);
+          if (r.origin === "cache") {
+            // 旧缓存的地址可能已过期（真机 11/26 修复 2）：不拿过期地址登记；没有能用的候选、今天还能刷新时回 pending，
+            // 手机轮询 GET .../images 时刷新
+            const c = await lookupCandidates(cand, req.params.barcode, urlsOf(r.hit));
+            if (c.inserted > 0) app.candidates.wake();
+            view = c.view;
+          } else {
+            if ((await ensureCandidates(cand, req.params.barcode, urlsOf(r.hit))) > 0) app.candidates.wake();
+            view = await candidateView(cand, req.params.barcode);
+          }
         } catch (e) {
           req.log.warn({ barcode: req.params.barcode, code: (e as { code?: string })?.code ?? "error" }, "商品图候选登记失败");
         }
@@ -93,7 +103,9 @@ export async function lookupRoutes(app: FastifyInstance): Promise<void> {
       const wait = pollPerDevice.hit(auth.device.id, req.receivedAt.getTime());
       if (wait > 0) return sendError(reply, 429, "rate_limited", { retry_after_s: wait });
       if (auth.store.isDemo) return NONE;
-      return candidateView(cand, req.params.barcode);
+      // 一张能用的都没有、条码库地址已过期时重新问一次快鸟再登记（每条码每天最多一次，占本店查码额度；真机 11/26 修复 2）
+      return candidatesWithRefresh({ cand, catalog, wake: () => app.candidates.wake() },
+        { id: auth.store.id, isDemo: auth.store.isDemo }, req.params.barcode, req.log);
     },
   );
 

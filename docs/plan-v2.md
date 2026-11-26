@@ -145,7 +145,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `products` | `id, store_id, name, base_unit, price_fen, stock_qty int, stock_value_fen bigint, last_cost_fen null, cost_known bool, stock_ver bigint, last_count_at null, low_at int null, stock_known bool, track_expiry bool, expiry_warn_days int=7, shelf_life_months int null, needs_review bool, image_key null, image_sha256 null, image_source null, image_ver int=0, archived_at null, created_by_device, rev, updated_at` | 平均进价不存，等于 `stock_value_fen / stock_qty`；`cost_known` = 进价是否已知，用来区分「真的零成本」和「没填」（§5.2）；`stock_ver` 每次库存变动 +1，`last_count_at` 是最近一次盘点或期初的时间（§5.6）；`needs_review` = 等家用号补全（`quick` 登记不论角色一律为真，卖出引用未知商品时自动建的也是，§14 S04-5、S05-9）；`image_ver` 是单独一列，`image_key` 每变一次 +1，0 = 没图（§14 S02-1）；`image_sha256` 是当前图内容的 sha256，选图 / 拍照按它判「同一张不升版本」（S22d，迁移 0006）；`price_fen >= 0` |
 | `product_barcodes` | `store_id, barcode, product_id, pack_qty int, unit_name, pack_price_fen, rev, deleted_at` | 主键 `(store_id, barcode)`；`pack_qty >= 1`；**单件码（`pack_qty=1`）的 `pack_price_fen` 必须为空，卖价一律读 `products.price_fen`**（CHECK 约束），只有整件码存自己的价，整件码的价也可以为空，表示按「单件卖价 × 换算数量」算（§14 S02-5、S12-1）；一个商品可以有多个单件码；单件码的 `unit_name` 就是商品的基本单位，只有一处口径：挂单件码时服务器写 `products.base_unit`、不看 payload 的 `unit_name`，改基本单位时该商品所有单件码的 `unit_name` 跟着改、各取一个新号，整件码不动（§14 S04-5） |
 | `product_aliases` | `store_id, alias_id, product_id` | 两台手机离线时各自登记了同一个条码：先到的赢，后到的商品 id 记成别名，之后引用别名的 op 一律改写到赢家 |
-| `barcode_catalog` | `barcode, found bool, name, spec, brand, image_url, image_urls text[], source, raw jsonb, fetched_at` | 全局缓存，不分店；查不到也缓存（7 天后可重查）。`image_urls` 是快鸟返回的全部图片地址（0004，旧行空数组），`image_url` = 第一张 |
+| `barcode_catalog` | `barcode, found bool, name, spec, brand, image_url, image_urls text[], source, raw jsonb, fetched_at, images_refreshed_at timestamptz` | 全局缓存，不分店；查不到也缓存（7 天后可重查）。`image_urls` 是快鸟返回的全部图片地址（0004，旧行空数组），`image_url` = 第一张。`images_refreshed_at`（0007）：上一次为候选图重新问快鸟的时间，每条码每天最多一次（S22d-15） |
 
 ### 3.3 流水
 
@@ -541,7 +541,7 @@ yuanhui-zhangben/                 GitHub 私有仓库 clawchitu/yuanhui-zhangben
 | `POST /v1/sync` | 推 op + 拉变更（§4） | 平时唯一的写账入口。请求体超过 1 MiB → `413 invalid`；本店排队超过上限 → `503 unavailable` 带 `retry_after_s`；`epoch` 不一致 → `409 epoch_mismatch`；账号注销申请期间 op 不应用、`results` 为空、响应带 `delete_pending_until`（§4.2） |
 | `GET /v1/barcode-lookup/:barcode` | 查名称（先查 `barcode_catalog`，没有再调快鸟，2 秒超时） | 每设备每分钟 20 次；每店每天 1000 次上限（11/23 由 300 改为 1000），防止刷掉付费额度 |
 | `GET /v1/images/:product_id?v=` | 200px 小图 | 强缓存；本地磁盘缓存，缺了回源 OSS |
-| `GET /v1/barcode-lookup/:barcode/images` | 商品图候选 `{state: none\|pending\|ready, ids}`（S22d） | 只读库、不调快鸟，供轮询；每设备每分钟 60 次。查码响应（家用 / 审核）同样带 `image_candidates`，`has_image = state != none` |
+| `GET /v1/barcode-lookup/:barcode/images` | 商品图候选 `{state: none\|pending\|ready, ids}`（S22d） | 供轮询；每设备每分钟 60 次。平时只读库、不调快鸟；一张能用的候选都没有、条码库地址已过期（取到超过 2 小时）时重新问一次快鸟再登记（每条码每天一次、占本店查码额度，S22d-15）。查码响应（家用 / 审核）同样带 `image_candidates`，`has_image = state != none` |
 | `GET /v1/barcode-lookup/:barcode/images/:cid` | 一张候选缩图 | 强缓存一年，`nosniff` + CSP |
 | `POST /v1/images/:product_id/select` | `{barcode, candidate_id}` → `{image_ver}` | 条码须在本店挂在这个商品上、候选 ready；复制成正式图，`image_ver`+1、取新 `rev`；内容相同不升版本 |
 | `PUT /v1/images/:product_id` | JPEG 裸体（≤ 1 MB）→ `{image_ver}` | 只收 JPEG，按 EXIF 转正、去全部元数据，存 200px；超 1 MB 413、格式不对 400 |
@@ -1533,3 +1533,4 @@ S22d-iOS 按 Fable 方案（11/25）分两个 PR：① 选图（候选、第三�
 | S22d-12 | 拍照、相册 | 「拍一张」用系统相机（模拟器和 UI 测试用 Debug 的假相机 `-uiFakeCamera`，要真点快门；出 4032×3024、方向 `.right` 的图），「从相册选」用系统相册选择器（PhotosPicker，不要相册权限）。拿到图在后台压：按显示方向重绘到长边 ≤ 1024（不放大），JPEG 质量 0.8→0.4，还超 400 KB 就缩到 768 再来；另出 200px 预览（成功后 prime、离线预览）。PUT 和选图共用暂存、闸门、重发；同一商品后来的照片顶掉先前的选图 | `PhotoCapture.swift`、`ImageChanges.swift` |
 | S22d-13 | 没图时 | 候选定了一张也没有（none、found:false、8 秒到了还是 0 张、没网）：第三步「这个商品还没有图」，拍一张 / 从相册选 / 跳过；有候选时选图页上也能改拍 | `ImageChoiceView` |
 | S22d-14 | 「重新拍照」放哪 | 商品详情页（S25）之前先放进货页商品卡：商品图右下角小相机，点开「换商品图」（只问一次候选，不轮询）：重选候选、拍一张、从相册选、关掉。卖出页不加（收银热路径）。收银员、演示店、开关关没有。S25 做详情页时把入口搬过去 | `StockInView`、`ReplaceImageSheet` |
+| S22d-15 | 老条码 / 全失败的条码在「换商品图」里没有候选（真机 11/26，负责人同意「修复 2」） | 改 S22d-1 的「failed 保留、不重取」：`GET …/images` 发现一张能用的都没有（没有行、全部 failed、卡死的 pending）且条码库地址已过期（`fetched_at` 超过 2 小时，api-yun 链接约 2 小时过期）时，重新问一次快鸟、刷新 `barcode_catalog`、删掉非 ready 的行按新地址重登记，回 pending。快鸟按次计费：`images_refreshed_at` 原子占位，每条码每天最多一次（并发轮询只问一次，没问到也算一次），照样占本店当天额度；地址没过期、明确没查到、没有条码库行、演示店不刷新。查码命中旧缓存时不再拿过期地址登记，能刷新就回 pending 让手机轮询 | `lookup/candidate-refresh.ts`、迁移 0007 |

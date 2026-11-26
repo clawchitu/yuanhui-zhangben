@@ -120,6 +120,8 @@ export interface BarcodeCatalogTable {
   source: string;
   raw: Json | null;
   fetched_at: TsDefault;
+  /** 0007：上一次为了候选图重新问外部的时间（每个条码一天最多一次） */
+  images_refreshed_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
 }
 
 /** 0005（S22d）：商品图候选，全局、不分店 */

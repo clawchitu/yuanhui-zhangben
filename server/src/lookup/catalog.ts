@@ -73,6 +73,10 @@ export class DailyQuota {
     this.counts.set(k, n + 1);
     if (this.counts.size > 1000) for (const key of this.counts.keys()) if (!key.endsWith(`|${day}`)) this.counts.delete(key);
   }
+  /** 本店今天还能不能再调一次（只看，不占） */
+  has(storeId: string, now: Date): boolean {
+    return this.used(storeId, now) < this.limit;
+  }
   /** 今天各店用了几次（S10c 的「快鸟余量」告警看它，§14 S08-3 条件二） */
   usage(now: Date): Array<{ storeId: string; used: number }> {
     const suffix = `|${shanghaiDay(now).day}`;
@@ -122,6 +126,24 @@ export class CatalogService {
     let p = this.inflight.get(barcode);
     if (!p) {
       this.quota.take(store.id, now); // 超了直接抛，不建查询
+      p = this.fetchAndStore(this.d.source, barcode, log).finally(() => this.inflight.delete(barcode));
+      this.inflight.set(barcode, p);
+    }
+    const out = await p;
+    if (out.kind === "found") return { found: true, hit: out.hit, origin: "external" };
+    return { found: false, origin: out.kind === "not_found" ? "external" : "unavailable" };
+  }
+
+  /**
+   * 不看缓存、直接再问一次外部（候选图刷新用，见 candidate-refresh.ts）：照样占本店当天额度（超了抛 LookupQuotaExceeded）、
+   * 同一条码正在查就跟着等那一次、结果写回 barcode_catalog（「查到」的行不会被「没查到」覆盖）。
+   * 没配外部条码库、演示店：直接当没问到
+   */
+  async refresh(store: { id: string; isDemo: boolean }, barcode: string, log: LookupLog): Promise<LookupResult> {
+    if (store.isDemo || !this.d.source) return { found: false, origin: "unavailable" };
+    let p = this.inflight.get(barcode);
+    if (!p) {
+      this.quota.take(store.id, this.d.clock());
       p = this.fetchAndStore(this.d.source, barcode, log).finally(() => this.inflight.delete(barcode));
       this.inflight.set(barcode, p);
     }
