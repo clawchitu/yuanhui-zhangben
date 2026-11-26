@@ -139,7 +139,7 @@ describe("老条码：没有候选行、条码库地址已过期", () => {
 
     // 轮询：刷新
     const p1 = await poll(app, a.token, code);
-    expect(p1.json().state).toBe("pending");
+    expect(p1.json().state).toBe("ready"); // 刷新这次请求里就等到了第一张
     await expectContract("ImageCandidates", p1.json());
     expect(calls).toEqual([code]);
     const cat = await catalogRow(code);
@@ -152,16 +152,16 @@ describe("老条码：没有候选行、条码库地址已过期", () => {
     await app.close();
   });
 
-  it("换商品图（手机没先查码，直接问候选）：一样刷新", async () => {
+  it("换商品图（现有包只问一次、不轮询）：这一次请求里就带回转存好的候选", async () => {
     const clock = new TestClock();
     const app = mk(clock);
     const a = await shop(app);
     const code = newBarcode();
     await oldCatalog(code, new Date(clock.t - 3 * 3600_000), [expired(code, 0)]);
     const want = await freshImages(code, ["#b22"]);
-    expect((await poll(app, a.token, code)).json().state).toBe("pending");
-    await app.candidates.drain();
+    const t0 = performance.now();
     expect((await poll(app, a.token, code)).json()).toEqual({ state: "ready", ids: want });
+    expect(performance.now() - t0).toBeLessThan(4500);
     expect(calls).toEqual([code]);
     await app.close();
   });
@@ -202,7 +202,7 @@ describe("全部 failed（#52 之前 bad_type、过期链接）", () => {
     // 查码：已有行、全失败 → 回 pending 让手机轮询（不在查码里调快鸟）
     expect((await lookup(app, a.token, code)).json().image_candidates).toEqual({ state: "pending", ids: [] });
     expect(calls).toEqual([]);
-    expect((await poll(app, a.token, code)).json().state).toBe("pending");
+    expect((await poll(app, a.token, code)).json().state).toBe("ready");
     expect(calls).toEqual([code]);
     await app.candidates.drain();
     expect((await poll(app, a.token, code)).json()).toEqual({ state: "ready", ids: want });
@@ -236,7 +236,7 @@ describe("计费保护", () => {
     // 过了 24 小时：再刷新一次
     clock.advance(REFRESH_INTERVAL_MS);
     const want = await freshImages(code, ["#e55"]);
-    expect((await poll(app, a.token, code)).json().state).toBe("pending");
+    expect((await poll(app, a.token, code)).json().state).toBe("ready");
     expect(calls).toEqual([code, code]);
     await app.candidates.drain();
     expect((await poll(app, a.token, code)).json()).toEqual({ state: "ready", ids: want });
@@ -269,6 +269,10 @@ describe("计费保护", () => {
     await freshImages(code, ["#f66"]);
     expect((await poll(app, a.token, code)).json()).toEqual({ state: "none", ids: [] });
     expect(calls).toEqual([other]);
+    // 额度用完没占今天的名额：过了上海零点（不到 24 小时）额度恢复，就能刷新
+    clock.advance(24 * 3600_000 - 60_000); // TEST_NOW 当天内任一时刻起，拨近 24 小时必过一次上海零点
+    expect((await poll(app, a.token, code)).json().state).not.toBe("none");
+    expect(calls).toEqual([other, code]);
     await app.close();
   });
 

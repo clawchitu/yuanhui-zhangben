@@ -65,7 +65,7 @@ export interface RefreshDeps {
 
 /**
  * GET .../images 用：先看现状；一张能用的都没有、又允许刷新时重新问快鸟、重新登记，返回刷新后的现状。
- * 刷新出错（额度用完、数据库错）只记日志，返回刷新前的现状
+ * 额度用完只记日志、返回刷新前的现状；数据库错照常抛（接口 500，手机下次再问）
  */
 export async function candidatesWithRefresh(
   d: RefreshDeps,
@@ -76,6 +76,12 @@ export async function candidatesWithRefresh(
   const view = await candidateView(d.cand, barcode);
   if (view.state !== "none" || store.isDemo || !d.cand.enabled || !d.cand.store) return view;
   const now = d.cand.clock();
+  const started = Date.now();
+  // 额度先看一眼再占名额：额度用完时不把今天的名额白白用掉（PR #56 Opus 建议 2）
+  if (!d.catalog.quota.has(store.id, now)) {
+    log.warn({ barcode }, "本店今天的查码额度用完，候选图不刷新");
+    return view;
+  }
   if (!(await claimRefresh(d.cand.db, barcode, now))) return view;
   let r;
   try {
@@ -96,8 +102,17 @@ export async function candidatesWithRefresh(
     return ensureCandidates({ ...d.cand, db: trx }, barcode, urls);
   });
   if (inserted > 0) d.wake();
-  return candidateView(d.cand, barcode);
+  // 现有包的「换商品图」页只问一次、不轮询（PR #56 Opus 建议 1）：在这次请求里等转存出第一张（手机 /images 超时 5 秒，
+  // 连快鸟在内最多 WAIT_FIRST_READY_MS），等到了就带着 ready 的 ids 回；没等到回 pending
+  for (;;) {
+    const v = await candidateView(d.cand, barcode);
+    if (v.ids.length > 0 || v.state !== "pending" || Date.now() - started >= WAIT_FIRST_READY_MS) return v;
+    await new Promise((r) => setTimeout(r, 150));
+  }
 }
+
+/** 刷新那次请求最多等多久（从进来算，含问快鸟）：手机 /images 超时 5 秒，留 1 秒余量 */
+export const WAIT_FIRST_READY_MS = 4000;
 
 /**
  * 查码接口用（命中缓存时，所有身份）：决定这次登不登记、回什么现状。

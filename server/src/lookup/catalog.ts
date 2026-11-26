@@ -73,6 +73,10 @@ export class DailyQuota {
     this.counts.set(k, n + 1);
     if (this.counts.size > 1000) for (const key of this.counts.keys()) if (!key.endsWith(`|${day}`)) this.counts.delete(key);
   }
+  /** 本店今天还能不能再调一次（只看，不占） */
+  has(storeId: string, now: Date): boolean {
+    return this.used(storeId, now) < this.limit;
+  }
   /** 今天各店用了几次（S10c 的「快鸟余量」告警看它，§14 S08-3 条件二） */
   usage(now: Date): Array<{ storeId: string; used: number }> {
     const suffix = `|${shanghaiDay(now).day}`;
