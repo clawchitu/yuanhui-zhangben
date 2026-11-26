@@ -20,6 +20,10 @@ struct SellView: View {
     @State private var showManual = false
     @State private var showDiscount = false
     @State private var fedFixture = false
+    /// 量出来的：顶栏、结算条的高度，价签（1 档：名称最多两行）在这个宽度下要多高。相机区按它们让出购物篮的高度
+    @State private var modeBarHeight: CGFloat = 0
+    @State private var checkoutHeight: CGFloat = 0
+    @State private var tagNeed: CGFloat = 0
     private let fixture: SellFixture
 
     init(db: LocalDB, fixture: SellFixture) {
@@ -33,18 +37,27 @@ struct SellView: View {
     /// （不只靠键盘收起的通知），关掉后不点屏幕直接扣扳机照样进（§14 S14-4）
     private var covered: Bool { showManual || showDiscount || model.registerCode != nil }
 
+    /// 相机区上沿至少要在哪：顶栏 + 价签（名称两行那档）+ 结算条。小屏、大字模式下取景框收矮让出来，
+    /// 价签的「买几个」整栏露在结算条上面（真机 11/26）。空篮不要求
+    private var reservedTop: CGFloat {
+        guard model.focusLine != nil, tagNeed > 0 else { return 0 }
+        return modeBarHeight + Self.basketTopPadding + tagNeed + Self.focusBottomPadding + checkoutHeight
+    }
+
     /// 取景框收小（屏高 16%）：购物篮到第 3 行、或系统辅助字号下，让上面的清单多露几行（扫码页布局方案第 5 条）
     private var compactFinder: Bool { model.basket.lines.count >= 3 || typeSize.isAccessibilitySize }
 
     var body: some View {
         GeometryReader { geo in
-            let layout = ScanLayout(size: geo.size, insets: geo.safeAreaInsets, compact: compactFinder)
+            let layout = ScanLayout(size: geo.size, insets: geo.safeAreaInsets, compact: compactFinder, minTop: reservedTop)
             VStack(spacing: 0) {
                 ModeBar(title: "卖出", mode: .sell, pendingCount: app.figures.pendingCount, onBack: { dismiss() })
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { modeBarHeight = $0 }
                 basketArea
                     .frame(maxHeight: .infinity)
                     .overlay(alignment: .top) { if let n = model.notice { noticeBanner(n) } }
                 CheckoutPanel(model: model, onDiscount: { showDiscount = true })
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { checkoutHeight = $0 }
                 CameraStrip(hub: hub, permission: permission, paused: covered, torchOn: torchOn, layout: layout,
                             onTorch: toggleTorch, onManual: { showManual = true })
             }
@@ -134,19 +147,37 @@ struct SellView: View {
                 .padding(.top, 12)
                 .padding(.bottom, 4)
         } else {
-            ScrollView {
-                VStack(spacing: 0) {
-                    if let f = model.focusLine { FocusLineCard(line: f, model: model).padding(.bottom, 4) }
-                    ForEach(model.otherLines) { BasketLineRow(line: $0, model: model) }
+            // 价签按购物篮区的可见高度挑档（FocusLineCard）：不滚的时候「买几个」整行都在结算条上面（真机 11/26）
+            GeometryReader { geo in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        if let f = model.focusLine {
+                            FocusLineCard(line: f, model: model,
+                                          available: geo.size.height - Self.basketTopPadding - Self.focusBottomPadding)
+                                .padding(.bottom, Self.focusBottomPadding)
+                                .background(alignment: .top) {
+                                    // 量 1 档价签的自然高度（不显示、读屏不读），相机区按它让高度
+                                    FocusLineCard(line: f, model: model, measureTight: 1)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .hidden()
+                                        .accessibilityHidden(true)
+                                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { tagNeed = $0 }
+                                }
+                        }
+                        ForEach(model.otherLines) { BasketLineRow(line: $0, model: model) }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, Self.basketTopPadding)
+                    .padding(.bottom, 12)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, 12)
+                .scrollBounceBehavior(.basedOnSize)
+                .accessibilityIdentifier("sell.basket")
             }
-            .scrollBounceBehavior(.basedOnSize)
-            .accessibilityIdentifier("sell.basket")
         }
     }
+
+    static let basketTopPadding: CGFloat = 12
+    static let focusBottomPadding: CGFloat = 4
 
     /// 黄条。「抹的零取消了」比别的黄条更醒目：墨色粗边框、换成撤回图标、停得更久（§14 S16-1，Fable #21）
     private func noticeBanner(_ n: SellModel.Notice) -> some View {
@@ -232,23 +263,53 @@ struct SellView: View {
 // MARK: - 价签（刚扫的那一行）
 
 /// 03 最上面的黄色价签：缩略图（没图用首字）、名称、单价，下面一栏「买几个」大号步进器。
+/// 价签放不下时按档收紧（`PriceTag.tight`）：长名、大字模式、小屏下「买几个」那一栏也整行露在结算条上面，
+/// 不用先往下滑才点得到加减（真机 11/26，「农夫山泉 饮用天然水550ml」折两行，步进器被结算条遮住一半）
 struct FocusLineCard: View {
     let line: Basket.Line
     let model: SellModel
+    /// 购物篮区不滚时价签能占的高度；nil = 不限（照稿子）
+    var available: CGFloat? = nil
+    /// 只用来量某一档的高度（SellView 的隐藏副本）
+    var measureTight: Int? = nil
 
     var body: some View {
+        Group {
+            if let measureTight {
+                tag(tight: measureTight)
+            } else if let available {
+                // 挑第一档放得下的；四档都放不下（极端小的窗口）就用最紧的那档
+                FitHeight(height: max(available, 0)) {
+                    ViewThatFits(in: .vertical) {
+                        ForEach(0...3, id: \.self) { tag(tight: $0) }
+                    }
+                }
+            } else {
+                tag(tight: 0)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("sell.tag")
+    }
+
+    private func tag(tight: Int) -> some View {
         PriceTag(name: line.name, caption: caption, unitPriceCents: Int(SellModel.unitPriceFen(line)),
                  initial: ProductNaming.isPlaceholder(line.name) ? nil : line.name.first.map(String.init),
-                 imageRef: Thumb.ref(line.conversion.product), footerVerticalPadding: 6, compact: true) {
+                 // 隐藏的量高副本不取图（缩略图大小一样，高度不变）：不多下一次图，也不算进「显示了几张图」的调试计数
+                 imageRef: measureTight == nil ? Thumb.ref(line.conversion.product) : nil,
+                 footerVerticalPadding: tight >= 2 ? 2 : 6,
+                 compact: true, tight: tight) {
             HStack {
                 Text("买几个").font(TypeScale.body.weight(.bold)).foregroundStyle(Tokens.Palette.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                 Spacer(minLength: 8)
                 QuantityStepper(value: count(line, model), range: 0...Int(Limits.maxPackCount))
                     .accessibilityIdentifier("sell.qty.focus")
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("sell.tag")
+        .accessibilityIdentifier("sell.tag.tight\(tight)")
     }
 
     /// 「刚扫的 · 单价」；整件码写明 1 件是几个（「刚扫的 · 每箱（24 罐）」）；已停用的商品照卖，标一句
@@ -258,6 +319,22 @@ struct FocusLineCard: View {
         var s = line.packQty > 1 ? "刚扫的 · 每\(line.conversion.unitLabel)" : "刚扫的 · 单价"
         if line.conversion.product.archived { s += " · 已停用" }
         return s
+    }
+}
+
+/// 按给定高度向子视图提议尺寸，自己只占子视图实际用的高度（不超过给定高度）。
+/// 放在 ScrollView 里时高度提议是「不限」，`ViewThatFits(in: .vertical)` 会永远挑第一档；用它把可见高度提议进去
+struct FitHeight: Layout {
+    let height: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let s = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: height)) else { return .zero }
+        return CGSize(width: proposal.width ?? s.width, height: s.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+                              proposal: ProposedViewSize(width: bounds.width, height: height))
     }
 }
 

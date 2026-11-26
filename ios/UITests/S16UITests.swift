@@ -297,17 +297,30 @@ final class S16UITests: XCTestCase {
     /// 长名里有代表性的几段：开头、中间、结尾都要画出来（截成两行、出「…」都会少）
     static let longNameParts = ["贵州茅台酒", "飞天", "礼盒装", "附赠两只小酒杯", "生肖纪念版"]
 
-    /// 商品名很长时换行不截断（读画出来的字）、金额不出右边距、容器留足 20pt 页边距；
-    /// 滚到长名那里能整个看见，不被固定的结算区盖住；总价、抹零按钮、记账按钮互不重叠（长名在下面的行里，和在价签里各一次）
+    /// 商品名很长时：在下面的行里换行不截断（读画出来的字）；在价签里可以收成两行 / 一行（开头照样画出来、读屏读全名），
+    /// 换来「买几个」的加减按钮不滚就整个露在结算条上面（§14 S16 让位于「加减可见」，11/26）。
+    /// 两种情况都要：金额不出右边距、容器留足 20pt 页边距；滚到长名那里能看见，不被固定的结算区盖住；
+    /// 总价、抹零按钮、记账按钮互不重叠（长名在下面的行里，和在价签里各一次）
     func testLongNameWrapsAndAmountsStayInside() throws {
         for order in [[Self.long, Self.long, Self.long, Self.erguotou], [Self.erguotou, Self.long, Self.long, Self.long]] {
             let app = launch(["-uiLongName", "-uiScan", order.joined(separator: ",")])
             waitItems(app, 4)
             let name = app.staticTexts[Self.longName]
-            XCTAssertTrue(name.exists, "全名在")
+            XCTAssertTrue(name.exists, "全名在（读屏读全名）")
             let visible = el(app, "sell.checkout").frame.minY - el(app, "sell.basket").frame.minY
-            let text: String
-            if name.frame.height <= visible {
+            let inTag = el(app, "sell.tag").staticTexts[Self.longName].exists
+            var text = ""
+            if inTag {
+                // 价签：不滚动，加减整个在结算条上面；名称开头画出来了（可以收行、缩字、截尾）
+                let stepper = el(app, "sell.qty.focus").frame
+                XCTAssertGreaterThanOrEqual(stepper.minY, el(app, "sell.basket").frame.minY - 0.5, "价签加减在购物篮区里 \(stepper)")
+                XCTAssertLessThanOrEqual(stepper.maxY, el(app, "sell.checkout").frame.minY + 0.5,
+                                         "价签加减不被结算条盖住 \(stepper) / \(el(app, "sell.checkout").frame)")
+                XCTAssertGreaterThanOrEqual(name.frame.minY, el(app, "sell.basket").frame.minY - 0.5, "价签名称在购物篮区里")
+                XCTAssertLessThanOrEqual(name.frame.maxY, el(app, "sell.checkout").frame.minY + 0.5, "价签名称不被结算区盖住")
+                let head = try Self.renderedText(name)
+                XCTAssertTrue(head.contains("贵州茅台"), "价签上画出了名称开头：\(head)")
+            } else if name.frame.height <= visible {
                 XCTAssertTrue(scrollIntoBasket(app, name),
                               "长名能整个滚进购物篮可视区 \(name.frame) / 清单 \(el(app, "sell.basket").frame) / 结算 \(el(app, "sell.checkout").frame)")
                 XCTAssertLessThanOrEqual(name.frame.maxY, el(app, "sell.checkout").frame.minY + 0.5, "长名不被结算区盖住")
@@ -325,10 +338,12 @@ final class S16UITests: XCTestCase {
                 XCTAssertTrue(scrollIntoBasket(app, name, .bottomEdge), "长名下沿滚得到 \(name.frame)")
                 text = head + (try visiblePart())
             }
-            for part in Self.longNameParts {
-                XCTAssertTrue(text.contains(part), "画出来的长名缺「\(part)」：\(text)")
+            if !inTag {
+                for part in Self.longNameParts {
+                    XCTAssertTrue(text.contains(part), "画出来的长名缺「\(part)」：\(text)")
+                }
+                XCTAssertFalse(text.contains("…") || text.contains("..."), "长名被截断：\(text)")
             }
-            XCTAssertFalse(text.contains("…") || text.contains("..."), "长名被截断：\(text)")
             assertInsideWindow(app, name, margin: 16, "长名")
             let containers = [el(app, "sell.tag")] + app.descendants(matching: .any).matching(identifier: "sell.line").allElementsBoundByIndex
             for c in containers where c.exists { assertPageMargins(app, c, c.identifier) }
@@ -345,14 +360,20 @@ final class S16UITests: XCTestCase {
         }
     }
 
-    /// 总价四位数（¥9999.99）：64pt 放不下时先降到 48pt，和「抹零 / 改总价」仍排在同一行，不上下排（S16-10）
+    /// 总价四位数（¥9999.99）：64pt 放不下时先降到 48pt，和「抹零 / 改总价」仍排在同一行，不上下排（S16-10）。
+    /// iPhone SE（宽 375）48pt 也放不下，按 S16-10「再不行才上下排」：总价在按钮下面、不和按钮重叠
     func testFourDigitTotalStaysBesideTheDiscountButton() {
         let app = launch(["-uiLongName", "-uiScan", Self.long])
         waitItems(app, 1)
         let total = el(app, "sell.total"), discount = app.buttons["sell.discount"]
         XCTAssertEqual(total.label, "9999.99 元")
-        XCTAssertGreaterThan(total.frame.minX, discount.frame.maxX, "总价在按钮右边：\(total.frame) / \(discount.frame)")
-        XCTAssertLessThan(abs(total.frame.midY - discount.frame.midY), 30, "同一行")
+        if app.windows.firstMatch.frame.width < 390 {
+            XCTAssertGreaterThanOrEqual(total.frame.minY, discount.frame.maxY - 0.5, "窄屏上下排：总价在按钮下面 \(total.frame) / \(discount.frame)")
+        } else {
+            XCTAssertGreaterThan(total.frame.minX, discount.frame.maxX, "总价在按钮右边：\(total.frame) / \(discount.frame)")
+            XCTAssertLessThan(abs(total.frame.midY - discount.frame.midY), 30, "同一行")
+        }
+        assertNoOverlap(total, discount, "总价和抹零按钮")
         assertInsideWindow(app, total, margin: 16, "总价")
     }
 
@@ -384,9 +405,12 @@ final class S16UITests: XCTestCase {
         }
         assertCheckoutFixed("开始")
         let shown = rows().filter(visible)
-        XCTAssertGreaterThanOrEqual(shown.count, 2, "清单至少完整露出两行：\(rows().map(\.frame)) / 清单区 \(basket.frame)")
+        // iPhone SE（屏高 667）清单区约 190pt，价签自己就占满：只要求价签整个露出，其余滚动可见（§14，11/26）
+        let small = w.height < 700
+        XCTAssertGreaterThanOrEqual(shown.count, small ? 1 : 2, "清单至少完整露出\(small ? "一" : "两")行：\(rows().map(\.frame)) / 清单区 \(basket.frame)")
         XCTAssertTrue(visible(el(app, "sell.tag")), "最新一件（价签）置顶可见")
         XCTAssertTrue(el(app, "sell.qty.focus").isHittable, "价签的数量能点")
+        XCTAssertLessThanOrEqual(el(app, "sell.qty.focus").frame.maxY, checkout.frame.minY + 0.5, "价签加减整个在结算条上面")
         // 滚到底：最后一行完整可见，结算条位置不动
         let before = checkout.frame
         basket.swipeUp()
@@ -420,7 +444,8 @@ final class S16UITests: XCTestCase {
             }
             let w = app.windows.firstMatch.frame
             XCTAssertTrue(back.isHittable, "\(state)：返回钮能点")
-            XCTAssertGreaterThanOrEqual(back.frame.minY, w.minY + 40, "\(state)：返回钮不进状态栏 \(back.frame)")
+            // 状态栏：全面屏约 44–62pt（老写法按 40 量），iPhone SE 20pt
+            XCTAssertGreaterThanOrEqual(back.frame.minY, w.minY + (w.height < 700 ? 20 : 40), "\(state)：返回钮不进状态栏 \(back.frame)")
             XCTAssertGreaterThanOrEqual(commit.frame.minY, w.minY)
             XCTAssertLessThanOrEqual(commit.frame.maxY, w.maxY + 0.5, "\(state)：记账按钮整个在屏内 \(commit.frame)")
             frames[state] = (back.frame, commit.frame)

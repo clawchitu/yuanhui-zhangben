@@ -34,16 +34,29 @@ final class ScanLayoutUITests: XCTestCase {
         XCTFail("等不到：\(what)", file: file, line: line)
     }
 
-    /// 取景框在屏幕下半：宽约 86%、高约 22–24%（收小时 16%，连同按钮沉到离底部安全区 16pt）、中心在 62–65%；两个按钮紧贴框下 16pt、等宽、≥ 64pt、横排
-    private func assertCameraArea(_ app: XCUIApplication, compact: Bool = false, _ ctx: String,
+    /// 底部安全区：有 Home 条的全面屏 34pt，iPhone SE（Home 键、屏高 667）0。老写法写死 34，SE 上收小的几条必挂
+    private func bottomInset(_ app: XCUIApplication) -> CGFloat { app.windows.firstMatch.frame.height < 700 ? 0 : 34 }
+
+    /// 取景框在屏幕下半：宽约 86%、高约 22–24%（收小时 16%，连同按钮沉到离底部安全区 16pt）、中心在 62–65%；两个按钮紧贴框下 16pt、等宽、≥ 64pt、横排。
+    /// `mayYield`：卖出页篮子里有价签时，相机区可以给价签让高度（§14 S16/ScanLayout 让位于「加减可见」，11/26）——
+    /// 这时比例和中心不再固定，改成：框连按钮沉到离安全区 16pt、框高不超过原来的比例、最矮 72pt；别的（宽、按钮）照旧
+    private func assertCameraArea(_ app: XCUIApplication, compact: Bool = false, mayYield: Bool = false, _ ctx: String,
                                   file: StaticString = #filePath, line: UInt = #line) {
         let w = app.windows.firstMatch.frame
         let finder = el(app, "scanner.viewfinder").frame
         let torch = app.buttons["sell.torch"].frame, manual = app.buttons["scanner.manual"].frame
+        let sunk = w.maxY - bottomInset(app) - 16
         XCTAssertEqual(finder.width / w.width, 0.86, accuracy: 0.01, "\(ctx) 取景框宽 \(finder)", file: file, line: line)
-        if compact {
-            XCTAssertEqual(finder.height / w.height, 0.16, accuracy: 0.01, "\(ctx) 收小的取景框高 \(finder)", file: file, line: line)
-            XCTAssertEqual(manual.maxY, w.maxY - 34 - 16, accuracy: 1.5, "\(ctx) 收小时连同按钮沉到离安全区 16pt", file: file, line: line)
+        let ratio = finder.height / w.height
+        let asDesigned = compact ? abs(ratio - 0.16) <= 0.01 && abs(manual.maxY - sunk) <= 1.5
+            : (0.22...0.24).contains(ratio) && (0.62...0.65).contains(finder.midY / w.height)
+        if mayYield && !asDesigned {
+            XCTAssertGreaterThanOrEqual(finder.height, 72 - 0.5, "\(ctx) 让高度时取景框最矮 72pt \(finder)", file: file, line: line)
+            XCTAssertLessThanOrEqual(ratio, (compact ? 0.16 : 0.24) + 0.01, "\(ctx) 让高度时框只收矮 \(finder)", file: file, line: line)
+            XCTAssertEqual(manual.maxY, sunk, accuracy: 1.5, "\(ctx) 让高度时连同按钮沉到离安全区 16pt", file: file, line: line)
+        } else if compact {
+            XCTAssertEqual(ratio, 0.16, accuracy: 0.01, "\(ctx) 收小的取景框高 \(finder)", file: file, line: line)
+            XCTAssertEqual(manual.maxY, sunk, accuracy: 1.5, "\(ctx) 收小时连同按钮沉到离安全区 16pt", file: file, line: line)
         } else {
             XCTAssertTrue((0.22...0.24).contains(finder.height / w.height), "\(ctx) 取景框高 \(finder)", file: file, line: line)
             XCTAssertTrue((0.62...0.65).contains(finder.midY / w.height), "\(ctx) 取景框中心 \(finder.midY / w.height)",
@@ -54,7 +67,7 @@ final class ScanLayoutUITests: XCTestCase {
         XCTAssertEqual(torch.width, manual.width, accuracy: 0.5, "\(ctx) 两个按钮等宽", file: file, line: line)
         XCTAssertGreaterThanOrEqual(torch.height, 64, file: file, line: line)
         XCTAssertTrue((0.39...0.43).contains(torch.width / w.width), "\(ctx) 按钮宽 \(torch.width)", file: file, line: line)
-        XCTAssertLessThanOrEqual(manual.maxY, w.maxY - 34 - 15, "\(ctx) 按钮离底部安全区至少 16pt", file: file, line: line)
+        XCTAssertLessThanOrEqual(manual.maxY, w.maxY - bottomInset(app) - 15, "\(ctx) 按钮离底部安全区至少 16pt", file: file, line: line)
         XCTAssertTrue(app.buttons["sell.torch"].isHittable && app.buttons["scanner.manual"].isHittable, ctx, file: file, line: line)
     }
 
@@ -126,7 +139,8 @@ final class ScanLayoutUITests: XCTestCase {
         assertCameraArea(app, "卖出空态")
     }
 
-    /// 连续扫：扫到不暂停（不压暗）；最新一件置顶（价签）；结算条固定、不随清单滚动；到第 3 行取景框收到 16%
+    /// 连续扫：扫到不暂停（不压暗）；最新一件置顶（价签）；结算条固定、不随清单滚动；到第 3 行取景框收到 16%；
+    /// 有价签时相机区可以给价签让高度（取景框最矮 72pt），价签的加减按钮整个露在结算条上面（§14，11/26）
     func testSellContinuousScanAndFixedCheckout() {
         let app = launch("sell", ["-uiScan", [Self.beer, Self.erguotou].joined(separator: ",")])
         wait("两件") { el(app, "sell.itemCount").label == "一共 2 件" }
@@ -134,17 +148,26 @@ final class ScanLayoutUITests: XCTestCase {
         // 价签是 .contain 容器，自身没有 label：看里面的字
         let tagTexts = el(app, "sell.tag").staticTexts.allElementsBoundByIndex.map(\.label)
         XCTAssertTrue(tagTexts.contains { $0.contains("二锅头") }, "最新一件置顶：\(tagTexts)")
-        assertCameraArea(app, "卖出两行")
+        assertCameraArea(app, mayYield: true, "卖出两行")
+        assertFocusStepperVisible(app, "卖出两行")
         let app3 = launch("sell", ["-uiScan", [Self.beer, Self.erguotou, Self.noodle].joined(separator: ",")])
         wait("三件") { el(app3, "sell.itemCount").label == "一共 3 件" }
         wait("取景框收小") { el(app3, "scanner.viewfinder").frame.height / app3.windows.firstMatch.frame.height < 0.17 }
-        assertCameraArea(app3, compact: true, "卖出三行")
+        assertCameraArea(app3, compact: true, mayYield: true, "卖出三行")
+        assertFocusStepperVisible(app3, "卖出三行")
         let checkout = el(app3, "sell.checkout").frame, basket = el(app3, "sell.basket")
         basket.swipeUp()
         RunLoop.current.run(until: Date().addingTimeInterval(0.5))
         XCTAssertEqual(el(app3, "sell.checkout").frame, checkout, "结算条不随清单滚动")
         XCTAssertLessThanOrEqual(checkout.maxY, el(app3, "scanner.viewfinder").frame.minY, "结算条在取景框上面")
         XCTAssertLessThanOrEqual(basket.frame.maxY, checkout.minY + 0.5, "清单在结算条上面")
+    }
+
+    /// 价签「买几个」的加减按钮不滚动就整个露在结算条上面（让位规则保护的东西，§14 11/26）
+    private func assertFocusStepperVisible(_ app: XCUIApplication, _ ctx: String, file: StaticString = #filePath, line: UInt = #line) {
+        let s = el(app, "sell.qty.focus").frame, b = el(app, "sell.basket").frame, c = el(app, "sell.checkout").frame
+        XCTAssertGreaterThanOrEqual(s.minY, b.minY - 0.5, "\(ctx) 加减按钮在购物篮区里 \(s) / \(b)", file: file, line: line)
+        XCTAssertLessThanOrEqual(s.maxY, c.minY + 0.5, "\(ctx) 加减按钮不被结算条盖住 \(s) / \(c)", file: file, line: line)
     }
 
     /// 最大辅助字号：取景框收小，记账按钮、两个相机按钮都在屏内能点（大字模式开 / 关）
