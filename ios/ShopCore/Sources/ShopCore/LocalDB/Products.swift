@@ -103,7 +103,8 @@ extension LocalDB {
 
     /// 快没货（§14 S07-6，与 `reports/today.ts` 同一条件）：没停用、不是待确认、库存动过（`stock_ver > 0`）、
     /// 库存 ≤ 商品自己的提醒线（没设用店里的默认）。库存用显示库存（本机没传的卖出也算）；本机有没传的增减时
-    /// 等于库存已经动过（传上去 `stock_ver` 就会 +1）
+    /// 等于库存已经动过（传上去 `stock_ver` 就会 +1）。本机的账传完、拉到底以后与服务器逐条一致；传完之前
+    /// 按本机看到的算（例如卖一个又撤掉、增减合计为 0 的新商品，传上去之前不算动过）
     public static func isLowStock(product p: Product, private v: ProductPrivate, stock: DisplayStock, storeDefault: Int64) -> Bool {
         guard !p.archived, !p.needsReview, v.stockVer > 0 || stock.pendingDelta != 0 else { return false }
         return stock.qty <= (v.lowAt ?? storeDefault)

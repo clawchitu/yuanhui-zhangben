@@ -185,11 +185,14 @@ describe("被踢设备（§4.5）", () => {
   }
 
   it("响应 device.revoked=true，不返回任何数据（changes 为空、total_products=0、游标原样）", async () => {
-    const { shop, app, cas } = await kicked();
+    const { shop, app, cas, fam2 } = await kicked();
     const r = await syncOk(app, cas.token, { epoch: shop.epoch, cursors: { catalog: 0, ledger: 0 } });
-    await app.close();
     expect(r.device).toEqual({ role: "cashier", label: "小王", revoked: true });
     expect(r.changes).toEqual({ products: [], barcodes: [], removed: [], entries: [], batches: [], lots: [] });
+    // 被踢的家用设备也不发店里的快没货提醒线（S25）
+    const rf = await syncOk(app, fam2.token, { epoch: shop.epoch, cursors: { catalog: 0, ledger: 0 } });
+    await app.close();
+    expect(rf.store).toEqual({ name: "元辉烟酒店" });
     expect(r.total_products).toBe(0);
     expect(r.cursors).toEqual({ catalog: 0, ledger: 0 });
     expect(r.has_more).toEqual({ catalog: false, ledger: false });

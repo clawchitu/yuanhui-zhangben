@@ -109,8 +109,11 @@ export async function syncRoutes(app: FastifyInstance): Promise<void> {
           revoked: device.revokedAt !== null,
           ...(device.revokeReason === "demo_reset" ? { discard_outbox: true } : {}),
         },
-        // 快没货的默认提醒线：手机 11「快没货」筛选与 09 同一条件（§14 S07-6）。收银员手机没有库存，不发
-        store: { name: a.store.name, ...(resultScope === "full_store" ? { low_stock_default: a.store.lowStockDefault } : {}) },
+        // 快没货的默认提醒线：手机 11「快没货」筛选与 09 同一条件（§14 S07-6）。收银员手机没有库存、被踢的设备不返回数据，都不发
+        store: {
+          name: a.store.name,
+          ...(resultScope === "full_store" && device.revokedAt === null ? { low_stock_default: a.store.lowStockDefault } : {}),
+        },
       };
     },
   );
