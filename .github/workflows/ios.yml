@@ -45,6 +45,8 @@ jobs:
       - name: xcodebuild test
         # 模拟器上本地签名（ad-hoc，不用证书和描述文件）：不签名的 App 写钥匙串会得到 -34018（errSecMissingEntitlement），
         # S21 登录后令牌进钥匙串，S21UITests 要靠它（§8 S21）
+        # -collect-test-diagnostics never：测试全过后 xcodebuild 仍会跑 `simctl diagnose`，在这台 Mac 上每次卡满 600 秒超时，
+        # 三次 xcodebuild 共多出约 30 分钟，把 75 分钟时限撑爆（D-1126-1）
         run: |
           set -o pipefail
           xcodebuild test \
@@ -52,6 +54,7 @@ jobs:
             -scheme YuanhuiZhangben \
             -destination "id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath "$DERIVED" \
+            -collect-test-diagnostics never \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
             | tee "$RUNNER_TEMP/xcodebuild.log" | grep -E "error:|warning: |Test Case|Executed|\*\* TEST" || true
           grep -q "\*\* TEST SUCCEEDED \*\*" "$RUNNER_TEMP/xcodebuild.log"
