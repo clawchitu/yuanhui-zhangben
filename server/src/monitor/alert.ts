@@ -55,6 +55,8 @@ export const DETAIL_KEYS = new Set([
   "lines",
   "line",
   "hours_left",
+  "days_left",
+  "host",
   "not_after",
   "serial",
   "status",

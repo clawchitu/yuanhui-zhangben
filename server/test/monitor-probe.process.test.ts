@@ -1,7 +1,7 @@
 // S10c：本机探测当成进程跑一遍（node scripts/probe.ts）——配置检查、真的连 TLS 读证书、真的探 /healthz、真的经 PROBE_NOTIFY_CMD 发出去。
 // 服务器是本机起的 https（openssl 现签一张 1 天的 IP 证书，NODE_EXTRA_CA_CERTS 让探测信任它），不连任何外部地址。
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:https";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -77,6 +77,55 @@ describe("本机探测进程（scripts/probe.ts）", () => {
     expect(text()).toMatch(/\[已恢复\] 服务探活连续失败/);
     // 证书一直没换：不重复发（6 小时内）
     expect(text().match(/IP 证书剩余有效期不到 48 小时/g)).toHaveLength(1);
+  });
+
+  it("域名站点（PROBE_SITES）：带 SNI 读证书并校验域名——证书剩 1 天告警；证书上的域名对不上也告警；配置不是 https 退出码 2", async () => {
+    // 两张证书：localhost 的（对得上）和 wrong.test 的（连 localhost 时对不上）；两张都放进信任列表，所以「对不上」只能是域名校验抓到的
+    const mk = (name: string, san: string) =>
+      execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "1", "-subj", `/CN=${san}`, "-addext", `subjectAltName=DNS:${san}`, "-keyout", join(dir, `${name}-key.pem`), "-out", join(dir, `${name}.pem`)], { stdio: "ignore" });
+    mk("good", "localhost");
+    mk("wrong", "wrong.test");
+    writeFileSync(join(dir, "ca.pem"), ["cert", "good", "wrong"].map((n) => readFileSync(join(dir, `${n}.pem`), "utf8")).join(""));
+    const serve = async (name: string) => {
+      const srv = createServer({ key: readFileSync(join(dir, `${name}-key.pem`)), cert: readFileSync(join(dir, `${name}.pem`)) }, (req, res) => {
+        res.statusCode = req.url === "/healthz" || req.url === "/" ? 200 : 404;
+        res.end("ok");
+      });
+      await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+      return { srv, port: (srv.address() as AddressInfo).port };
+    };
+    const good = await serve("good");
+    const wrong = await serve("wrong");
+    const sent2 = join(dir, "sent2.txt");
+    const envSites = (sites: string) => ({
+      PROBE_URL: base,
+      PROBE_STATE_DIR: join(dir, "state2"),
+      PROBE_NOTIFY_CMD: `cat >> '${sent2}'`,
+      PROBE_SITES: sites,
+      NODE_EXTRA_CA_CERTS: join(dir, "ca.pem"),
+    });
+    try {
+      // localhost 在有的机器上先解析成 ::1，两个服务只听 127.0.0.1：用 --dns-result-order 固定先 IPv4
+      const sites = `https://localhost:${good.port}/healthz, https://localhost:${wrong.port}/`;
+      expect((await run({ ...envSites("http://localhost/") })).code).toBe(2);
+      const r = await run({ ...envSites(sites), NODE_OPTIONS: "--dns-result-order=ipv4first" });
+      expect(r.code).toBe(0);
+      const out = readFileSync(sent2, "utf8");
+      const block = (port: number) => out.split("\n[").find((b) => b.includes(`键：site_cert:localhost:${port}`)) ?? "";
+      // 对得上的那张：只因为剩 0 天告警，没有「不受信任」
+      expect(block(good.port)).toContain(`域名 localhost:${good.port} 的证书剩余不到 14 天`);
+      expect(block(good.port)).toContain("days_left：0");
+      expect(block(good.port)).not.toContain("reason");
+      // 对不上的那张：域名校验抓到
+      expect(block(wrong.port)).toContain("证书链不受信任或域名对不上");
+      // IP 那条照旧（信任列表里有它的证书）
+      expect(out).not.toContain("reason：证书链不受信任\n");
+      expect(out).not.toContain("连续探测失败");
+      expect(readFileSync(join(dir, "state2", "cert-renewals.jsonl"), "utf8")).toContain(`"host":"localhost:${good.port}"`);
+    } finally {
+      good.srv.close();
+      wrong.srv.close();
+    }
   });
 
   it("--test-alert 发一条通道测试", async () => {

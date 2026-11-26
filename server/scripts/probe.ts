@@ -2,25 +2,36 @@
 //   1. 服务存活：GET <PROBE_URL>/healthz，连续 2 次失败告警，恢复后发「已恢复」。
 //   2. IP 证书（方案 A）：连 443 读证书，剩余 < 48 小时或链不受信任告警；序列号变了记一笔「续期成功」，
 //      剩余不到有效期 1/4 还没换记一笔「续期过期未续」，都写进 <状态目录>/cert-renewals.jsonl（§14 T19，供判定方案 A 是否稳定）。
+//   2b. 域名站点（PROBE_SITES，逗号分隔的 https 地址，例 https://api.yuanhuishop.cn/healthz,https://yuanhuishop.cn/）：
+//      每个 GET 一次（不跟跳转），不是 200 连续 2 次告警；带 SNI 读证书并校验域名，剩不到 14 天或不受信任告警；
+//      第一次见到、换了新证书时在 cert-renewals.jsonl 记一笔（带 host）并打一行日志（到期日）。
 //   3. 服务器告警转发：ssh 到 ECS 读 /data/monitor/outbox.jsonl，把没转过的发给 Chitu（ECS 出网不一定到得了 Chitu 的通道）。
 //      连续 3 次（30 分钟）拉不到也告警。
 // 发给 Chitu 的通道：PROBE_NOTIFY_CMD（消息正文从 stdin 给这个命令）和 / 或 PROBE_WEBHOOK_URL（+ PROBE_WEBHOOK_TOKEN），至少配一个。
 // 只用 Node 自带模块：不用 npm ci，`node server/scripts/probe.ts` 直接跑。
 // 环境变量：PROBE_URL（必填，https://<公网 IP>）、PROBE_STATE_DIR、PROBE_SSH_TARGET（root@<公网 IP>，空 = 不拉 outbox）、
-//          PROBE_REMOTE_OUTBOX（默认 /data/monitor/outbox.jsonl）。
+//          PROBE_REMOTE_OUTBOX（默认 /data/monitor/outbox.jsonl）、PROBE_SITES（可空）。
 // 退出码：0 跑完（不论有没有告警）；2 配置不对。
 import { execFile } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { connect } from "node:tls";
+import { checkServerIdentity, connect } from "node:tls";
 import { fileURLToPath } from "node:url";
 import { buildMessage, formatText, sanitizeDetails, scrub, type AlertMessage } from "../src/monitor/alert.ts";
 import { Alerter, type AlertSink } from "../src/monitor/alerter.ts";
-import { certVerdict, renewalOverdue, THRESHOLDS, type CertInfo } from "../src/monitor/checks.ts";
+import { certVerdict, domainCertVerdict, renewalOverdue, THRESHOLDS, type CertInfo } from "../src/monitor/checks.ts";
 import { CommandSink, MultiSink, WebhookSink, webhookConfigError } from "../src/monitor/sinks.ts";
 
 export const OUTBOX_UNREACHABLE_AFTER = 3;
+
+/** 一个域名站点：探的地址、标签（主机名，非 443 端口时带端口；告警去重键按它分），和两个探法 */
+export interface SiteProbe {
+  url: string;
+  host: string;
+  health: () => Promise<{ ok: boolean; status: number | string }>;
+  cert: () => Promise<CertInfo>;
+}
 
 export interface ProbeDeps {
   alerter: Alerter;
@@ -32,6 +43,10 @@ export interface ProbeDeps {
   cert: () => Promise<CertInfo>;
   /** 读远端 outbox 的全部行；null = 没配 ssh */
   pullOutbox: (() => Promise<string>) | null;
+  /** 域名站点；不配就是空 */
+  sites?: SiteProbe[];
+  /** 打日志（launchd 的 StandardOut）；默认 console.log */
+  info?: (line: string) => void;
 }
 
 interface ProbeCursors {
@@ -39,6 +54,7 @@ interface ProbeCursors {
   cert?: { serial: string; notAfter: string; overdueLogged?: boolean };
   outboxId?: string;
   outboxFailures?: number;
+  sites?: Record<string, { failures?: number; serial?: string; notAfter?: string }>;
 }
 
 export async function runProbe(d: ProbeDeps): Promise<void> {
@@ -75,6 +91,9 @@ export async function runProbe(d: ProbeDeps): Promise<void> {
       c.cert = { serial: cert.serial, notAfter: cert.notAfter.toISOString(), overdueLogged: overdue };
     }
 
+    // 2b. 域名站点
+    for (const site of d.sites ?? []) await probeSite(site, c, d);
+
     // 3. 转发服务器 outbox
     if (d.pullOutbox) {
       let raw: string | null = null;
@@ -96,6 +115,55 @@ export async function runProbe(d: ProbeDeps): Promise<void> {
     a.prune();
     a.save();
   }
+}
+
+async function probeSite(site: SiteProbe, c: ProbeCursors, d: ProbeDeps): Promise<void> {
+  const a = d.alerter;
+  const sc = ((c.sites ??= {})[site.host] ??= {});
+  const h = await site.health().catch((e: Error) => ({ ok: false, status: scrub(e.message) }));
+  sc.failures = h.ok ? 0 : (sc.failures ?? 0) + 1;
+  await a.condition(sc.failures >= THRESHOLDS.healthzFailures, {
+    key: `site_down:${site.host}`,
+    title: `域名站点 ${site.host} 连续探测失败（本机每 10 分钟）`,
+    severity: "critical",
+    details: { url: site.url, failures: sc.failures, status: String(h.status) },
+  });
+  // 连不上时上面的探测失败会告警；这里读不到证书就跳过
+  const cert = await site.cert().catch(() => null);
+  if (!cert) return;
+  const now = d.clock();
+  const v = domainCertVerdict(cert, now);
+  await a.condition(v.active, {
+    key: `site_cert:${site.host}`,
+    title: `域名 ${site.host} 的证书剩余不到 ${THRESHOLDS.domainCertDaysLeft} 天，或不受信任、域名对不上`,
+    severity: "critical",
+    details: { host: site.host, ...v.details },
+  });
+  if (sc.serial !== cert.serial) {
+    const event = sc.serial === undefined ? "first_seen" : "renewed";
+    appendFileSync(
+      join(d.stateDir, "cert-renewals.jsonl"),
+      JSON.stringify({ at: now.toISOString(), event, host: site.host, serial: cert.serial, not_before: cert.notBefore.toISOString(), not_after: cert.notAfter.toISOString(), ...(sc.notAfter ? { prev_not_after: sc.notAfter } : {}) }) + "\n",
+    );
+    (d.info ?? console.log)(`${site.host} 证书${event === "renewed" ? "已续期" : ""}：到期 ${cert.notAfter.toISOString()}（剩 ${v.daysLeft} 天）`);
+  }
+  sc.serial = cert.serial;
+  sc.notAfter = cert.notAfter.toISOString();
+}
+
+/** PROBE_SITES：逗号分隔，每个都必须是 https 地址；有一个不对就返回 null */
+export function parseSites(raw: string | undefined): URL[] | null {
+  const out: URL[] = [];
+  for (const part of (raw ?? "").split(",").map((x) => x.trim()).filter(Boolean)) {
+    try {
+      const u = new URL(part);
+      if (u.protocol !== "https:" || u.username || u.password) return null;
+      out.push(u);
+    } catch {
+      return null;
+    }
+  }
+  return out;
 }
 
 /** 按 id 转发没转过的；第一次跑（没有游标）只转最近 24 小时的。发不出去就停，游标停在最后一条发成功的 */
@@ -135,14 +203,16 @@ export async function forwardOutbox(raw: string, c: ProbeCursors, d: Pick<ProbeD
 
 // ── 生产实现 ──
 
-export function readCert(host: string, port = 443, timeoutMs = 10_000): Promise<CertInfo> {
+/** servername：域名站点带 SNI，并且要求证书上的域名对得上（对不上 authorized = false） */
+export function readCert(host: string, port = 443, timeoutMs = 10_000, servername?: string): Promise<CertInfo> {
   return new Promise((resolve, reject) => {
     // IP 证书不发 SNI；先不拒绝，自己看 authorized（链不受信任也要告警，不是直接报错退出）
-    const s = connect({ host, port, rejectUnauthorized: false, timeout: timeoutMs }, () => {
+    const s = connect({ host, port, rejectUnauthorized: false, timeout: timeoutMs, ...(servername ? { servername } : {}) }, () => {
       const p = s.getPeerCertificate();
       s.end();
       if (!p || !p.valid_to) return reject(new Error("没拿到证书"));
-      resolve({ notBefore: new Date(p.valid_from), notAfter: new Date(p.valid_to), serial: p.serialNumber, authorized: s.authorized });
+      const nameOk = !servername || checkServerIdentity(servername, p) === undefined;
+      resolve({ notBefore: new Date(p.valid_from), notAfter: new Date(p.valid_to), serial: p.serialNumber, authorized: s.authorized && nameOk });
     });
     s.on("timeout", () => s.destroy(new Error("超时")));
     s.on("error", reject);
@@ -192,6 +262,11 @@ async function main(): Promise<void> {
       process.exit(2);
     }
   }
+  const siteUrls = parseSites(env.PROBE_SITES);
+  if (!siteUrls) {
+    console.error("PROBE_SITES 是逗号分隔的 https 地址，形如 https://api.yuanhuishop.cn/healthz,https://yuanhuishop.cn/");
+    process.exit(2);
+  }
   const sink = sinkFromEnv(env);
   if (!sink) {
     console.error("至少配一个通道：PROBE_NOTIFY_CMD 或 PROBE_WEBHOOK_URL");
@@ -213,6 +288,16 @@ async function main(): Promise<void> {
       return { ok: r.status === 200, status: r.status };
     },
     cert: () => readCert(u.hostname.replace(/^\[|\]$/g, ""), Number(u.port || 443)),
+    sites: siteUrls.map((su) => ({
+      url: su.href,
+      // 标签和去重键用 host（非 443 端口时带端口），证书校验用 hostname
+      host: su.host,
+      health: async () => {
+        const r = await fetch(su.href, { redirect: "manual", signal: AbortSignal.timeout(10_000) });
+        return { ok: r.status === 200, status: r.status };
+      },
+      cert: () => readCert(su.hostname, Number(su.port || 443), 10_000, su.hostname),
+    })),
     pullOutbox: env.PROBE_SSH_TARGET ? sshCat(env.PROBE_SSH_TARGET, env.PROBE_REMOTE_OUTBOX || "/data/monitor/outbox.jsonl") : null,
   });
   // 测试告警通道用：node scripts/probe.ts --test-alert

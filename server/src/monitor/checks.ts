@@ -23,6 +23,8 @@ export const THRESHOLDS = {
   diskUsedPercent: 80,
   /** §9.5：IP 证书剩余有效期 < 48 小时 */
   certHoursLeft: 48,
+  /** 域名站点（api.yuanhuishop.cn、yuanhuishop.cn）的证书：Let's Encrypt 90 天证书，Caddy 剩 30 天左右续；剩不到 14 天还没换就告警 */
+  domainCertDaysLeft: 14,
   /** §9.5：本机探 /healthz 连续 2 次失败 */
   healthzFailures: 2,
 } as const;
@@ -119,6 +121,16 @@ export function certVerdict(c: CertInfo, now: Date): Verdict & { hoursLeft: numb
     active: hoursLeft < THRESHOLDS.certHoursLeft || !c.authorized,
     hoursLeft,
     details: { hours_left: hoursLeft, not_after: c.notAfter.toISOString(), serial: c.serial.slice(-16), ...(c.authorized ? {} : { reason: "证书链不受信任" }) },
+  };
+}
+
+/** 域名证书：剩不到 14 天，或链不受信任 / 域名对不上（authorized 已含域名校验） */
+export function domainCertVerdict(c: CertInfo, now: Date): Verdict & { daysLeft: number } {
+  const daysLeft = Math.floor((c.notAfter.getTime() - now.getTime()) / 86_400_000);
+  return {
+    active: daysLeft < THRESHOLDS.domainCertDaysLeft || !c.authorized,
+    daysLeft,
+    details: { days_left: daysLeft, not_after: c.notAfter.toISOString(), serial: c.serial.slice(-16), ...(c.authorized ? {} : { reason: "证书链不受信任或域名对不上" }) },
   };
 }
 

@@ -241,7 +241,7 @@ unset A S K
 所有告警发给 **Chitu**，由 Chitu 转告 Haoqiang 或黄总，不直接发给黄总。两条腿：
 
 - **服务器里的检查任务**（api 进程内，`server/src/monitor/`，每分钟一轮）：从 api 自己的日志里取带 `alert` 字段的行、数 5xx，查库、读 `/opt/yuanhui/backup/`（只读挂成 `/backup`）。告警追加到 ECS 的 `/data/monitor/outbox.jsonl`；配了 `ALERT_WEBHOOK_URL` 再直接推一份。去重状态在 `/data/monitor/state.json`，重启不会重发正在告警的、也不会漏发恢复。
-- **本机探测**（这台 Mac，launchd 每 10 分钟，`deploy/probe/run-probe.sh` → `server/scripts/probe.ts`）：探 `/healthz`、读 IP 证书、用部署 ssh 拉 `outbox.jsonl` 的新行，经 `PROBE_NOTIFY_CMD` / `PROBE_WEBHOOK_URL` 发给 Chitu。api 挂了服务器那条腿也就停了，所以存活和证书放在本机。
+- **本机探测**（这台 Mac，launchd 每 10 分钟，`deploy/probe/run-probe.sh` → `server/scripts/probe.ts`）：探 `/healthz`、读 IP 证书、探域名站点（`PROBE_SITES`：`api.yuanhuishop.cn/healthz`、`yuanhuishop.cn/`，各读一次带 SNI 的证书看到期日）、用部署 ssh 拉 `outbox.jsonl` 的新行，经 `PROBE_NOTIFY_CMD` / `PROBE_WEBHOOK_URL` 发给 Chitu（这台 Mac 上用 Bark：`deploy/probe/bark-notify.sh`，key 在钥匙串 `chitu-bark-key`）。api 挂了服务器那条腿也就停了，所以存活和证书放在本机。
 - **阿里云云监控**（手工配，见下）：CPU、内存、磁盘 > 80%，站点监控做存活的第二来源。
 
 去重规则（两条腿相同，`alerter.ts`）：条件类（「现在是不是坏的」）好→坏发一条，一直坏每 6 小时提醒一次，坏→好发「已恢复」；事件类（日志里的告警、门禁被跳过、恢复失败……）同一个键 30 分钟内只发第一条，之后的一条带「另有 N 次」。通道发不出去时下一轮重试，事件最多攒 100 条。告警正文只留白名单字段，像凭据的长串换成「[已隐去]」（`alert.ts`），本机转发前再洗一遍。
@@ -249,6 +249,8 @@ unset A S K
 | §9.5 的项 | 告警键 | 哪条腿 | 阈值 |
 |---|---|---|---|
 | 服务存活 | `healthz_down` | 本机 + 云监控站点监控 | 连续 2 次（20 分钟）失败 |
+| 域名站点存活 | `site_down:<域名>` | 本机 | 不是 200（不跟跳转）连续 2 次 |
+| 域名证书 | `site_cert:<域名>` | 本机 | 剩余 < 14 天（LE 90 天证书，Caddy 剩约 30 天时续），或链不受信任、证书上的域名对不上；第一次见到和换新证书记进 `cert-renewals.jsonl`（带 `host`），日志打一行到期日 |
 | CPU、内存、磁盘 | 云监控规则；`disk_usage` | 云监控 + 服务器 | > 80% |
 | 证书（T19） | `ip_cert_expiry` | 本机 | 剩余 < 48 小时或链不受信任；续期记进 `cert-renewals.jsonl` |
 | 备份心跳、失败（T26） | `backup_heartbeat_stale`、`backup_failed`、`backup_consecutive_failures`、`backup_lifecycle_stale`、`backup_skipped`、`backup_gate_skipped`、`restore_failed` | 服务器 | 营业时间 2 小时（从 8:00 起算，不在 8:00 切换时误报）/ 任何时候 6 小时；连续失败 ≥ 2 升严重 |
@@ -263,7 +265,7 @@ unset A S K
 | 监控自己 | `outbox_unreachable`（本机连续 30 分钟拉不到）、`monitor_check_error:<段>`（服务器检查某一段出错，其余段照跑）、`alert_queue_overflow`、`log_alerts_dropped`、`monitor_state_unwritable` | 两边 | |
 
 ### 装本机探测（这台 Mac）
-1. `mkdir -p ~/.config/yuanhui-probe && cp deploy/probe/probe.env.example ~/.config/yuanhui-probe/env && chmod 600 ~/.config/yuanhui-probe/env`，填 `PROBE_URL=https://47.117.184.253`、`PROBE_SSH_TARGET`（部署用的 ssh 目标）、至少一个通道。令牌只放这个文件。
+1. `mkdir -p ~/.config/yuanhui-probe && cp deploy/probe/probe.env.example ~/.config/yuanhui-probe/env && chmod 600 ~/.config/yuanhui-probe/env`，填 `PROBE_URL=https://47.117.184.253`、`PROBE_SITES=https://api.yuanhuishop.cn/healthz,https://yuanhuishop.cn/`、`PROBE_SSH_TARGET=huang-shop`（部署用的 ssh 目标）、至少一个通道：这台 Mac 用 `PROBE_NOTIFY_CMD=$PWD/deploy/probe/bark-notify.sh`（写绝对路径；Bark key 从钥匙串 `chitu-bark-key` 读，不进这个文件）。令牌只放这个文件。
 2. 先手动跑一次：`deploy/probe/run-probe.sh --test-alert`，Chitu 应收到「告警通道测试」。
 3. `sed -e "s#__REPO__#$PWD#" -e "s#__HOME__#$HOME#" -e "s#__NODE_DIR__#$(dirname "$(command -v node)")#" deploy/probe/cn.yuanhuishop.probe.plist > ~/Library/LaunchAgents/cn.yuanhuishop.probe.plist`，`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/cn.yuanhuishop.probe.plist`；看日志 `~/Library/Logs/yuanhui-probe.log`。停用：`launchctl bootout gui/$(id -u)/cn.yuanhuishop.probe`。
 4. 状态在 `~/Library/Application Support/yuanhui-probe/`：`state.json`（去重、outbox 游标）、`cert-renewals.jsonl`（每次看到新证书 `renewed`、该续没续 `renewal_overdue`，14 天观察就看它）。
