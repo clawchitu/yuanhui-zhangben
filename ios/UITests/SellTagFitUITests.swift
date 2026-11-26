@@ -69,6 +69,11 @@ final class SellTagFitUITests: XCTestCase {
         XCTAssertLessThanOrEqual(s.maxY, b.maxY + 0.5, "\(ctx)：加减按钮整个露在购物篮区里（不被结算条盖住）\(s) / 篮 \(b)")
         XCTAssertLessThanOrEqual(s.maxY, c.minY + 0.5, "\(ctx)：加减按钮在结算条上面 \(s) / 结算条 \(c)")
         XCTAssertGreaterThanOrEqual(s.height, 56 - 0.5, "\(ctx)：步进器不缩小 \(s)")
+        // 相机区让高度也有底线：取景框最矮 72pt，手电筒、手输条码照样能点（§14 S16-13）
+        let finder = el(app, "scanner.viewfinder").frame
+        XCTAssertGreaterThanOrEqual(finder.height, 72 - 0.5, "\(ctx)：取景框最矮 72pt \(finder)")
+        XCTAssertGreaterThanOrEqual(finder.minY, c.maxY - 0.5, "\(ctx)：取景框在结算条下面 \(finder) / \(c)")
+        XCTAssertTrue(app.buttons["sell.torch"].isHittable && app.buttons["scanner.manual"].isHittable, "\(ctx)：相机按钮能点")
         // 名字开头永远看得到
         let name = el(app, "priceTag.name")
         XCTAssertTrue(name.exists, ctx)
