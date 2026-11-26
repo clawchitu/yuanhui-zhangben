@@ -97,7 +97,7 @@ struct LogoutView: View {
                 .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
         }
         .background(Tokens.Palette.paper.ignoresSafeArea())
-        .confirmSheet(item: $ask) { _ in
+        .confirmSheet(item: $ask, page: .logout) { _ in
             ConfirmPanel(title: "退出登录？", message: "退出以后，这台手机上的账要重新登录才能看。待传的账会先传上去。",
                          confirmTitle: "退出登录", cancelTitle: "不退了", mode: .neutral,
                          confirmStyle: .dark, confirmImage: nil, confirmId: "logout.confirm", cancelId: "logout.cancel",

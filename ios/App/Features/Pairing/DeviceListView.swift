@@ -5,6 +5,8 @@ import SwiftUI
 struct DeviceListSection: View {
     @Bindable var pairing: PairingModel
     var showsHeader = true
+    /// 嵌在哪一页（开通页 / 已登录的手机）：「让它退出」的确认抽屉挂这一页的标识
+    var page: Route = .devices
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -33,7 +35,7 @@ struct DeviceListSection: View {
                 ProgressView().frame(maxWidth: .infinity, minHeight: 60)
             }
         }
-        .confirmSheet(item: $pairing.confirmRevoke) { d in
+        .confirmSheet(item: $pairing.confirmRevoke, page: page) { d in
             ConfirmPanel(title: "让「\(d.label)」退出？",
                          message: "退出后它要重新扫码才能用。还没传上去的账会先传完。",
                          confirmTitle: "让它退出", cancelTitle: "不了", mode: .neutral,

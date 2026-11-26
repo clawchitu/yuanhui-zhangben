@@ -46,7 +46,7 @@ private struct PairingContent: View {
                         .font(TypeScale.body)
                         .foregroundStyle(Tokens.Palette.ink)
                         .fixedSize(horizontal: false, vertical: true)
-                    DeviceListSection(pairing: pairing)
+                    DeviceListSection(pairing: pairing, page: .pairing)
                 } else {
                     cashierRights
                     Text("不用给收银员密码。不让他用了，就在「已登录的手机」里让它退出。")

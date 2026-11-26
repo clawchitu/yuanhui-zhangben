@@ -134,9 +134,11 @@ struct ConfirmPanel: View {
     }
 }
 
-/// 26 通用确认面板以底部抽屉弹出：`item` 非空时弹，关掉（下拉、点取消）时置空。大字时可以滚动
+/// 26 通用确认面板以底部抽屉弹出：`item` 非空时弹，关掉（下拉、点取消）时置空。大字时可以滚动。
+/// 抽屉是新的呈现层，盖住的页面点不到了，所以抽屉里也挂上弹出它的那一页的 `page.*` 标识（S15 遍历靠它认页）
 struct ConfirmSheetModifier<Item: Identifiable, Panel: View>: ViewModifier {
     @Binding var item: Item?
+    let pageId: String
     @ViewBuilder let panel: (Item) -> Panel
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -147,6 +149,8 @@ struct ConfirmSheetModifier<Item: Identifiable, Panel: View>: ViewModifier {
                     Capsule().fill(Tokens.Palette.mute).frame(width: 44, height: 5)
                     panel(it)
                 }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(pageId)
                 .padding(.top, 12)
                 .padding(.horizontal, 20)
                 .padding(.bottom, 24)
@@ -164,7 +168,9 @@ struct ConfirmSheetModifier<Item: Identifiable, Panel: View>: ViewModifier {
 }
 
 extension View {
-    func confirmSheet<Item: Identifiable, Panel: View>(item: Binding<Item?>, @ViewBuilder panel: @escaping (Item) -> Panel) -> some View {
-        modifier(ConfirmSheetModifier(item: item, panel: panel))
+    /// `page`：弹出抽屉的那一页
+    func confirmSheet<Item: Identifiable, Panel: View>(item: Binding<Item?>, page: Route,
+                                                       @ViewBuilder panel: @escaping (Item) -> Panel) -> some View {
+        modifier(ConfirmSheetModifier(item: item, pageId: page.pageId, panel: panel))
     }
 }

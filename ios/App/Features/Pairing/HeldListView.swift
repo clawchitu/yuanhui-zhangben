@@ -162,7 +162,7 @@ private struct HeldContent: View {
         }
         .scrollBounceBehavior(.basedOnSize)
         .refreshable { await held.load() }
-        .confirmSheet(item: $held.confirmDiscard) { item in
+        .confirmSheet(item: $held.confirmDiscard, page: .held) { item in
             ConfirmPanel(title: "这笔不要了？", message: "不要了就不会记进账里，也找不回来。\n\(item.text)",
                          confirmTitle: "不要了", cancelTitle: "再想想", mode: .neutral,
                          confirmStyle: .dark, confirmImage: nil,

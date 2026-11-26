@@ -8,7 +8,9 @@ final class S15UITests: XCTestCase {
     /// 收银员到不了的页（S15 验收逐项列出的 6 个 + 设备管理、账号、改名）
     static let cashierForbidden: Set<String> = ["page.stockIn", "page.reports", "page.products", "page.count",
                                                 "page.expiry", "page.pairing", "page.devices", "page.account",
-                                                "page.deviceName"]
+                                                "page.deviceName", "page.held"]
+    /// 收银员禁区里 S15 演示数据下家用也进不去的页：「待确认的账」要有被退出的手机补传的账才出入口（S23a，由 S23aHeldUITests 测）
+    static let familyNeedsData: Set<String> = ["page.held"]
 
     private func launch(_ args: [String]) -> XCUIApplication {
         let app = XCUIApplication()
@@ -34,6 +36,8 @@ final class S15UITests: XCTestCase {
                       "收银员到了：\(visited.intersection(Self.cashierForbidden))", file: file, line: line)
         XCTAssertFalse(visited.contains("page.denied"), "收银员界面上出现了没能力的入口", file: file, line: line)
         XCTAssertTrue(visited.isSuperset(of: Self.cashierReachable), "\(visited)", file: file, line: line)
+        XCTAssertFalse(visited.contains("?"), "遍历走到了没有 page.* 标识的页面或弹层：\(walker.records.filter { $0.outcome == "?" })",
+                       file: file, line: line)
         assertSellEmptyGreyed(walker, file: file, line: line)
     }
 
@@ -59,11 +63,13 @@ final class S15UITests: XCTestCase {
         let visited = walker.run()
         print("家用（\(fixture)）能到的页：\(visited.sorted())")
         walker.assertEverythingCovered(file: file, line: line)
-        XCTAssertTrue(visited.isSuperset(of: Self.cashierForbidden),
-                      "家用到不了：\(Self.cashierForbidden.subtracting(visited))", file: file, line: line)
+        let familyReachable = Self.cashierForbidden.subtracting(Self.familyNeedsData)
+        XCTAssertTrue(visited.isSuperset(of: familyReachable),
+                      "家用到不了：\(familyReachable.subtracting(visited))", file: file, line: line)
         // S20（§14 S15-6）：家用首页没有提醒条时「刚记的」整条可点进记的账，必达集合加回 page.records
         XCTAssertTrue(visited.isSuperset(of: ["page.home", "page.sell", "page.settings", "page.records", "page.undoLast",
                                               "page.scanner", "page.privacy", "page.logout"]), "\(visited)", file: file, line: line)
+        XCTAssertFalse(visited.contains("?"), "遍历走到了没有 page.* 标识的页面或弹层：\(walker.records.filter { $0.outcome == "?" })", file: file, line: line)
         XCTAssertFalse(visited.contains("page.denied"), file: file, line: line)
         assertSellEmptyGreyed(walker, file: file, line: line)
         // 弹窗分支（「自己填…」）每个按钮都按过，填的名字出现后也被点过
