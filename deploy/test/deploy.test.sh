@@ -351,5 +351,21 @@ t "部署脚本里没有紧贴非 ASCII 字符的 \$变量（Bash 3.2 + UTF-8 �
 LC_ALL=C grep -nE '^[^#]*\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' "$HERE"/../*.sh > "$T/out" 2>&1
 check "没有这种写法（见上面的行）" [ ! -s "$T/out" ]
 
+t "11/26 事故防护：要上线的 Caddyfile 缺任一备案域名站点（或没有首页）就拒绝发布，连服务器之前就退出 2"
+for missing in api.yuanhuishop.cn yuanhuishop.cn www.yuanhuishop.cn site; do
+  setup
+  cp -R "$HERE/.." "$T/dcopy"
+  if [ "$missing" = site ]; then rm -rf "$T/dcopy/site"
+  else awk -v s="$missing" '$1 == s && $2 == "{" {skip=1} !skip {print} skip && /^}/ {skip=0}' "$HERE/../Caddyfile.ip" > "$T/dcopy/Caddyfile.ip"; fi
+  DEPLOY="$T/dcopy/deploy.sh" deploy "$NEW" --execute
+  check "缺 ${missing}：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ]
+  check "缺 ${missing}：没连服务器（假 ssh / scp 没被调用）" [ ! -s "$FAKE_LOG" ]
+  check "缺 ${missing}：报错说清楚" grep -q "拒绝发布" "$T/out"
+done
+t "仓库里的 Caddyfile.ip 三个域名站点都在（和线上一致），正常发布不受防护影响"
+for site in api.yuanhuishop.cn yuanhuishop.cn www.yuanhuishop.cn; do
+  check "有 ${site}" grep -qE "^${site//./\\.}[[:space:]]*\\{" "$HERE/../Caddyfile.ip"
+done
+
 echo "通过 ${pass}，失败 $fail"
 [ "$fail" = 0 ]

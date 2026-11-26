@@ -32,11 +32,20 @@ if [ "$DRY_RUN" = 0 ]; then
   [ -n "$ECS_HOST" ] || die2 "--execute 需要 ECS_HOST（如 root@47.117.184.253）"
   check_acr "$ACR"; check_host "$ECS_HOST"
 fi
+# 防护（11/26 事故：#52 发布用了只有 IP 站点的 Caddyfile，把线上 api.yuanhuishop.cn / yuanhuishop.cn 覆盖没了）：
+# 要上线的 Caddyfile 必须有 api.yuanhuishop.cn、yuanhuishop.cn、www.yuanhuishop.cn 三个站点和首页目录，否则不发（连服务器之前就拒）
+for site in api.yuanhuishop.cn yuanhuishop.cn www.yuanhuishop.cn; do
+  grep -qE "^${site//./\\.}[[:space:]]*\{" "$HERE/Caddyfile.ip" || die2 "Caddyfile.ip 里没有 $site 站点：备案的域名站点会被覆盖掉，拒绝发布"
+done
+[ -f "$HERE/site/index.html" ] || die2 "deploy/site/index.html 不存在：yuanhuishop.cn 首页会没有，拒绝发布"
 REG="${ACR:-<ACR>/yuanhui}"
 D=/opt/yuanhui
 remote mkdir -p "$D/incoming"
 run scp -q "$HERE/compose.yml" "$HERE/Caddyfile.ip" "$HERE/remote-deploy.sh" "$HERE/backup.sh" \
   "$HERE/yuanhui-backup.service" "$HERE/yuanhui-backup.timer" "${ECS_HOST:-<ECS_HOST>}:$D/incoming/"
+# 根域名静态首页（Caddyfile.ip 的 yuanhuishop.cn 站点），整个目录带上去
+remote rm -rf "$D/incoming/site"
+run scp -q -r "$HERE/site" "${ECS_HOST:-<ECS_HOST>}:$D/incoming/"
 GATE=(); for a in "$@"; do [ "$a" = --skip-backup-gate ] && GATE=(--skip-backup-gate); done
 if [ -n "$IMAGES_TAR" ]; then
   run scp -q "$IMAGES_TAR" "${ECS_HOST:-<ECS_HOST>}:$D/incoming/"

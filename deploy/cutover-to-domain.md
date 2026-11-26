@@ -1,6 +1,6 @@
 # 备案通过后切换到域名
 
-步骤以 docs/plan-v2.md §9.3 为准，这里只记操作细节：
+步骤以 docs/plan-v2.md §9.3 为准，这里只记操作细节。11/26 已做到第 4 步（`api.yuanhuishop.cn`、根域名静态首页、`www` 跳转都已上线），实际配置和回滚见 `docs/runbook.md`「域名站点 api.yuanhuishop.cn」：
 
 1. 在阿里云备案控制台确认网站备案和 App 备案**都已通过**，记下备案号；30 天内做公安备案。
 2. 这时才给 `yuanhuishop.cn`、`api.yuanhuishop.cn` 加 A 记录指向 47.117.184.253（备案通过前两个域名都不解析到这台 ECS，§14 S10a-4）。

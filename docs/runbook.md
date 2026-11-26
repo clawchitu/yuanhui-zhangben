@@ -140,6 +140,35 @@ unset A S K
 - 不带 SNI 时拿到的证书：同上把 `-servername …` 换成 `-noservername`。
 - 证书文件（ECS 上）：`ls -l /data/caddy/data/caddy/certificates/*/`
 
+## 域名站点 api.yuanhuishop.cn（2026-11-26 上线，§9.3）
+- 备案：苏ICP备2026094233号，2026-11-26 11:51 CST 管局通过（阿里云订单 2034885592055）。公安联网备案 30 天内要交（约 12/26 前）。
+- DNS（黄总阿里云账号 1776699878997935，云解析）：`api.yuanhuishop.cn` A → `47.117.184.253`，TTL 600，RecordId `2125800818518669312`（11/26 11:56 CST 加）。根域名 `yuanhuishop.cn`、`www` **没加**（还没有网站内容）；`tools` 11/21 删掉后没恢复。查：`dig +short @223.5.5.5 api.yuanhuishop.cn`、`dig +short @8.8.8.8 api.yuanhuishop.cn`。
+- 反代配置：仓库 `deploy/Caddyfile.ip` 末尾的 `api.yuanhuishop.cn { … import common }` 站点（和 IP 站点共用 `(common)`：只放行 `/v1/*`、`/healthz`，其余 404）。ECS 上是 `/opt/yuanhui/caddy/Caddyfile`（容器里 `/etc/caddy/Caddyfile`，只读挂载）。**IP 站点 `https://47.117.184.253` 保留不动**，已装的 TestFlight 老包还在用它。
+- 根域名首页（11/26 12:23 CST 上线，公安联网备案要网站能打开）：DNS `@` A RecordId `2125807243957436416`、`www` A RecordId `2125807249795871744`（都 → 47.117.184.253，TTL 600）。`Caddyfile.ip` 的 `yuanhuishop.cn` 站点只给 `deploy/site/` 里的 `index.html`、`favicon.svg`（其余路径 404，不反代 api，`/v1/*` 在这里 404），`www.yuanhuishop.cn` 301 到根域名。静态页在 ECS `/opt/yuanhui/caddy/site/`（容器 `/etc/caddy/site`）；`deploy.sh` 把 `deploy/site` 带上去、`remote-deploy.sh` 整目录替换，改页面不用重载 Caddy。证书同为 LE 90 天，Caddy 自动续（首张到期 2027-02-24）。公安备案号拿到后，把 `index.html` 底部注释里的那行放出来。加根域名之前的 Caddyfile 备份：`/opt/yuanhui/caddy-backup/Caddyfile.20261126T122324`（只含 api 站点）。
+- 阿里云接入备案拦截：备案刚通过、阿里云还没同步时，域名会被拦（HTTPS 连接被重置，HTTP 返回 `Server: Beaver` 的「Non-compliance ICP Filing」403），ECS 本机 `curl --resolve …:127.0.0.1` 正常。11/26 api 域名被拦了约 20 分钟（12:00–12:20 CST）后自己恢复；以后新加域名遇到同样现象先等，别改配置。
+- 发布时 `deploy.sh` 会用部署机那份 `deploy/Caddyfile.ip` 覆盖 ECS 上的：**从不含这个站点的旧分支部署，域名站点会被删掉**（症状：`https://api.yuanhuishop.cn` 握手失败或拿到错的证书）。补救：从 main 重新部署，或照下面「手工改」那几步再装一次。
+- 证书：Let's Encrypt 正常证书（不是 IP 那种 shortlived），HTTP-01，Caddy 自己签、自己续，状态在宿主 `/data/caddy/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/api.yuanhuishop.cn/`。首张 11/26 02:59 UTC 签发，到期 **2027-02-24 02:59 UTC**，链 `api.yuanhuishop.cn` ← YE1 ← Root YE ← ISRG Root X2 ← ISRG Root X1（`openssl s_client` 验证 0）。Caddy 在剩余约 1/3 有效期时自动续，不需要定时任务；续期要 80/tcp 对公网开（安全组 `sg-uf6jbhnzv9gbczcabcp3` 和 ufw 都已放行 80、443）。
+- 看证书：`echo | openssl s_client -connect api.yuanhuishop.cn:443 -servername api.yuanhuishop.cn 2>/dev/null | openssl x509 -noout -issuer -dates`；续期记录同上 `docker logs yuanhui-caddy-1 2>&1 | grep -E 'certificate obtained|renew' | grep api.yuanhuishop`。
+- 验证：`curl -sS https://api.yuanhuishop.cn/healthz` → 200 `{"ok":true}`；`curl -sI http://api.yuanhuishop.cn/healthz` → 308 到 https（Caddy 对域名站点自动跳转）；`https://47.117.184.253/healthz` 仍 200。
+- 手工改（不发布 api，只换 Caddyfile；11/26 就是这么上的）：
+  1. 备份：`ssh huang-shop 'mkdir -p -m 700 /opt/yuanhui/caddy-backup && cp -p /opt/yuanhui/caddy/Caddyfile /opt/yuanhui/caddy-backup/Caddyfile.$(date +%Y%m%dT%H%M%S)'`（11/26 的备份：`/opt/yuanhui/caddy-backup/Caddyfile.20261126T115744`，就是加域名之前那份）。
+  2. 传新文件到 `/tmp/Caddyfile.new`，用同一个镜像校验：`cd /opt/yuanhui && set -a && . ./.env && set +a && docker run --rm -e PUBLIC_IP -e ACME_EMAIL -v /tmp/Caddyfile.new:/etc/caddy/Caddyfile:ro "$CADDY_IMAGE" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`。
+  3. `install -m 600 /tmp/Caddyfile.new /opt/yuanhui/caddy/Caddyfile && docker exec yuanhui-caddy-1 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`（**reload，不要 restart**；api 不动）。
+- 回滚（去掉域名站点，IP 站点不受影响；只撤根域名首页时换回 `Caddyfile.20261126T122324`，api 不受影响）。**顺序不能反**：从这个 PR 起，Beta 新包和 Release 包都默认连域名；手机只有在域名还能连上时取到 `/v1/config` 的 `api_base`，才会改用 IP，App 自己不会去试 IP。
+  1. 先看有没有装着「默认连域名」的包的手机：没出过这种包（TestFlight 上全是 IP 默认的老包）→ 直接第 3 步。出过 → 第 2 步。
+  2. 域名还能连的时候，先在 ECS `.env` 配 `API_BASE=https://47.117.184.253` 并重启 api（会中断几秒，要和负责人确认），等所有 Beta 手机至少打开一次 App（取到新 `api_base`；api 日志里它们的请求 host 变成 IP）。Release 包白名单里没有 IP，这一步对它无效：有 Release 包在用就**不要撤域名站点**，只修域名。
+  3. 换回备份并校验、重载：`cp -p /opt/yuanhui/caddy-backup/Caddyfile.20261126T115744 /tmp/Caddyfile.new`，按上面「手工改」第 2 步 `caddy validate`，通过后 `install -m 600 /tmp/Caddyfile.new /opt/yuanhui/caddy/Caddyfile && docker exec yuanhui-caddy-1 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`。
+  4. 仓库里同时 revert `deploy/Caddyfile.ip` 的改动，否则下次发布又加回来。要连解析一起撤：黄总账号 `alidns DeleteDomainRecord --RecordId 2125800818518669312`（用 `projects/huang_shop/ops/ali.sh`，显式传 key）。
+  - 已经失联的手机（域名连不上、又没取到 IP）：只能恢复域名，或装新包。
+- App：从「App 改用 https://api.yuanhuishop.cn」这个 PR 起 Beta 包默认连域名（Release 本来就是）。没有 ATS 例外、没有证书 pin。已装的老 Beta 包默认还是 IP，要等服务器配 `API_BASE=https://api.yuanhuishop.cn`（`/v1/config` 下发 `api_base`）或装新包才切。
+
+### 发布防护（11/26 事故后加）
+
+11/26 12:33 发布 #52 时，`deploy.sh` 用了 main 上只有 IP 站点的 `Caddyfile.ip`，把手工装上的 api.yuanhuishop.cn / yuanhuishop.cn 覆盖掉，两个域名 TLS 握手失败约 1.5 小时（从 `prev/caddy_Caddyfile` 恢复）。现在：
+- 线上站点配置只以仓库里的 `deploy/Caddyfile.ip` 为准，**不要再在 ECS 上手改 Caddyfile**；要改就提 PR 再发布。
+- `deploy.sh` 在连服务器之前检查：`Caddyfile.ip` 里必须有 `api.yuanhuishop.cn`、`yuanhuishop.cn`、`www.yuanhuishop.cn` 三个站点，`deploy/site/index.html` 必须存在，否则退出 2、什么都不动（`deploy/test/deploy.test.sh` 有用例）。
+- 发布后验 4 个地址：`https://yuanhuishop.cn`（200）、`https://www.yuanhuishop.cn`（301）、`https://api.yuanhuishop.cn/healthz`（200）、`http://yuanhuishop.cn`（308 到 https）。
+
 ## 证书策略（§14 S10a-3，PR #22 Fable 裁定 ①）
 - 方案 A（Let's Encrypt IP 短期证书）续期不稳时**不直接换私有 CA**。备案前服务器上只有假数据，App 离线可用，证书断几天不是紧急事件。
 - 「不稳」要有数字：部署后**观察 14 天**，期间出现过证书剩余有效期低于 48 小时、或过期，才算不稳；一两次续期重试不算。每次续期成功 / 失败的记录和剩余有效期告警由本机探测做（S10c，§14 T19，见「监控与告警」：`cert-renewals.jsonl`、`ip_cert_expiry`）；探测装上之前每天按上面的命令看一次并记下来。
