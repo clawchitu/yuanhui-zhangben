@@ -35,7 +35,9 @@ public struct SessionGrant: Decodable, Equatable, Sendable {
     public let store: Store
     public let label: String
     public let deletePendingUntil: String?
-    enum CodingKeys: String, CodingKey { case token, epoch, role, store, label, deletePendingUntil = "delete_pending_until" }
+    /// 账号名（S23b）：只有家用设备的会话带；收银员、旧服务器没有
+    public let username: String?
+    enum CodingKeys: String, CodingKey { case token, epoch, role, store, label, username, deletePendingUntil = "delete_pending_until" }
 }
 
 /// `GET /v1/barcode-lookup/:barcode`（契约 components/schemas/BarcodeLookup）。收银员只有 found、name、spec、has_image
@@ -283,13 +285,13 @@ public final class APIClient: Sendable {
 
     /// 回原始字节的请求（图片）：和 `send` 一样的时限、退回默认地址、不跟重定向；非 2xx 按契约 Error 解析抛出
     func sendRaw(_ method: String, _ path: String, body: Data?, contentType: String? = nil, token: String?,
-                 timeoutMs: Int = 15_000) async throws -> Data {
+                 fallback: Bool = true, timeoutMs: Int = 15_000) async throws -> Data {
         let primary = bases.current
         let clock = ContinuousClock()
         let start = clock.now
         do {
             return try await sendRawOnce(method, base: primary, path, body: body, contentType: contentType, token: token, timeoutMs: timeoutMs)
-        } catch let APIError.transport(why) where primary != bases.defaultBase {
+        } catch let APIError.transport(why) where fallback && primary != bases.defaultBase {
             let left = timeoutMs - Self.millis(clock.now - start)
             guard left > 0 else { throw APIError.transport(why) }
             return try await sendRawOnce(method, base: bases.defaultBase, path, body: body, contentType: contentType, token: token, timeoutMs: left)

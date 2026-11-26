@@ -94,7 +94,10 @@ final class LoginModel {
             services.defaults.set(user, forKey: AuthDefaults.lastUsername)
             // 带着去的名字已经报上去了（重名时服务器会加序号，以响应为准）
             if pending != nil { services.pendingDeviceLabel = nil }
-            finish(try await services.establish(grant, deviceId: deviceId, db: db))
+            let session = try await services.establish(grant, deviceId: deviceId, db: db)
+            // 旧服务器的响应不带 username：用输入的（establish 已经按响应记过了）
+            if grant.username == nil { services.rememberUsername(user, deviceId: deviceId) }
+            finish(session)
         } catch let e as APIError {
             Self.logger.notice("登录没成功：\(String(describing: e), privacy: .public)")
             handle(e)

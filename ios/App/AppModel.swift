@@ -160,6 +160,9 @@ final class AppModel {
 
     let db: LocalDB
     private let defaults: UserDefaults
+    /// S23b：这个账号的登录名（登录 / 兑码响应或 `/v1/me` 的 `username`，见 `AuthDefaults.sessionUsername`）。
+    /// 收银员没有（服务器不给），为 nil
+    var accountName: String?
 
     var role: Role { session.role }
     /// 首页 / 设置页的版式（唯一来源）

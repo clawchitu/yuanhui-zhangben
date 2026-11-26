@@ -20,7 +20,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
     case held            // 待确认的账（被退出的手机补传的，S23a）
     case deviceName      // 这台手机的名字
     case scanner         // 扫码枪
-    case account         // 账号与密码、注销（23）
+    case account         // 账号与密码（21a 下级页，S23b；注销 23 在 S23b-2）
     case privacy         // 隐私政策
     case logout          // 退出登录
     case pending         // 待传的账（首页顶栏的同步状态、25a 提醒条点进来）
@@ -83,9 +83,8 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .products: "S25"
         case .expiry: "S27"
         case .count: "S26"
-        case .account: "S23b"
         case .privacy: "S21"
-        case .logout, .pending, .pairing, .devices, .held: nil
+        case .logout, .pending, .pairing, .devices, .held, .account: nil
         case .sell, .manualCode, .discount, .stockIn, .settings, .deviceName, .scanner, .records, .undoLast: nil
         }
     }
@@ -107,7 +106,8 @@ struct RouteView: View {
 
     /// 这条路由在这些能力下出哪种页面（纯函数，单元测试逐个路由 × 身份测）
     enum Content: Equatable {
-        case denied, sell, manualCode, discountEntry, stockIn, settings, deviceName, scanner, records, logout, pending, pairing, devices, held, placeholder
+        case denied, sell, manualCode, discountEntry, stockIn, settings, deviceName, scanner, records, logout, pending, pairing, devices, held
+        case account, placeholder
     }
 
     static func content(for route: Route, capabilities: Capabilities) -> Content {
@@ -126,6 +126,7 @@ struct RouteView: View {
         case .pairing: return .pairing
         case .devices: return .devices
         case .held: return .held
+        case .account: return .account
         default: return .placeholder
         }
     }
@@ -150,6 +151,7 @@ struct RouteView: View {
             case .pairing: PairingView()
             case .devices: DevicesView()
             case .held: HeldListView()
+            case .account: AccountView()
             // 看账（S24 之前是占位页）：家用首页没有「刚记的」条时从这里进记的账（§14 S15-6）
             case .placeholder: PlaceholderPage(route: route, layout: model.layout, link: route == .reports ? .records : nil)
             }

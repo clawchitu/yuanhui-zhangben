@@ -102,5 +102,5 @@ export async function pair(app: FastifyInstance, token: string, role: "family" |
   const deviceId = randomUUID();
   const r = await app.inject({ method: "POST", url: "/v1/auth/pair/redeem", payload: { code: c.json().code, device_id: deviceId } });
   if (r.statusCode !== 200) throw new Error(`兑码失败 ${r.statusCode} ${r.body}`);
-  return { ...(r.json() as { token: string; role: string; label: string }), deviceId, pairingId: c.json().id as string };
+  return { ...(r.json() as { token: string; role: string; label: string; username?: string }), deviceId, pairingId: c.json().id as string };
 }

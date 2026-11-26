@@ -765,6 +765,7 @@ components:
               role: { $ref: "#/components/schemas/Role" }
               store: { $ref: "#/components/schemas/Store" }
               label: { $ref: "#/components/schemas/DeviceLabel" }
+              username: { $ref: "#/components/schemas/Username" }
               delete_pending_until: { $ref: "#/components/schemas/DateTime" }
   schemas:
     Uuid: { type: string, format: uuid }
@@ -776,6 +777,11 @@ components:
     Rev: { type: integer, minimum: 0, maximum: 9007199254740991 }
     Barcode: { type: string, minLength: 1, maxLength: 64 }
     DeviceLabel: { type: string, minLength: 1, maxLength: 40 }
+    Username:
+      type: string
+      minLength: 1
+      maxLength: 64
+      description: 账号名（开户时的原样）。只在家用设备的会话里出现（账号密码登录、演示登录、家用码兑换、家用设备的 /v1/me）；收银员没有（S23b）
     Role: { enum: [family, cashier] }
     Store:
       type: object
@@ -846,6 +852,7 @@ components:
         role: { $ref: "#/components/schemas/Role" }
         store: { $ref: "#/components/schemas/Store" }
         label: { $ref: "#/components/schemas/DeviceLabel" }
+        username: { $ref: "#/components/schemas/Username" }
         delete_pending_until: { $ref: "#/components/schemas/DateTime" }
     Cursors:
       type: object

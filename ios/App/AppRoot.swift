@@ -353,6 +353,7 @@ struct AppRoot: View {
         figures.lastRecord = HomeFigures.LastRecord.today(try db.lastRecord(), now: Date())
         let model = AppModel(db: db, session: session, figures: figures)
         model.services = services
+        model.accountName = services?.username(deviceId: session.deviceId)
         model.pendingDelay = AppModel.pendingDelayLive  // 顶栏 0 → N 等 4 秒（Fable 裁定 1）
         #if DEBUG
         // 联调（S22a XCUITest）：真会话下也能用假扫码、调试探针；-uiInjectDemo 往本机塞服务器上没有的演示商品（卖它会被拒）
@@ -420,6 +421,9 @@ struct AppRoot: View {
                              fixedNow: UIFixture.designNow)
         model.liveRecent = liveRecent
         model.sellFixture = SellFixture.from(args)
+        // S23b：账号名（家用 / 审核默认 yuanhui；none = 本机没记着）
+        let username = UIFixture.value(for: "-uiUsername", in: args) ?? (role == .cashier ? "none" : "yuanhui")
+        model.accountName = username == "none" ? nil : username
         // 顶栏待传的 4 秒延迟：夹具里默认不等，带 -uiPendingDelay [秒] 才开
         if args.contains("-uiPendingDelay") {
             model.pendingDelay = .seconds(UIFixture.value(for: "-uiPendingDelay", in: args).flatMap(Double.init) ?? 4)
