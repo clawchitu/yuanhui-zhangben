@@ -85,6 +85,7 @@ struct SettingsView: View {
             .foregroundStyle(Tokens.Palette.ink2)
             .padding(.top, 4)
             .accessibilityIdentifier("settings.versionFooter")
+        icpFooter
     }
 
     // MARK: 21b
@@ -135,6 +136,23 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 6)
+        icpFooter
+    }
+
+    /// App 备案号（工信部要求在 App 内展示），点了用系统浏览器打开工信部备案查询页。
+    static let icpNumber = "苏ICP备2026094233号-2A"
+    static let icpURL = URL(string: "https://beian.miit.gov.cn/")!
+
+    private var icpFooter: some View {
+        Link(destination: Self.icpURL) {
+            Text(Self.icpNumber)
+                .font(TypeScale.secondary)
+                .foregroundStyle(Tokens.Palette.ink2)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: Tokens.Size.minHitTarget)
+        }
+        .padding(.top, 4)
+        .accessibilityIdentifier("settings.icp")
     }
 
     // MARK: 共用行
