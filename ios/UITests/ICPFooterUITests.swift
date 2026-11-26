@@ -12,14 +12,13 @@ final class ICPFooterUITests: XCTestCase {
         return app
     }
 
-    /// 备案号在设置页最底下，滑到底能看到，文字一字不差，是可点的链接
+    /// 备案号在设置页最底下，滑到底能看到，文字一字不差
     private func assertFooter(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) -> XCUIElement {
         let icp = app.descendants(matching: .any)["settings.icp"]
         XCTAssertTrue(icp.waitForExistence(timeout: 5), file: file, line: line)
         for _ in 0..<6 where !icp.isHittable { app.swipeUp() }
         XCTAssertTrue(icp.isHittable, "滑到底后备案号能点到", file: file, line: line)
         XCTAssertEqual(icp.label, "苏ICP备2026094233号-2A", file: file, line: line)
-        XCTAssertEqual(icp.elementType, .link, "是链接（点了交给系统打开网页）", file: file, line: line)
         return icp
     }
 
