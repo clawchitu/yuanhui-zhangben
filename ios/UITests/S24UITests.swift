@@ -187,6 +187,47 @@ final class S24UITests: XCTestCase {
         XCTAssertFalse(sel.waitForExistence(timeout: 2), "再点一次收起")
     }
 
+    /// 有没填进价的卖出、没算进价的损耗：卡片下写出 N，和接口一致（今天、本月各一次）；对账卖出行注明「有 N 笔没算进价」
+    func testCostMissingNotesMatchTheServer() {
+        stub.costMissing = true
+        let app = launch()
+        XCTAssertTrue(el(app, "reports.costMissing").waitForExistence(timeout: 10))
+        XCTAssertEqual(el(app, "reports.costMissing").label, "有 2 样进价没填，卖的钱没算进「赚了」")
+        XCTAssertEqual(el(app, "reports.lossMissing").label, "有 1 笔损耗没算进价")
+        el(app, "reports.tab.month").tap()
+        XCTAssertTrue(el(app, "reports.stockValue").waitForExistence(timeout: 10))
+        XCTAssertEqual(el(app, "reports.costMissing").label, "有 3 样进价没填，卖的钱没算进「赚了」")
+        XCTAssertEqual(el(app, "reports.lossMissing").label, "有 4 笔损耗没算进价")
+        let sale = el(app, "reports.recon.1")
+        reveal(app, sale)
+        XCTAssertTrue(sale.label.contains("卖掉的货的进价") && sale.label.contains("有 5 笔没算进价"), sale.label)
+    }
+
+    /// 金额很长、最大辅助字号：每个数整个在屏幕里（并排放不下就一张一行），显示的字照样逐分等于接口
+    func testLongAmountsFitAtMaxSize() {
+        stub.big = true
+        let app = launch(extra: Self.maxAX)
+        assertFigure(app, "reports.sold", label: "¥123,456.78", raw: 12_345_678)
+        assertFigure(app, "reports.discount", label: "¥1,234.56", raw: 123_456)
+        for id in ["reports.sold", "reports.profit", "reports.discount"] {
+            let e = el(app, id)
+            reveal(app, e)
+            XCTAssertTrue(app.windows.firstMatch.frame.contains(e.frame), "\(id) 整个在屏幕里：\(e.frame)")
+        }
+        shot(app, "09-big-ax")
+        for _ in 0..<6 { app.swipeDown() }
+        el(app, "reports.tab.month").tap()
+        XCTAssertTrue(el(app, "reports.stockValue").waitForExistence(timeout: 10))
+        assertFigure(app, "reports.discount", label: "¥123,456.78", raw: 12_345_678)
+        assertFigure(app, "reports.expireLoss", label: "¥34,567.89", raw: 3_456_789)
+        for id in ["reports.discount", "reports.expireLoss"] {
+            let e = el(app, id)
+            reveal(app, e)
+            XCTAssertTrue(app.windows.firstMatch.frame.contains(e.frame), "\(id) 整个在屏幕里：\(e.frame)")
+        }
+        shot(app, "10-big-ax")
+    }
+
     // MARK: 离线、身份
 
     /// 没连上服务器：只显示「要联网才能看账」，不是空白；记的账照样进得去
@@ -272,7 +313,7 @@ final class ReportStub: @unchecked Sendable {
     private let queue = DispatchQueue(label: "s24-report-stub")
     private let lock = NSLock()
     private var log: [Request] = []
-    private var flags = (noDiscount: false, outOfStock: false, down: false)
+    private var flags = (noDiscount: false, outOfStock: false, down: false, costMissing: false, big: false)
 
     private init() throws { listener = try NWListener(using: .tcp, on: .any) }
 
@@ -290,6 +331,10 @@ final class ReportStub: @unchecked Sendable {
     func stop() { listener.cancel() }
     var noDiscount: Bool { get { lock.withLock { flags.noDiscount } } set { lock.withLock { flags.noDiscount = newValue } } }
     var outOfStock: Bool { get { lock.withLock { flags.outOfStock } } set { lock.withLock { flags.outOfStock = newValue } } }
+    /// 有没填进价的卖出、没算进价的损耗（今天 2 样 / 1 笔，本月 3 样 / 4 笔，对账卖出行 5 笔）
+    var costMissing: Bool { get { lock.withLock { flags.costMissing } } set { lock.withLock { flags.costMissing = newValue } } }
+    /// 金额很长（十几万、带角分），看窄屏大字时放不放得下
+    var big: Bool { get { lock.withLock { flags.big } } set { lock.withLock { flags.big = newValue } } }
     /// 当作断网：收到请求不回、直接断开（App 那边是没连上）
     var down: Bool { get { lock.withLock { flags.down } } set { lock.withLock { flags.down = newValue } } }
     func requests(path: String) -> [Request] { lock.withLock { log.filter { $0.path == path } } }
@@ -340,10 +385,12 @@ final class ReportStub: @unchecked Sendable {
     private static func pid(_ n: Int) -> String { String(format: "5eed0000-0000-4000-8000-%012x", n) }
 
     private func today(date: String) -> String {
-        let discount = flags.noDiscount ? 0 : 320
+        let discount = flags.noDiscount ? 0 : flags.big ? 123_456 : 320
         let low = flags.outOfStock ? (0, -1) : (2, 3)
+        let cm = flags.costMissing ? (2, 1) : (0, 0)
+        let (sold, profit) = flags.big ? (12_345_678, 2_345_678) : (128_650, 31_240)
         return """
-        {"date":"\(date)","sold_fen":128650,"profit_fen":31240,"discount_fen":\(discount),"count":87,"cost_missing_count":0,"loss_cost_missing_count":0,
+        {"date":"\(date)","sold_fen":\(sold),"profit_fen":\(profit),"discount_fen":\(discount),"count":87,"cost_missing_count":\(cm.0),"loss_cost_missing_count":\(cm.1),
          "top_sellers":[{"product_id":"\(Self.pid(0x206))","name":"农夫山泉 550ml","qty":48,"amount_fen":9600},
                         {"product_id":"\(Self.pid(0x202))","name":"青岛啤酒 500ml","qty":29,"amount_fen":17400},
                         {"product_id":"\(Self.pid(0x203))","name":"康师傅红烧牛肉面","qty":21,"amount_fen":9450}],
@@ -356,15 +403,17 @@ final class ReportStub: @unchecked Sendable {
     }
 
     private func month() -> String {
-        let discount = flags.noDiscount ? 0 : 4600
+        let discount = flags.noDiscount ? 0 : flags.big ? 12_345_678 : 4600
+        let expire = flags.big ? 3_456_789 : 5800
+        let cm = flags.costMissing ? (3, 4, 5) : (0, 0, 0)
         let daily = Self.daily.enumerated().map { i, f in
             #"{"date":"2026-11-\#(String(format: "%02d", i + 1))","sold_fen":\#(f),"profit_fen":\#(f / 4)}"#
         }.joined(separator: ",")
         return """
         {"month":"2026-11","sold_fen":2347400,"profit_fen":548700,"stock_value_end_fen":2326200,"discount_fen":\(discount),
-         "expire_loss_fen":5800,"cost_missing_count":0,"loss_cost_missing_count":0,"daily":[\(daily)],
+         "expire_loss_fen":\(expire),"cost_missing_count":\(cm.0),"loss_cost_missing_count":\(cm.1),"daily":[\(daily)],
          "reconciliation":{"stock_value_start_fen":2567500,"rows":[
-           {"key":"stock_in","amount_fen":1592000,"cost_missing_count":0},{"key":"sale","amount_fen":-1798700,"cost_missing_count":0},
+           {"key":"stock_in","amount_fen":1592000,"cost_missing_count":0},{"key":"sale","amount_fen":-1798700,"cost_missing_count":\(cm.2)},
            {"key":"count","amount_fen":-12800,"cost_missing_count":0},{"key":"expire_loss","amount_fen":-5800,"cost_missing_count":0},
            {"key":"supplier_return","amount_fen":-16000,"cost_missing_count":0}],"stock_value_end_fen":2326200}}
         """

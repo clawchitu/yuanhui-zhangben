@@ -88,6 +88,7 @@ private struct ReportsContent: View {
                 .frame(maxWidth: .infinity, minHeight: 200)
                 .accessibilityIdentifier("reports.loading")
         case .offline:
+            // 「再试一次」是人点的：同步那边还以为没网也照样发一次（网刚好、同步还没察觉时能取到）
             ReportsOffline(retry: { Task { await reports.load(offline: false) } })
         case .failed(let msg):
             VStack(alignment: .leading, spacing: 16) {
@@ -484,16 +485,24 @@ private struct MonthReport: View {
             }
             .padding(.top, 10)
             ProfitNote(costMissing: m.costMissingCount, lossMissing: m.lossCostMissingCount)
-            StatRow {
-                if m.discountFen.raw != 0 {
-                    WideStat(title: "优惠", fen: m.discountFen, id: "reports.discount")
-                }
-                WideStat(title: "过期损耗", fen: m.expireLossFen, id: "reports.expireLoss")
+            // 金额是固定字号、整个显示：两张并排放不下（窄屏、大字、金额长）就一张一行
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { wideStats }
+                VStack(spacing: 10) { wideStats }
             }
             .padding(.top, 10)
             DailyChart(m: m, today: today)
             Reconciliation(m: m, current: current)
         }
+    }
+}
+
+extension MonthReport {
+    @ViewBuilder fileprivate var wideStats: some View {
+        if m.discountFen.raw != 0 {
+            WideStat(title: "优惠", fen: m.discountFen, id: "reports.discount")
+        }
+        WideStat(title: "过期损耗", fen: m.expireLossFen, id: "reports.expireLoss")
     }
 }
 
@@ -592,15 +601,9 @@ private struct DailyChart: View {
                 .accessibilityValue(ReportFormat.money(Fen(b.soldFen)))
         }
         .chartXScale(domain: 0...(days + 2))
+        // x 轴的日期自己画在刻度正下方（系统的轴标签在数值轴上会往右偏半个字，看着像今天落在前一两天）
         .chartXAxis {
-            AxisMarks(values: ticks) { v in
-                // 月底那个刻度贴着右边，默认的避让会把它藏掉
-                AxisValueLabel(collisionResolution: .disabled) {
-                    if let d = v.as(Int.self) {
-                        Text("\(d)").font(.system(size: ReportLabels.axisFontSize, weight: .medium)).foregroundStyle(Tokens.Palette.ink2)
-                    }
-                }
-            }
+            AxisMarks(values: ticks) { _ in AxisTick(length: 6).foregroundStyle(Tokens.Palette.line) }
         }
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { v in
@@ -615,6 +618,18 @@ private struct DailyChart: View {
         }
         .chartOverlay { proxy in
             GeometryReader { g in
+                if let plot = proxy.plotFrame {
+                    let frame = g[plot]
+                    ForEach(ticks, id: \.self) { d in
+                        if let x = proxy.position(forX: d) {
+                            Text("\(d)").font(.system(size: ReportLabels.axisFontSize, weight: .medium))
+                                .foregroundStyle(Tokens.Palette.ink2)
+                                .fixedSize()
+                                .position(x: frame.minX + x, y: frame.maxY + 22)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                }
                 Rectangle().fill(.clear).contentShape(Rectangle())
                     .onTapGesture { loc in
                         guard let plot = proxy.plotFrame else { return }
@@ -627,6 +642,7 @@ private struct DailyChart: View {
             }
         }
         .frame(height: 190)
+        .padding(.bottom, 24)
         .padding(.trailing, 10)
         .accessibilityIdentifier("reports.chart")
     }
