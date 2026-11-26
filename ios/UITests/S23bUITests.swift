@@ -80,8 +80,15 @@ final class S23bUITests: XCTestCase {
         f.typeText(text)
     }
 
+    /// 按钮：键盘开着就先点空白处（「改密码」标题）收起来，再拖进看得见的那一段
     private func scrollTo(_ app: XCUIApplication, _ e: XCUIElement) {
         XCTAssertTrue(e.waitForExistence(timeout: 10))
+        let kb = app.keyboards.firstMatch, title = el(app, "account.passwordTitle")
+        if kb.exists, title.exists {
+            reveal(app, title)
+            title.tap()
+            wait("键盘收起来") { !kb.exists }
+        }
         reveal(app, e)
     }
 
@@ -92,7 +99,8 @@ final class S23bUITests: XCTestCase {
         for _ in 0..<8 {
             let win = app.windows.firstMatch.frame
             let kb = app.keyboards.firstMatch
-            let bottom = kb.exists ? kb.frame.minY : (sv.exists ? sv.frame.maxY : win.maxY)
+            // 键盘上面还有一条系统的「Passwords」自动填充条（约 44pt），不算在键盘的 frame 里
+            let bottom = kb.exists ? kb.frame.minY - 56 : (sv.exists ? sv.frame.maxY : win.maxY)
             let top = sv.exists ? sv.frame.minY : win.minY
             let f = e.frame
             let delta: CGFloat

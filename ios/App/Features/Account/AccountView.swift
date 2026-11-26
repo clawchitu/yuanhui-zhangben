@@ -48,6 +48,9 @@ private struct AccountContent: View {
             .padding(.horizontal, 20)
             .padding(.top, 8)
             .padding(.bottom, 24)
+            // 点空白处收起键盘：输完新密码，键盘和系统的密码条会盖住「改密码」按钮
+            .contentShape(Rectangle())
+            .onTapGesture { focus = nil }
         }
         .scrollBounceBehavior(.basedOnSize)
         .scrollDismissesKeyboard(.interactively)
@@ -94,6 +97,7 @@ private struct AccountContent: View {
     private var passwordSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("改密码").font(TypeScale.title).foregroundStyle(Tokens.Palette.ink).padding(.top, 8)
+                .accessibilityIdentifier("account.passwordTitle")
             PasswordBox(label: "原来的密码", text: $account.oldPassword, id: "account.old", focus: $focus, field: .old,
                         contentType: .password, next: { focus = .new })
             PasswordBox(label: "新密码（至少 \(PasswordRule.minLength) 位）", text: $account.newPassword, id: "account.new",

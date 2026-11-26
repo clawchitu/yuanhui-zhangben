@@ -93,7 +93,8 @@ final class S23bLiveUITests: XCTestCase {
         for _ in 0..<8 {
             let win = app.windows.firstMatch.frame
             let kb = app.keyboards.firstMatch
-            let bottom = kb.exists ? kb.frame.minY : (sv.exists ? sv.frame.maxY : win.maxY)
+            // 键盘上面还有一条系统的「Passwords」自动填充条（约 44pt），不算在键盘的 frame 里
+            let bottom = kb.exists ? kb.frame.minY - 56 : (sv.exists ? sv.frame.maxY : win.maxY)
             let top = sv.exists ? sv.frame.minY : win.minY
             let f = e.frame
             let delta: CGFloat
