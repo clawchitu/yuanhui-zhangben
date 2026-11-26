@@ -130,6 +130,24 @@ export class CatalogService {
     return { found: false, origin: out.kind === "not_found" ? "external" : "unavailable" };
   }
 
+  /**
+   * 不看缓存、直接再问一次外部（候选图刷新用，见 candidate-refresh.ts）：照样占本店当天额度（超了抛 LookupQuotaExceeded）、
+   * 同一条码正在查就跟着等那一次、结果写回 barcode_catalog（「查到」的行不会被「没查到」覆盖）。
+   * 没配外部条码库、演示店：直接当没问到
+   */
+  async refresh(store: { id: string; isDemo: boolean }, barcode: string, log: LookupLog): Promise<LookupResult> {
+    if (store.isDemo || !this.d.source) return { found: false, origin: "unavailable" };
+    let p = this.inflight.get(barcode);
+    if (!p) {
+      this.quota.take(store.id, this.d.clock());
+      p = this.fetchAndStore(this.d.source, barcode, log).finally(() => this.inflight.delete(barcode));
+      this.inflight.set(barcode, p);
+    }
+    const out = await p;
+    if (out.kind === "found") return { found: true, hit: out.hit, origin: "external" };
+    return { found: false, origin: out.kind === "not_found" ? "external" : "unavailable" };
+  }
+
   private async fetchAndStore(source: BarcodeSource, barcode: string, log: LookupLog): Promise<Outcome> {
     const ac = new AbortController();
     let timer: NodeJS.Timeout | undefined;
