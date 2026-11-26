@@ -23,7 +23,8 @@ export const THRESHOLDS = {
   diskUsedPercent: 80,
   /** §9.5：IP 证书剩余有效期 < 48 小时 */
   certHoursLeft: 48,
-  /** 域名站点（api.yuanhuishop.cn、yuanhuishop.cn）的证书：Let's Encrypt 90 天证书，Caddy 剩 30 天左右续；剩不到 14 天还没换就告警 */
+  /** 域名站点（api.yuanhuishop.cn、yuanhuishop.cn）的证书：Let's Encrypt 90 天证书，Caddy 剩 1/3（约 30 天）时续；
+   *  剩不到 14 天、且不到有效期 1/4 还没换就告警（取两者里小的：以后 LE 证书缩短到 45 天时，Caddy 约剩 15 天续，阈值跟着降到约 11 天，不误报） */
   domainCertDaysLeft: 14,
   /** §9.5：本机探 /healthz 连续 2 次失败 */
   healthzFailures: 2,
@@ -124,11 +125,14 @@ export function certVerdict(c: CertInfo, now: Date): Verdict & { hoursLeft: numb
   };
 }
 
-/** 域名证书：剩不到 14 天，或链不受信任 / 域名对不上（authorized 已含域名校验） */
+/** 域名证书：剩余不到 min(14 天, 有效期 1/4)，或链不受信任 / 域名对不上（authorized 已含域名校验） */
 export function domainCertVerdict(c: CertInfo, now: Date): Verdict & { daysLeft: number } {
-  const daysLeft = Math.floor((c.notAfter.getTime() - now.getTime()) / 86_400_000);
+  const leftMs = c.notAfter.getTime() - now.getTime();
+  const daysLeft = Math.floor(leftMs / 86_400_000);
+  const life = c.notAfter.getTime() - c.notBefore.getTime();
+  const limitMs = Math.min(THRESHOLDS.domainCertDaysLeft * 86_400_000, life > 0 ? life / 4 : Infinity);
   return {
-    active: daysLeft < THRESHOLDS.domainCertDaysLeft || !c.authorized,
+    active: leftMs < limitMs || !c.authorized,
     daysLeft,
     details: { days_left: daysLeft, not_after: c.notAfter.toISOString(), serial: c.serial.slice(-16), ...(c.authorized ? {} : { reason: "证书链不受信任或域名对不上" }) },
   };

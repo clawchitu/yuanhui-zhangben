@@ -249,8 +249,8 @@ unset A S K
 | §9.5 的项 | 告警键 | 哪条腿 | 阈值 |
 |---|---|---|---|
 | 服务存活 | `healthz_down` | 本机 + 云监控站点监控 | 连续 2 次（20 分钟）失败 |
-| 域名站点存活 | `site_down:<域名>` | 本机 | 不是 200（不跟跳转）连续 2 次 |
-| 域名证书 | `site_cert:<域名>` | 本机 | 剩余 < 14 天（LE 90 天证书，Caddy 剩约 30 天时续），或链不受信任、证书上的域名对不上；第一次见到和换新证书记进 `cert-renewals.jsonl`（带 `host`），日志打一行到期日 |
+| 域名站点存活 | `site_down:<域名>` | 本机 | 不是 200（不跟跳转）连续 2 次。api 挂了会同时来 `healthz_down` 和 `site_down:api.yuanhuishop.cn`（Caddy 挂了还有首页那条），是同一件事 |
+| 域名证书 | `site_cert:<域名>` | 本机 | 剩余 < min(14 天, 有效期 1/4)（LE 90 天证书，Caddy 剩约 30 天时续；证书有效期缩短时阈值跟着降），或链不受信任、证书上的域名对不上；第一次见到和换新证书记进 `cert-renewals.jsonl`（带 `host`），日志打一行到期日 |
 | CPU、内存、磁盘 | 云监控规则；`disk_usage` | 云监控 + 服务器 | > 80% |
 | 证书（T19） | `ip_cert_expiry` | 本机 | 剩余 < 48 小时或链不受信任；续期记进 `cert-renewals.jsonl` |
 | 备份心跳、失败（T26） | `backup_heartbeat_stale`、`backup_failed`、`backup_consecutive_failures`、`backup_lifecycle_stale`、`backup_skipped`、`backup_gate_skipped`、`restore_failed` | 服务器 | 营业时间 2 小时（从 8:00 起算，不在 8:00 切换时误报）/ 任何时候 6 小时；连续失败 ≥ 2 升严重 |
@@ -266,8 +266,8 @@ unset A S K
 
 ### 装本机探测（这台 Mac）
 1. `mkdir -p ~/.config/yuanhui-probe && cp deploy/probe/probe.env.example ~/.config/yuanhui-probe/env && chmod 600 ~/.config/yuanhui-probe/env`，填 `PROBE_URL=https://47.117.184.253`、`PROBE_SITES=https://api.yuanhuishop.cn/healthz,https://yuanhuishop.cn/`、`PROBE_SSH_TARGET=huang-shop`（部署用的 ssh 目标）、至少一个通道：这台 Mac 用 `PROBE_NOTIFY_CMD=$PWD/deploy/probe/bark-notify.sh`（写绝对路径；Bark key 从钥匙串 `chitu-bark-key` 读，不进这个文件）。令牌只放这个文件。
-2. 先手动跑一次：`deploy/probe/run-probe.sh --test-alert`，Chitu 应收到「告警通道测试」。
-3. `sed -e "s#__REPO__#$PWD#" -e "s#__HOME__#$HOME#" -e "s#__NODE_DIR__#$(dirname "$(command -v node)")#" deploy/probe/cn.yuanhuishop.probe.plist > ~/Library/LaunchAgents/cn.yuanhuishop.probe.plist`，`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/cn.yuanhuishop.probe.plist`；看日志 `~/Library/Logs/yuanhui-probe.log`。停用：`launchctl bootout gui/$(id -u)/cn.yuanhuishop.probe`。
+2. 先手动跑一次：`deploy/probe/run-probe.sh --test-alert`，Chitu 应收到「告警通道测试」。Bark 的 key 条目要用 `security add-generic-password -s chitu-bark-key -a chitu -w`（不带值，交互输入）建，访问控制里才有 `/usr/bin/security`，launchd 下读时不弹授权框；装好 launchd 后在它下面再验一次（第 3 步）。
+3. `sed -e "s#__REPO__#$PWD#" -e "s#__HOME__#$HOME#" -e "s#__NODE_DIR__#$(dirname "$(command -v node)")#" deploy/probe/cn.yuanhuishop.probe.plist > ~/Library/LaunchAgents/cn.yuanhuishop.probe.plist`，`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/cn.yuanhuishop.probe.plist`；看日志 `~/Library/Logs/yuanhui-probe.log`（RunAtLoad 那一轮应打出两行域名证书到期日）。在 launchd 下验一次通道：临时在配置里不动，跑 `launchctl kickstart -k gui/$(id -u)/cn.yuanhuishop.probe`，日志里没有「通知命令退出码」就是通了；要发一条可见的，用 `launchctl asuser $(id -u) deploy/probe/run-probe.sh --test-alert`。停用：`launchctl bootout gui/$(id -u)/cn.yuanhuishop.probe`。
 4. 状态在 `~/Library/Application Support/yuanhui-probe/`：`state.json`（去重、outbox 游标）、`cert-renewals.jsonl`（每次看到新证书 `renewed`、该续没续 `renewal_overdue`，14 天观察就看它）。
 
 ### 云监控（手工，阿里云控制台；免费额度内）

@@ -79,8 +79,8 @@ describe("本机探测进程（scripts/probe.ts）", () => {
     expect(text().match(/IP 证书剩余有效期不到 48 小时/g)).toHaveLength(1);
   });
 
-  it("域名站点（PROBE_SITES）：带 SNI 读证书并校验域名——证书剩 1 天告警；证书上的域名对不上也告警；配置不是 https 退出码 2", async () => {
-    // 两张证书：localhost 的（对得上）和 wrong.test 的（连 localhost 时对不上）；两张都放进信任列表，所以「对不上」只能是域名校验抓到的
+  it("域名站点（PROBE_SITES）：带 SNI 读证书并校验域名——对得上的不告、记 first_seen；证书上的域名对不上告警；配置不是 https 退出码 2", async () => {
+    // 两张证书：localhost 的（对得上）和 wrong.test 的（连 localhost 时对不上）；两张都放进信任列表，所以「对不上」只能是域名校验（Node 自己的和 readCert 里的 checkServerIdentity）抓到的
     const mk = (name: string, san: string) =>
       execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "1", "-subj", `/CN=${san}`, "-addext", `subjectAltName=DNS:${san}`, "-keyout", join(dir, `${name}-key.pem`), "-out", join(dir, `${name}.pem`)], { stdio: "ignore" });
     mk("good", "localhost");
@@ -112,10 +112,8 @@ describe("本机探测进程（scripts/probe.ts）", () => {
       expect(r.code).toBe(0);
       const out = readFileSync(sent2, "utf8");
       const block = (port: number) => out.split("\n[").find((b) => b.includes(`键：site_cert:localhost:${port}`)) ?? "";
-      // 对得上的那张：只因为剩 0 天告警，没有「不受信任」
-      expect(block(good.port)).toContain(`域名 localhost:${good.port} 的证书剩余不到 14 天`);
-      expect(block(good.port)).toContain("days_left：0");
-      expect(block(good.port)).not.toContain("reason");
+      // 对得上的那张：1 天的证书剩约 24 小时，还没到有效期的 1/4（6 小时），不告（阈值取 14 天和 1/4 里小的，单测里钉）
+      expect(block(good.port)).toBe("");
       // 对不上的那张：域名校验抓到
       expect(block(wrong.port)).toContain("证书链不受信任或域名对不上");
       // IP 那条照旧（信任列表里有它的证书）

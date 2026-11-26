@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { buildMessage, sanitizeDetails, scrub } from "../src/monitor/alert.ts";
 import { Alerter, emptyState } from "../src/monitor/alerter.ts";
 import { LogTap } from "../src/monitor/logtap.ts";
-import { certVerdict, heartbeatVerdict, noSyncVerdict, parseMetrics, readNewLines, recordOpsSample, renewalOverdue, shanghaiAt, THRESHOLDS, type CertInfo } from "../src/monitor/checks.ts";
+import { certVerdict, heartbeatVerdict, noSyncVerdict, parseMetrics, readNewLines, recordOpsSample, renewalOverdue, shanghaiAt, THRESHOLDS, domainCertVerdict, type CertInfo } from "../src/monitor/checks.ts";
 import { CommandSink, MultiSink, OutboxSink, WebhookSink } from "../src/monitor/sinks.ts";
 import { sinkFromConfig } from "../src/monitor/setup.ts";
 import { forwardOutbox, outboxTailCmd, parseSites, runProbe, type ProbeDeps } from "../scripts/probe.ts";
@@ -585,6 +585,17 @@ describe("本机探测（scripts/probe.ts）", () => {
     certs["api.x.cn"] = { ...certs["api.x.cn"]!, serial: "A3", authorized: false };
     await runProbe(deps);
     expect(t.sink.sent.filter((m) => m.key === "site_cert:api.x.cn").at(-1)!.text).toContain("证书链不受信任或域名对不上");
+  });
+  it("域名证书阈值：取 14 天和有效期 1/4 里小的（90 天证书 14 天告；45 天证书约 11 天才告，Caddy 剩 15 天续时不误报）", () => {
+    const D = 86_400_000;
+    const now = new Date("2026-11-26T00:00:00Z");
+    const cert = (lifeDays: number, leftDays: number): CertInfo => ({ notBefore: new Date(now.getTime() - (lifeDays - leftDays) * D), notAfter: new Date(now.getTime() + leftDays * D), serial: "S", authorized: true });
+    expect(domainCertVerdict(cert(90, 15), now).active).toBe(false);
+    expect(domainCertVerdict(cert(90, 13.9), now).active).toBe(true);
+    expect(domainCertVerdict(cert(45, 15), now).active).toBe(false);
+    expect(domainCertVerdict(cert(45, 12), now).active).toBe(false);
+    expect(domainCertVerdict(cert(45, 11), now).active).toBe(true);
+    expect(domainCertVerdict({ ...cert(90, 80), authorized: false }, now).active).toBe(true);
   });
   it("PROBE_SITES 解析：逗号分隔、去空白、空 = 没有；不是 https 或带用户名口令就整个不认", () => {
     expect(parseSites(undefined)).toEqual([]);

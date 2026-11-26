@@ -135,7 +135,7 @@ async function probeSite(site: SiteProbe, c: ProbeCursors, d: ProbeDeps): Promis
   const v = domainCertVerdict(cert, now);
   await a.condition(v.active, {
     key: `site_cert:${site.host}`,
-    title: `域名 ${site.host} 的证书剩余不到 ${THRESHOLDS.domainCertDaysLeft} 天，或不受信任、域名对不上`,
+    title: `域名 ${site.host} 的证书快到期（剩不到 ${THRESHOLDS.domainCertDaysLeft} 天且不到有效期 1/4），或不受信任、域名对不上`,
     severity: "critical",
     details: { host: site.host, ...v.details },
   });
@@ -211,6 +211,7 @@ export function readCert(host: string, port = 443, timeoutMs = 10_000, servernam
       const p = s.getPeerCertificate();
       s.end();
       if (!p || !p.valid_to) return reject(new Error("没拿到证书"));
+      // Node 在 rejectUnauthorized:false 时也按 servername 校验域名（对不上 authorized=false）；这里再查一遍，不依赖这个行为
       const nameOk = !servername || checkServerIdentity(servername, p) === undefined;
       resolve({ notBefore: new Date(p.valid_from), notAfter: new Date(p.valid_to), serial: p.serialNumber, authorized: s.authorized && nameOk });
     });
