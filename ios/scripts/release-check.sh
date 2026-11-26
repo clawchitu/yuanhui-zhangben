@@ -3,7 +3,7 @@
 #  1. 用 Release（或 Beta）配置构建 App，查二进制里没有这些夹具参数和演示会话的字样（代码根本没编译进去）；
 #  2. 在模拟器上跑 ReleaseBuildUITests：带上各种夹具参数启动，都只出登录页。
 # Beta 配置同样跑一遍（§8 S21「Release 检查补 Beta」，PR #12 Fable 第二轮）：防止有人用 `#if BETA` 开夹具而检查抓不到。
-# 两种配置只差 IP 那一条：Release 二进制里不许有 IP 字面量；Beta 的包内默认地址就是 IP，必须查得到。
+# 两种配置只差 IP 那一条：Release 二进制里不许有 IP 字面量；Beta 白名单里留着 IP 回退地址（默认已是域名），必须查得到。
 # 用法（在 ios/ 下）：scripts/release-check.sh [--config Release|Beta] <模拟器 UDID> [derivedData 目录] [Debug 构建的二进制，用作对照]
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -53,12 +53,12 @@ if [ -n "${3:-}" ]; then
   done
 fi
 # S21：Release 包里不许出现 IP 字面量（Beta / Debug 的地址写成长于 15 字节的整条地址，进常量区，所以查得到）；
-# Beta 反过来必须有（它的包内默认地址就是 IP），同时也证明这个查法对 IP 有效
+# Beta 反过来必须有（IP 仍在 Beta 白名单里作回退；默认地址已改成域名），同时也证明这个查法对 IP 有效
 if [ "$config" = Release ]; then
   if has "$bin" "47.117.184.253"; then echo "Release 二进制里有 IP 地址 47.117.184.253" >&2; bad=1; fi
   if [ -n "${3:-}" ]; then has "$3" "https://47.117.184.253" || { echo "Debug 构建里也找不到 IP 地址，查法可能失效" >&2; bad=1; }; fi
 else
-  has "$bin" "https://47.117.184.253" || { echo "Beta 二进制里找不到包内默认地址 https://47.117.184.253" >&2; bad=1; }
+  has "$bin" "https://47.117.184.253" || { echo "Beta 二进制里找不到回退地址 https://47.117.184.253" >&2; bad=1; }
 fi
 [ $bad -eq 0 ] || exit 1
 echo "$config 检查通过：没有演示会话和会话夹具"

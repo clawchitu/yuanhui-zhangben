@@ -62,7 +62,7 @@ jobs:
         run: |
           scripts/release-check.sh "${{ steps.sim.outputs.udid }}" "$RUNNER_TEMP/yuanhui-dd-rel-${{ github.run_id }}" \
             "$DERIVED/Build/Products/Debug-iphonesimulator/YuanhuiZhangben.app/YuanhuiZhangben.debug.dylib"
-      - name: Beta 构建检查（同一套检查跑 Beta 配置，二进制里应有包内默认的 IP 地址，§8 S21）
+      - name: Beta 构建检查（同一套检查跑 Beta 配置，二进制里应有 IP 回退地址，§8 S21）
         run: |
           scripts/release-check.sh --config Beta "${{ steps.sim.outputs.udid }}" "$RUNNER_TEMP/yuanhui-dd-beta-${{ github.run_id }}" \
             "$DERIVED/Build/Products/Debug-iphonesimulator/YuanhuiZhangben.app/YuanhuiZhangben.debug.dylib"

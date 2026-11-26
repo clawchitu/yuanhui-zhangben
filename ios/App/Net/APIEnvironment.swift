@@ -6,7 +6,9 @@ import ShopCore
 ///
 /// - Release：只允许 `api.yuanhuishop.cn`，默认也是它。IP 字面量只写在 `#if BETA || DEBUG` 里，Release 产物里没有
 ///   （`scripts/release-check.sh` 查二进制）。
-/// - Beta：`47.117.184.253` 和 `api.yuanhuishop.cn` 都允许，默认 IP（方案 A：LE IP 证书，走系统信任链，无 ATS 例外）。
+/// - Beta：`api.yuanhuishop.cn` 和 `47.117.184.253` 都允许，默认域名（备案 11/26 通过后从 IP 改过来）。IP 留在白名单里只作回退：
+///   域名出问题时服务器可以用 `/v1/config` 的 `api_base` 把内测包指回 IP，不用重新出包。两者都是 Let's Encrypt 公网证书，
+///   走系统信任链，没有 ATS 例外，也没有证书 pin。
 /// - Debug：同 Beta，另外放行 `http://localhost` / `http://127.0.0.1` 任意端口（只给 XCUITest 桩服务器），默认本机 8787。
 /// 白名单写死在包里，不从服务器取；服务器下发的值只能在这里面挑。
 enum APIEnvironment {
@@ -23,7 +25,7 @@ enum APIEnvironment {
     }
 
     #if BETA || DEBUG
-    /// 备案前的服务器地址。写成整条地址（长于 15 字节，进常量区）：`release-check.sh` 查 Beta 二进制里有它、
+    /// 备案前的服务器地址，现在只是 Beta / Debug 白名单里的回退地址，不再是默认。写成整条地址（长于 15 字节，进常量区）：`release-check.sh` 查 Beta 二进制里有它、
     /// Release 二进制里没有 IP，查法才有效（Swift 把 15 字节以内的字符串直接编进指令，`grep` 查不到）
     static let betaIPBase = "https://47.117.184.253"
     static var betaIPHost: String { URL(string: betaIPBase)!.host! }
@@ -34,8 +36,6 @@ enum APIEnvironment {
         #if DEBUG
         if let v = UIFixture.value(for: "-uiAPIBase", in: args) { return v }
         return "http://localhost:8787"
-        #elseif BETA
-        return betaIPBase
         #else
         return "https://\(domainHost)"
         #endif
