@@ -79,7 +79,7 @@ struct BottomSheet<Content: View>: View {
     }
 }
 
-/// 确认面板：标题 + 几行明细 + 确认 / 取消。
+/// 确认面板（26 通用确认面板）：标题 + 说明 / 几行明细 + 确认 / 取消。
 struct ConfirmPanel: View {
     struct Row: Sendable {
         let label: String
@@ -87,10 +87,19 @@ struct ConfirmPanel: View {
     }
 
     let title: String
+    /// 标题下面的一段说明（26：「退出后它要重新扫码才能用。还没传上去的账会先传完。」）
+    var message: String?
     var rows: [Row] = []
     let confirmTitle: String
     var cancelTitle = "再想想"
     var mode: ShopMode = .sell
+    /// 确认按钮：默认按页面颜色实心带勾；26 的危险操作用黑底不带图标
+    var confirmStyle: PrimaryButton.Style = .filled
+    var confirmImage: String? = "checkmark"
+    var confirmId = "confirm.ok"
+    var cancelId = "confirm.cancel"
+    /// 确认后在办（按钮变灰，防连点）
+    var busy = false
     let onConfirm: () -> Void
     let onCancel: () -> Void
 
@@ -100,6 +109,13 @@ struct ConfirmPanel: View {
                 .font(TypeScale.title)
                 .foregroundStyle(Tokens.Palette.ink)
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("confirm.title")
+            if let message {
+                Text(message)
+                    .font(TypeScale.body)
+                    .foregroundStyle(Tokens.Palette.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             ForEach(rows.indices, id: \.self) { i in
                 HStack(alignment: .firstTextBaseline) {
                     Text(rows[i].label).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
@@ -109,8 +125,44 @@ struct ConfirmPanel: View {
                 }
                 Rectangle().fill(Tokens.Palette.line).frame(height: 1)
             }
-            PrimaryButton(confirmTitle, systemImage: "checkmark", mode: mode, action: onConfirm)
+            PrimaryButton(confirmTitle, systemImage: confirmImage, mode: mode, style: confirmStyle, action: onConfirm)
+                .disabled(busy)
+                .accessibilityIdentifier(confirmId)
             PrimaryButton(cancelTitle, style: .ghost, size: .medium, action: onCancel)
+                .accessibilityIdentifier(cancelId)
         }
+    }
+}
+
+/// 26 通用确认面板以底部抽屉弹出：`item` 非空时弹，关掉（下拉、点取消）时置空。大字时可以滚动
+struct ConfirmSheetModifier<Item: Identifiable, Panel: View>: ViewModifier {
+    @Binding var item: Item?
+    @ViewBuilder let panel: (Item) -> Panel
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    func body(content: Content) -> some View {
+        content.sheet(item: $item) { it in
+            ScrollView {
+                VStack(spacing: 14) {
+                    Capsule().fill(Tokens.Palette.mute).frame(width: 44, height: 5)
+                    panel(it)
+                }
+                .padding(.top, 12)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 24)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .background(Tokens.Palette.card)
+            .presentationDetents(typeSize.isAccessibilitySize ? [.large] : [.medium, .large])
+            .presentationCornerRadius(Tokens.Radius.sheet)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("confirm.sheet")
+        }
+    }
+}
+
+extension View {
+    func confirmSheet<Item: Identifiable, Panel: View>(item: Binding<Item?>, @ViewBuilder panel: @escaping (Item) -> Panel) -> some View {
+        modifier(ConfirmSheetModifier(item: item, panel: panel))
     }
 }
