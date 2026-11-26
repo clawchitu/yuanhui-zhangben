@@ -7,6 +7,9 @@
 // - 单图 ≤ 5 MB：Content-Length 超了直接拒，没有或撒谎的边读边数，超了就断；总时长有上限。
 // - 不看 Content-Type 认格式：按文件头只收 JPEG / PNG / WebP / GIF（不收 SVG 等矢量和别的格式），再交给 sharp 解码；
 //   sharp 限制像素总数（防解压炸弹），宽高都有上下限；输出重新编码、不带任何元数据。
+// - 快鸟（api-yun）的 getPic 地址返回的是 text/html 页面，图在 <img src="data:image/jpeg;base64,…"> 里。
+//   Content-Type 是 text/html 时：页面本身 ≤ 4×5 MB（base64 加页面里重复的 __VIEWSTATE 约 3 倍），只认 <img> 标签的 src 属性里
+//   data:image/(jpeg|png|webp);base64, 的那一张，严格解 base64，解出来 ≤ 5 MB、文件头和声明的类型一致才收；否则 bad_type（超大 too_large）。
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
@@ -26,6 +29,8 @@ export const THUMB_LONG_SIDE = 200;
 export const MAX_INPUT_PIXELS = 25_000_000;
 export const MIN_SIDE = 16;
 export const MAX_SIDE = 8000;
+/** text/html 响应（内嵌 base64 图）的页面大小上限 = 图片上限 × 这个倍数 */
+export const HTML_BYTES_FACTOR = 4;
 
 export class ImageRejected extends Error {
   readonly reason: string;
@@ -151,7 +156,7 @@ export async function fetchImage(raw: string, policy: FetchPolicy = DEFAULT_FETC
   let url = checkImageUrl(raw, policy);
   for (let hop = 0; ; hop++) {
     const r = await getOnce(url, policy, deadline);
-    if (r.kind === "body") return r.body;
+    if (r.kind === "body") return r.html ? extractEmbeddedImage(r.body, policy.maxBytes) : r.body;
     if (hop >= policy.maxRedirects) throw new ImageRejected("too_many_redirects", "跳转太多");
     let next: URL;
     try {
@@ -163,7 +168,7 @@ export async function fetchImage(raw: string, policy: FetchPolicy = DEFAULT_FETC
   }
 }
 
-function getOnce(url: URL, policy: FetchPolicy, deadline: number): Promise<{ kind: "body"; body: Buffer } | { kind: "redirect"; location: string }> {
+function getOnce(url: URL, policy: FetchPolicy, deadline: number): Promise<{ kind: "body"; body: Buffer; html: boolean } | { kind: "redirect"; location: string }> {
   return new Promise((resolve, reject) => {
     const left = deadline - Date.now();
     if (left <= 0) return reject(new ImageRejected("timeout", "下载超时"));
@@ -202,24 +207,27 @@ function getOnce(url: URL, policy: FetchPolicy, deadline: number): Promise<{ kin
           return fail(new ImageRejected("bad_status", `HTTP ${status}`));
         }
         const ct = String(res.headers["content-type"] ?? "").toLowerCase();
-        if (ct && !ct.startsWith("image/") && !ct.startsWith("application/octet-stream")) {
+        const html = /^text\/html\s*(;|$)/.test(ct);
+        if (ct && !html && !ct.startsWith("image/") && !ct.startsWith("application/octet-stream")) {
           res.resume();
           return fail(new ImageRejected("bad_type", "不是图片"));
         }
+        const limit = html ? policy.maxBytes * HTML_BYTES_FACTOR : policy.maxBytes;
+        const tooLarge = () => new ImageRejected("too_large", html ? "图片页面超过 20 MB" : "图片超过 5 MB");
         const declared = Number(res.headers["content-length"]);
-        if (Number.isFinite(declared) && declared > policy.maxBytes) return fail(new ImageRejected("too_large", "图片超过 5 MB"));
+        if (Number.isFinite(declared) && declared > limit) return fail(tooLarge());
         const chunks: Buffer[] = [];
         let n = 0;
         res.on("data", (c: Buffer) => {
           n += c.length;
-          if (n > policy.maxBytes) return fail(new ImageRejected("too_large", "图片超过 5 MB"));
+          if (n > limit) return fail(tooLarge());
           chunks.push(c);
         });
         res.on("end", () => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
-          resolve({ kind: "body", body: Buffer.concat(chunks) });
+          resolve({ kind: "body", body: Buffer.concat(chunks), html });
         });
         res.on("error", (e) => fail(e));
       },
@@ -228,6 +236,49 @@ function getOnce(url: URL, policy: FetchPolicy, deadline: number): Promise<{ kin
     req.on("error", (e) => fail(e instanceof ImageRejected ? e : new ImageRejected("network", `下载失败：${(e as NodeJS.ErrnoException).code ?? e.name}`)));
     req.end();
   });
+}
+
+// ───────── text/html 里内嵌的 base64 图 ─────────
+
+const IMG_TAG = /<img\s/gi;
+const DATA_SRC = /\ssrc=(["'])data:image\/(jpeg|png|webp);base64,/i;
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * 从 HTML 页面里取出 <img src="data:image/(jpeg|png|webp);base64,…"> 的那张图（第一个 src 是这种 data URI 的 <img>）。
+ * 不解析任意 HTML：游标只往前走（PR #52 评审：每个匹配往回找 < 是平方复杂度，构造的页面能卡住事件循环）——
+ * 逐个找 `<img` 加空白，标签范围到下一个 `>`（没有就到结尾），只在这个范围里找固定前缀 ` src="data:image/<类型>;base64,`，
+ * 下一次从这个 `>` 之后接着找；每个字节只扫常数次。取到同一种引号为止；base64 严格校验（字符集、长度是 4 的倍数、
+ * 解码后再编码一致），解出来 ≤ maxBytes，文件头和声明的类型一致。取不到或校验失败 → bad_type；超大 → too_large。
+ */
+export function extractEmbeddedImage(page: Buffer, maxBytes: number = MAX_IMAGE_BYTES): Buffer {
+  const s = page.toString("latin1");
+  IMG_TAG.lastIndex = 0;
+  for (let t = IMG_TAG.exec(s); t; t = IMG_TAG.exec(s)) {
+    const gt = s.indexOf(">", t.index);
+    const tagEnd = gt === -1 ? s.length : gt;
+    const m = DATA_SRC.exec(s.slice(t.index, tagEnd));
+    if (!m) {
+      if (gt === -1) break;
+      IMG_TAG.lastIndex = gt + 1;
+      continue;
+    }
+    const declared = m[2]!.toLowerCase() as "jpeg" | "png" | "webp";
+    const start = t.index + m.index + m[0].length;
+    const end = s.indexOf(m[1]!, start);
+    if (end < 0 || end > tagEnd) throw new ImageRejected("bad_type", "内嵌图片没有结束");
+    const len = end - start;
+    // 先按 base64 长度挡掉超大的，免得整段解码；解码后再精确比一次
+    if (len > Math.ceil(maxBytes / 3) * 4) throw new ImageRejected("too_large", "图片超过 5 MB");
+    const b64 = s.slice(start, end);
+    if (len === 0 || len % 4 !== 0 || !BASE64.test(b64)) throw new ImageRejected("bad_type", "内嵌图片的 base64 不合法");
+    const img = Buffer.from(b64, "base64");
+    if (img.toString("base64") !== b64) throw new ImageRejected("bad_type", "内嵌图片的 base64 不合法");
+    if (img.length > maxBytes) throw new ImageRejected("too_large", "图片超过 5 MB");
+    if (sniffFormat(img) !== declared) throw new ImageRejected("bad_type", "内嵌图片的文件头和声明的类型不一致");
+    return img;
+  }
+  throw new ImageRejected("bad_type", "不是图片");
 }
 
 // ───────── 格式校验与缩图 ─────────

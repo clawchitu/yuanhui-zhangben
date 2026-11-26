@@ -13,6 +13,7 @@ import {
   ImageRejected,
   MAX_IMAGE_BYTES,
   checkImageUrl,
+  extractEmbeddedImage,
   fetchImage,
   isPublicAddress,
   makeThumbnail,
@@ -58,6 +59,87 @@ function pngHeaderOnly(w: number, h: number): Buffer {
     chunk("IEND", Buffer.alloc(0)),
   ]);
 }
+
+const jpeg = (w: number, h: number) => sharp({ create: { width: w, height: h, channels: 3, background: "#cc6633" } }).jpeg().toBuffer();
+
+/** 仿 api-yun getPic 的页面（结构照 2026-11-26 实测响应：__VIEWSTATE 里还有一份 base64 过的 data URI，图在 <img id="pictrue"> 的 src 里） */
+const apiYunPage = (src: string) =>
+  Buffer.from(
+    `\r\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">\r\n` +
+      `<html xmlns="http://www.w3.org/1999/xhtml">\r\n<head><title>\r\n\r\n</title></head>\r\n<body>\r\n` +
+      `    <form name="form1" method="post" action="./0" id="form1">\r\n` +
+      `<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="${Buffer.from(src).toString("base64")}" />\r\n` +
+      `        <div>\r\n            <img id="pictrue" src="${src}" border="0" />\r\n        </div>\r\n    </form>\r\n</body>\r\n</html>\r\n`,
+  );
+const dataUri = (type: string, b: Buffer) => `data:image/${type};base64,${b.toString("base64")}`;
+const rejectReason = (f: () => unknown) => {
+  try {
+    f();
+  } catch (e) {
+    if (e instanceof ImageRejected) return e.reason;
+    return `other:${(e as Error).message}`;
+  }
+  return "ok";
+};
+
+describe("extractEmbeddedImage（getPic 返回 HTML 内嵌 base64 图）", () => {
+  it("HTML 嵌 JPEG → 取出原样的 JPEG", async () => {
+    const j = await jpeg(64, 48);
+    expect(extractEmbeddedImage(apiYunPage(dataUri("jpeg", j))).equals(j)).toBe(true);
+  });
+  it("HTML 嵌 PNG → 取出原样的 PNG", async () => {
+    const p = await png(64, 48);
+    expect(extractEmbeddedImage(apiYunPage(dataUri("png", p))).equals(p)).toBe(true);
+  });
+  it("HTML 嵌 WebP；大写标签、单引号、没有 >；第一个 <img> 不是 data 图、第二个才是 → 都取得到", async () => {
+    const w = await sharp({ create: { width: 40, height: 30, channels: 3, background: "#118844" } }).webp().toBuffer();
+    expect(extractEmbeddedImage(apiYunPage(dataUri("webp", w))).equals(w)).toBe(true);
+    const j = await jpeg(32, 32);
+    expect(extractEmbeddedImage(Buffer.from(`<IMG ID=x SRC='${dataUri("JPEG", j)}'>`)).equals(j)).toBe(true);
+    expect(extractEmbeddedImage(Buffer.from(`<img src="${dataUri("jpeg", j)}"`)).equals(j)).toBe(true);
+    expect(extractEmbeddedImage(Buffer.from(`<img src="/logo.png"><p>x</p><img alt="a" src="${dataUri("jpeg", j)}" />`)).equals(j)).toBe(true);
+  });
+  it("恶意页面：大量 src=\"data:… 前缀而不在 <img> 里 → 线性时间内 bad_type（PR #52 评审）", () => {
+    const unit = ' src="data:image/png;base64,';
+    for (const page of [unit.repeat(200_000), "<img>" + unit.repeat(200_000), "<img a>".repeat(400_000), `<img ${"x".repeat(5_000_000)}`]) {
+      const t0 = performance.now();
+      expect(rejectReason(() => extractEmbeddedImage(Buffer.from(page, "latin1")))).toBe("bad_type");
+      expect(performance.now() - t0).toBeLessThan(1000);
+    }
+  });
+  it("HTML 里没有图（链接过期时 src 是空的）、只有 __VIEWSTATE、不在 <img> 里、data-src → bad_type", async () => {
+    const j = await jpeg(32, 32);
+    expect(rejectReason(() => extractEmbeddedImage(apiYunPage("")))).toBe("bad_type");
+    expect(rejectReason(() => extractEmbeddedImage(Buffer.from("<html><body>请求超时</body></html>")))).toBe("bad_type");
+    expect(rejectReason(() => extractEmbeddedImage(Buffer.from(`<a href="x" src="${dataUri("jpeg", j)}">x</a>`)))).toBe("bad_type");
+    expect(rejectReason(() => extractEmbeddedImage(Buffer.from(`<p> src="${dataUri("jpeg", j)}"</p>`)))).toBe("bad_type");
+    expect(rejectReason(() => extractEmbeddedImage(Buffer.from(`<img data-src="${dataUri("jpeg", j)}">`)))).toBe("bad_type");
+    expect(rejectReason(() => extractEmbeddedImage(Buffer.from(`<img src="${dataUri("gif", j)}">`)))).toBe("bad_type");
+    expect(rejectReason(() => extractEmbeddedImage(Buffer.from(`<img src="data:image/svg+xml;base64,PHN2Zz4=">`)))).toBe("bad_type");
+  });
+  it("base64 损坏（非法字符、长度不对、没结束引号、填充错）→ bad_type", async () => {
+    const b = (await jpeg(32, 32)).toString("base64");
+    for (const bad of [b.slice(0, 40) + "!@#$" + b.slice(44), b.slice(0, -1), b.slice(0, 8) + "=" + b.slice(9), "/9j/4AA=Q"]) {
+      expect(rejectReason(() => extractEmbeddedImage(apiYunPage(`data:image/jpeg;base64,${bad}`)))).toBe("bad_type");
+    }
+    expect(rejectReason(() => extractEmbeddedImage(Buffer.from(`<img src="data:image/jpeg;base64,${b}`)))).toBe("bad_type");
+  });
+  it("解出来超过大小上限 → too_large（不先整段解码）", async () => {
+    const j = await jpeg(32, 32);
+    expect(rejectReason(() => extractEmbeddedImage(apiYunPage(dataUri("jpeg", j)), j.length - 1))).toBe("too_large");
+    expect(extractEmbeddedImage(apiYunPage(dataUri("jpeg", j)), j.length).equals(j)).toBe(true);
+    const big = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(MAX_IMAGE_BYTES)]);
+    expect(rejectReason(() => extractEmbeddedImage(apiYunPage(dataUri("jpeg", big))))).toBe("too_large");
+  });
+  it("魔数和声明的类型不一致 → bad_type", async () => {
+    const j = await jpeg(32, 32);
+    const p = await png(32, 32);
+    expect(rejectReason(() => extractEmbeddedImage(apiYunPage(dataUri("png", j))))).toBe("bad_type");
+    expect(rejectReason(() => extractEmbeddedImage(apiYunPage(dataUri("jpeg", p))))).toBe("bad_type");
+    expect(rejectReason(() => extractEmbeddedImage(apiYunPage(dataUri("webp", p))))).toBe("bad_type");
+    expect(rejectReason(() => extractEmbeddedImage(apiYunPage(dataUri("jpeg", Buffer.from("<svg onload=alert(1)>")))))).toBe("bad_type");
+  });
+});
 
 describe("isPublicAddress", () => {
   it.each([
@@ -224,6 +306,31 @@ describe("fetchImage（本机假图床）", () => {
     routes["/html"] = (_q, s) => s.writeHead(200, { "content-type": "text/html" }).end("<html>");
     expect(await reason(fetchImage(`http://img.test:${port}/500`, policy()))).toBe("bad_status");
     expect(await reason(fetchImage(`http://img.test:${port}/html`, policy()))).toBe("bad_type");
+  });
+
+  it("getPic 式响应：text/html 内嵌 base64 JPEG / PNG → 取出图；没图、超大照旧拒；原本就是图片的走原路径", async () => {
+    reset();
+    const j = await jpeg(300, 200);
+    routes["/getPic-jpeg"] = (_q, s) => s.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(apiYunPage(dataUri("jpeg", j)));
+    routes["/getPic-png"] = (_q, s) => s.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(apiYunPage(dataUri("png", goodPng)));
+    routes["/getPic-expired"] = (_q, s) => s.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(apiYunPage(""));
+    routes["/getPic-big"] = (_q, s) =>
+      s.writeHead(200, { "content-type": "text/html", "content-length": String(MAX_IMAGE_BYTES * 4 + 1) }).end();
+    routes["/getPic-big-chunked"] = (_q, s) => {
+      s.writeHead(200, { "content-type": "text/html" });
+      s.on("error", () => {});
+      s.end(Buffer.alloc(MAX_IMAGE_BYTES * 4 + 1024, 0x20));
+    };
+    routes["/plain.png"] = (_q, s) => s.writeHead(200, { "content-type": "image/png" }).end(goodPng);
+    routes["/png-as-html"] = (_q, s) => s.writeHead(200, { "content-type": "text/html" }).end(goodPng);
+    expect((await fetchImage(`http://img.test:${port}/getPic-jpeg`, policy())).equals(j)).toBe(true);
+    expect((await fetchImage(`http://img.test:${port}/getPic-png`, policy())).equals(goodPng)).toBe(true);
+    expect((await sharp(await makeThumbnail(await fetchImage(`http://img.test:${port}/getPic-jpeg`, policy()))).metadata()).format).toBe("jpeg");
+    expect(await reason(fetchImage(`http://img.test:${port}/getPic-expired`, policy()))).toBe("bad_type");
+    expect(await reason(fetchImage(`http://img.test:${port}/getPic-big`, policy()))).toBe("too_large");
+    expect(await reason(fetchImage(`http://img.test:${port}/getPic-big-chunked`, policy({ timeoutMs: 5000 })))).toBe("too_large");
+    expect(await reason(fetchImage(`http://img.test:${port}/png-as-html`, policy()))).toBe("bad_type");
+    expect((await fetchImage(`http://img.test:${port}/plain.png`, policy())).equals(goodPng)).toBe(true);
   });
 });
 
