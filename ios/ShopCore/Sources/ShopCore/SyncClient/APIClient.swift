@@ -283,13 +283,13 @@ public final class APIClient: Sendable {
 
     /// 回原始字节的请求（图片）：和 `send` 一样的时限、退回默认地址、不跟重定向；非 2xx 按契约 Error 解析抛出
     func sendRaw(_ method: String, _ path: String, body: Data?, contentType: String? = nil, token: String?,
-                 timeoutMs: Int = 15_000) async throws -> Data {
+                 fallback: Bool = true, timeoutMs: Int = 15_000) async throws -> Data {
         let primary = bases.current
         let clock = ContinuousClock()
         let start = clock.now
         do {
             return try await sendRawOnce(method, base: primary, path, body: body, contentType: contentType, token: token, timeoutMs: timeoutMs)
-        } catch let APIError.transport(why) where primary != bases.defaultBase {
+        } catch let APIError.transport(why) where fallback && primary != bases.defaultBase {
             let left = timeoutMs - Self.millis(clock.now - start)
             guard left > 0 else { throw APIError.transport(why) }
             return try await sendRawOnce(method, base: bases.defaultBase, path, body: body, contentType: contentType, token: token, timeoutMs: left)
