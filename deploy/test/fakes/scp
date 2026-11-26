@@ -4,4 +4,4 @@ set -eu
 printf 'scp %s\n' "$*" >> "$FAKE_LOG"
 args=(); for a in "$@"; do case "$a" in -*) ;; *) args+=("$a") ;; esac; done
 n=${#args[@]}; dest=${args[$((n-1))]#*:}; dest=${dest//\/opt\/yuanhui/$FAKE_REMOTE}
-for ((i=0; i<n-1; i++)); do cp "${args[$i]}" "$dest"; done
+for ((i=0; i<n-1; i++)); do cp -R "${args[$i]}" "$dest"; done

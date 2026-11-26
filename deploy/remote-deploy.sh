@@ -102,6 +102,12 @@ for f in compose.yml caddy/Caddyfile; do
 done
 cp "$IN/compose.yml" "$D/compose.yml"
 cp "$IN/Caddyfile.ip" "$D/caddy/Caddyfile"
+# 根域名静态首页：caddy/ 整个目录只读挂在容器 /etc/caddy，换目录即生效，不用重载。先装到旁边再换，避免半截文件
+if [ -d "$IN/site" ]; then
+  rm -rf "$D/caddy/site.new" && cp -R "$IN/site" "$D/caddy/site.new" && chmod -R go+rX "$D/caddy/site.new"
+  rm -rf "$D/caddy/site.old"; [ -d "$D/caddy/site" ] && mv "$D/caddy/site" "$D/caddy/site.old"
+  mv "$D/caddy/site.new" "$D/caddy/site" && rm -rf "$D/caddy/site.old"
+fi
 
 rollback() {
   echo "发布失败，回滚到 ${PREV:-（无上一个标签）}" >&2
