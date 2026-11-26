@@ -347,7 +347,8 @@ final class Walker {
     /// 只用来导航的「返回」：不当作待测入口（每次回原页都在按它）
     static let navigationOnly: Set<String> = ["返回"]
     /// 点了就离开当前会话、回不来的入口（S22b 退出登录的确认）：遍历不点，它的排空流程由 S22bTests / S22bLiveUITests 测
-    static let terminal: Set<String> = ["logout.confirm"]
+    /// 设置页底的备案号是外链，点了 Safari 到前台、App 进后台，遍历也不点；点了打开 Safari 由 ICPFooterUITests 测
+    static let terminal: Set<String> = ["logout.confirm", "settings.icp"]
     /// 允许置灰的入口（页面 · 标识）：卖出页空篮时的「收好钱了，记账」和「抹零 / 改总价」（S16 验收：空篮置灰）
     /// 空篮时记账、改价灰；手输条码页没选中候选时「加进去」灰（§5.5，S17）
     /// 「待传的账」点了「再传一次」后变灰至少 1 秒（PR #45 Fable 裁定 6）
