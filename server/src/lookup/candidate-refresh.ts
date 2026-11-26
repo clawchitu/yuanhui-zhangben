@@ -100,10 +100,10 @@ export async function candidatesWithRefresh(
 }
 
 /**
- * 查码接口用（家用 / 审核，命中缓存时）：决定这次怎么登记、回什么现状。
+ * 查码接口用（命中缓存时，所有身份）：决定这次登不登记、回什么现状。
  * - 缓存里的地址已过期、条码还一行候选都没有：不拿过期地址去登记（下下来全失败）；
- * - 登记后（或本来就）一张能用的都没有、而今天还能刷新：回 pending（ids 空），手机接着轮询 GET .../images，由那里刷新。
- * 返回 null = 照旧登记、照旧回 candidateView
+ * - 一张能用的都没有、而今天还能刷新：回 pending（ids 空），手机接着轮询 GET .../images，由那里刷新（收银员拿不到这个键）。
+ * 其余照旧：登记（已有行时是空操作）、回 candidateView
  */
 export async function lookupCandidates(d: CandidateDeps, barcode: string, urls: readonly string[]): Promise<{ view: CandidateView; inserted: number }> {
   const now = d.clock();
