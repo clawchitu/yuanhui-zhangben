@@ -132,7 +132,11 @@ final class S23aLiveUITests: XCTestCase {
             el(app, "reports.records").tap()
         }
         XCTAssertTrue(el(app, "page.records").waitForExistence(timeout: 10))
-        let found = { app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'records.card.' AND label CONTAINS %@", text)).count > 0 }
+        // 卡片容器本身的 label 不含商品名（RecordCardView 不合并子元素），要看卡片里的文字
+        let found = {
+            app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'records.card.'"))
+                .containing(NSPredicate(format: "label CONTAINS %@", text)).count > 0
+        }
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline, !found() { RunLoop.current.run(until: Date().addingTimeInterval(0.5)) }
         if !found() { shot(app, "records-timeout"); print(app.debugDescription) }
