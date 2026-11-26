@@ -64,9 +64,36 @@ final class S23bLiveUITests: XCTestCase {
     private func type(_ app: XCUIApplication, _ id: String, _ text: String) {
         let f = app.secureTextFields[id]
         XCTAssertTrue(f.waitForExistence(timeout: 10), "\(id) 存在")
-        for _ in 0..<4 where !f.isHittable { app.swipeUp() }
+        reveal(app, f)
         f.tap()
+        // 点下去焦点没进框（键盘、自动填充条刚弹出来时位置还在变）：再摆一次、再点，最多 3 次
+        for _ in 0..<3 where (f.value(forKey: "hasKeyboardFocus") as? Bool) != true {
+            print("S23B-UI \(id) 没拿到焦点：框 \(f.frame)，键盘 \(app.keyboards.firstMatch.exists ? "\(app.keyboards.firstMatch.frame)" : "无")，滚动区 \(app.scrollViews.firstMatch.frame)")
+            RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+            reveal(app, f)
+            f.tap()
+        }
         f.typeText(text)
+    }
+
+    /// 把元素整个拖进看得见的那一段：滚动区顶上（顶栏下面）到键盘上沿之间。只看 isHittable 不够：
+    /// 被键盘或顶栏盖住的框也算 hittable，点下去点到的是键盘 / 顶栏，焦点进不去
+    private func reveal(_ app: XCUIApplication, _ e: XCUIElement) {
+        let sv = app.scrollViews.firstMatch
+        for _ in 0..<8 {
+            let win = app.windows.firstMatch.frame
+            let kb = app.keyboards.firstMatch
+            let bottom = kb.exists ? kb.frame.minY : (sv.exists ? sv.frame.maxY : win.maxY)
+            let top = sv.exists ? sv.frame.minY : win.minY
+            let f = e.frame
+            let delta: CGFloat
+            if f.maxY > bottom - 8 { delta = -min(f.maxY - bottom + 24, (bottom - top) / 2) }
+            else if f.minY < top + 8 { delta = min(top - f.minY + 24, (bottom - top) / 2) }
+            else { return }
+            let from = sv.exists ? sv : app.windows.firstMatch
+            let start = from.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0)).withOffset(CGVector(dx: 0, dy: (bottom - top) / 2 + (top - from.frame.minY)))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: delta)))
+        }
     }
 
     /// 全新安装、账号密码登录（用户名故意打成大写：服务器不分大小写，账号页显示的是开户时的原样），到首页
@@ -82,14 +109,13 @@ final class S23bLiveUITests: XCTestCase {
         return app
     }
 
-    /// 设置 →「账号与密码」（真点）
-    private func openAccount(_ app: XCUIApplication) {
-        let settings = el(app, "home.settings")
-        XCTAssertTrue(settings.waitForExistence(timeout: 10))
-        settings.tap()
+    /// 重开 App 直接进设置（大字首页的齿轮在另一种版式里），再真点「账号与密码」
+    private func openAccount(_ app: inout XCUIApplication) {
+        app.terminate()
+        app = launch(["-uiRoute", "settings"])
         let item = el(app, "settings.item.account")
-        XCTAssertTrue(item.waitForExistence(timeout: 10))
-        for _ in 0..<4 where !item.isHittable { app.swipeUp() }
+        XCTAssertTrue(item.waitForExistence(timeout: 20))
+        reveal(app, item)
         item.tap()
         XCTAssertTrue(el(app, "page.account").waitForExistence(timeout: 10))
     }
@@ -101,8 +127,8 @@ final class S23bLiveUITests: XCTestCase {
         XCTAssertEqual(other.json["username"] as? String, user, "登录响应带开户时的账号名")
         let otherToken = other.json["token"] as! String
 
-        let app = freshLogin()
-        openAccount(app)
+        var app = freshLogin()
+        openAccount(&app)
         wait("账号名 \(user)") { el(app, "account.username").label.contains(user) }
         XCTAssertFalse(el(app, "account.username").label.contains(user.uppercased()), "显示开户时的原样，不是输的大写")
         shot(app, "live-account")
@@ -113,7 +139,7 @@ final class S23bLiveUITests: XCTestCase {
         type(app, "account.new", newPassword)
         type(app, "account.again", newPassword)
         let change = app.buttons["account.changePassword"]
-        for _ in 0..<4 where !change.isHittable { app.swipeUp() }
+        reveal(app, change)
         change.tap()
         let msg = el(app, "account.passwordMessage")
         XCTAssertTrue(msg.waitForExistence(timeout: 20))

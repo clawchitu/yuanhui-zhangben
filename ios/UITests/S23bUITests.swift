@@ -58,14 +58,41 @@ final class S23bUITests: XCTestCase {
     private func type(_ app: XCUIApplication, _ id: String, _ text: String) {
         let f = app.secureTextFields[id]
         XCTAssertTrue(f.waitForExistence(timeout: 10), "\(id) 存在")
-        for _ in 0..<4 where !f.isHittable { app.swipeUp() }
+        reveal(app, f)
         f.tap()
+        // 点下去焦点没进框（键盘、自动填充条刚弹出来时位置还在变）：再摆一次、再点，最多 3 次
+        for _ in 0..<3 where (f.value(forKey: "hasKeyboardFocus") as? Bool) != true {
+            print("S23B-UI \(id) 没拿到焦点：框 \(f.frame)，键盘 \(app.keyboards.firstMatch.exists ? "\(app.keyboards.firstMatch.frame)" : "无")，滚动区 \(app.scrollViews.firstMatch.frame)")
+            RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+            reveal(app, f)
+            f.tap()
+        }
         f.typeText(text)
     }
 
     private func scrollTo(_ app: XCUIApplication, _ e: XCUIElement) {
         XCTAssertTrue(e.waitForExistence(timeout: 10))
-        for _ in 0..<6 where !e.isHittable { app.swipeUp() }
+        reveal(app, e)
+    }
+
+    /// 把元素整个拖进看得见的那一段：滚动区顶上（顶栏下面）到键盘上沿之间。只看 isHittable 不够：
+    /// 被键盘或顶栏盖住的框也算 hittable，点下去点到的是键盘 / 顶栏，焦点进不去
+    private func reveal(_ app: XCUIApplication, _ e: XCUIElement) {
+        let sv = app.scrollViews.firstMatch
+        for _ in 0..<8 {
+            let win = app.windows.firstMatch.frame
+            let kb = app.keyboards.firstMatch
+            let bottom = kb.exists ? kb.frame.minY : (sv.exists ? sv.frame.maxY : win.maxY)
+            let top = sv.exists ? sv.frame.minY : win.minY
+            let f = e.frame
+            let delta: CGFloat
+            if f.maxY > bottom - 8 { delta = -min(f.maxY - bottom + 24, (bottom - top) / 2) }
+            else if f.minY < top + 8 { delta = min(top - f.minY + 24, (bottom - top) / 2) }
+            else { return }
+            let from = sv.exists ? sv : app.windows.firstMatch
+            let start = from.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0)).withOffset(CGVector(dx: 0, dy: (bottom - top) / 2 + (top - from.frame.minY)))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: delta)))
+        }
     }
 
     // MARK: 入口

@@ -13,7 +13,7 @@ PGBIN="${PGBIN:-/opt/homebrew/opt/postgresql@16/bin}"
 here="$(cd "$(dirname "$0")" && pwd)"
 server="${here}/../../server"
 work=$(mktemp -d /tmp/yh-s23b-live.XXXXXX)
-pgport=55454; port=8799
+pgport=55463; port=8813
 pgpw=$(openssl rand -hex 16); pw=$(openssl rand -hex 12)
 export PGPASSWORD="${pgpw}"
 user="e2e-s23b-$(date +%H%M%S)"
@@ -78,4 +78,5 @@ set -e
 log "写后读：$(readdb)"
 log "服务端日志里的改密码：$(grep -c '/v1/account/password' "${work}/server.log" || true) 条、/v1/me：$(grep -c '/v1/me' "${work}/server.log" || true) 条"
 log "xcodebuild 退出码 ${rc}"
+[[ ${rc} -ne 0 ]] && { log "服务端日志最后 30 行："; tail -30 "${work}/server.log" | cut -c1-400; }
 exit ${rc}
