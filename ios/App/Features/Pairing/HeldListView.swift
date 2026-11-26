@@ -42,12 +42,11 @@ final class HeldModel {
         do {
             let held = try await backend.heldOps()
             let db = db, at = now()
-            items = await Task.detached {
-                held.map { h in
-                    let e = try? db.heldEntry(h)
-                    return Item(op: h, text: e.map { PendingModel.rowText($0, now: at) } ?? h.type, canAccept: h.canAccept)
-                }
-            }.value
+            // 读本机商品名不在主线程（§8 S22a 约束）；拼文字回到主线程
+            let entries = await Task.detached { held.map { try? db.heldEntry($0) } }.value
+            items = zip(held, entries).map { h, e in
+                Item(op: h, text: e.map { PendingModel.rowText($0, now: at) } ?? h.type, canAccept: h.canAccept)
+            }
             error = nil
         } catch {
             self.error = PairingModel.message(error)

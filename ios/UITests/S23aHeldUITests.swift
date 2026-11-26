@@ -124,6 +124,13 @@ final class S23aHeldUITests: XCTestCase {
         wait("退出页也关了") { !self.el(app, "page.logout").exists }
         logout.tap()
         el(app, "logout.confirm").tap()
+        // S22b 的排空流程：这个夹具会话没有待传的、又没接服务器（注销请求发不出去）→「没连上服务器，联网后会自动退出」，
+        // 点「知道了」才回登录页（有待传时的「还有 N 笔待传」由 S22bLiveUITests 断网退出那条验）
+        let pending = el(app, "logout.pending")
+        XCTAssertTrue(pending.waitForExistence(timeout: 20), "走排空流程")
+        XCTAssertEqual(pending.label, "没连上服务器，联网后会自动退出")
+        XCTAssertFalse(el(app, "confirm.sheet").exists, "确认面板已经收起")
+        el(app, "logout.ok").tap()
         XCTAssertTrue(el(app, "page.login").waitForExistence(timeout: 20), "退出到登录页")
     }
 
