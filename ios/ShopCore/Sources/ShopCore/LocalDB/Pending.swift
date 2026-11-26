@@ -179,10 +179,14 @@ extension LocalDB {
     /// op 字节 → 面板一行。商品名优先用 op 里带的，没有再查本机商品表
     static func pendingEntry(_ db: Database, _ r: Row) throws -> PendingEntry? {
         guard let type = OpType(rawValue: r["type"]), let at = parseTimestamp(r["occurred_at"]) else { return nil }
-        let data: Data = r["op_json"]
+        return try describe(db, seq: r["seq"], type: type, data: r["op_json"], at: at)
+    }
+
+    /// op 字节（`{"payload": …}`）→ 面板一行。S23a 待确认的账也走这里
+    static func describe(_ db: Database, seq: Int64, type: OpType, data: Data, at: Date) throws -> PendingEntry? {
         // 读不懂内容也不丢这一行（否则列表少一行、「还有 N 笔」又算上它，数对不上）：只写时间和类型
         guard let p = (try? JSONDecoder().decode(PanelOp.self, from: data))?.payload else {
-            return PendingEntry(id: r["seq"], occurredAt: at, type: type, names: [], quantity: nil, unitName: nil,
+            return PendingEntry(id: seq, occurredAt: at, type: type, names: [], quantity: nil, unitName: nil,
                                 amountFen: nil, priceOnlyEdit: false)
         }
         func productName(_ id: String?) throws -> String? {
@@ -230,7 +234,7 @@ extension LocalDB {
         case .void, .expiryDispose, .lotSnooze:
             break
         }
-        return PendingEntry(id: r["seq"], occurredAt: at, type: type, names: names, quantity: qty, unitName: unit,
+        return PendingEntry(id: seq, occurredAt: at, type: type, names: names, quantity: qty, unitName: unit,
                             amountFen: amount, priceOnlyEdit: priceOnly)
     }
 }

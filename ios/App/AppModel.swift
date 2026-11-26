@@ -26,6 +26,8 @@ struct HomeFigures: Equatable, Sendable {
     /// 21a 右侧小字
     var countSummary: String?       // "11月 数了 86 种"
     var deviceCount: Int?           // 3 台
+    /// S23a：被退出的手机补传上来、等确认的笔数（设置页「待确认的账」；0 不显示）
+    var heldCount = 0
     /// 扫码枪 已连上 / 没连：只有夹具用稿子上的值；nil = 用真实的连接状态（`ScannerGunMonitor`）
     var scannerConnected: Bool?
     /// 手机时钟和服务器差了几分钟（超过 5 分钟才有值，T5 的提醒条）
@@ -291,6 +293,39 @@ final class AppModel {
     var imageChanges: ImageChanges? {
         guard capabilities.has(.productImages), let images, images.enabled else { return nil }
         return images.changes
+    }
+
+    /// S23a：开通页、「已登录的手机」页的状态。没有网络服务（夹具没给桩）时为 nil，页面只出一句「要联网」
+    func makePairingModel() -> PairingModel? {
+        guard let services else { return nil }
+        let tokens = services.tokens, ref = session.tokenRef
+        let backend = DeviceBackend.live(api: services.api) {
+            guard let t = try tokens.token(ref: ref) else { throw DeviceBackend.NoToken() }
+            return t
+        }
+        let m = PairingModel(backend: backend, serverNow: { [weak self] in Date().addingTimeInterval(self?.clockOffset ?? 0) })
+        m.onDevicesChanged = { [weak self] list in
+            self?.figures.deviceCount = list.filter { !$0.revoked }.count
+            self?.figures.heldCount = list.reduce(0) { $0 + $1.heldCount }
+        }
+        return m
+    }
+
+    /// S23a「待确认的账」。记上后马上同步一次（记的账里就有了），设置页的笔数跟着刷新
+    func makeHeldModel() -> HeldModel? {
+        guard let p = makePairingModel() else { return nil }
+        let m = HeldModel(backend: p.backend, db: db, now: { [weak self] in self?.now ?? Date() })
+        m.onAccepted = { [weak self] in
+            self?.sync?.kick()
+            Task { await self?.refreshDeviceCount() }
+        }
+        return m
+    }
+
+    /// 设置页「已登录的手机」右侧的台数（S15-1：来自真数据）。没有网络服务、取不到时不改（夹具保留稿子上的数）
+    func refreshDeviceCount() async {
+        guard capabilities.has(.manageDevices), !offline, let m = makePairingModel() else { return }
+        await m.refreshDevices()
     }
 
     /// 04a 查名称用哪个：正常启动问服务器（真机热修），夹具 / Debug 的 `-uiOffline` 用桩

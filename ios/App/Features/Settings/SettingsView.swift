@@ -30,6 +30,7 @@ struct SettingsView: View {
             .scrollBounceBehavior(.basedOnSize)
         }
         .background(Tokens.Palette.paper.ignoresSafeArea())
+        .task { if !cashier { await model.refreshDeviceCount() } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(Route.settings.pageId)
     }
@@ -66,6 +67,10 @@ struct SettingsView: View {
             }
             if caps.has(.manageDevices) {
                 SettingsLink(.devices, title: "已登录的手机", value: f.deviceCount.map { "\($0) 台" })
+                RowDivider()
+            }
+            if caps.has(.heldOps), f.heldCount > 0 {
+                SettingsLink(.held, title: "待确认的账") { Pill(text: "\(f.heldCount) 笔") }
                 RowDivider()
             }
             scannerRow
