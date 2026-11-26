@@ -73,6 +73,20 @@ final class S23aHeldUITests: XCTestCase {
         XCTAssertEqual(stub.resolves.map(\.1), ["accept", "discard"])
     }
 
+    /// 「不要」时服务器回 404（别的手机已经记上了）：不能提示「这笔不要了」，说「已经处理过了」并从列表去掉
+    func testDiscardGoneSaysHandled() {
+        stub.held = [DeviceStub.heldStockIn(id: Self.a)]
+        stub.goneIds = [Self.a]
+        let app = launch(route: "held")
+        XCTAssertTrue(el(app, "held.discard").waitForExistence(timeout: 10))
+        el(app, "held.discard").tap()
+        XCTAssertTrue(el(app, "held.discard.confirm").waitForExistence(timeout: 5))
+        el(app, "held.discard.confirm").tap()
+        XCTAssertTrue(el(app, "held.empty").waitForExistence(timeout: 10))
+        XCTAssertEqual(el(app, "held.flash").label, "这笔已经处理过了")
+        XCTAssertEqual(stub.resolves.map(\.1), ["discard"])
+    }
+
     /// 账面变了（服务器说只能不要）：列表里一开始就没有「记上」并说明原因；记上时才发现 409 的，按钮也收起来
     func testOnlyDiscardWhenStale() {
         stub.held = [DeviceStub.heldStockIn(id: Self.a, canAccept: false, type: "count"), DeviceStub.heldStockIn(id: Self.b)]

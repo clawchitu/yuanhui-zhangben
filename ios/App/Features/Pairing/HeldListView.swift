@@ -69,9 +69,9 @@ final class HeldModel {
                 remove(item.id)
                 flash = "这笔记不上，服务器没收，已经去掉了"
             case .gone, .discarded:
-                // 别的手机已经处理过了：可能已经记上，同步一次让记的账跟上
+                // 已经处理过了（别的手机，或者这台上一次回包丢了重发）：可能已经记上，同步一次让记的账跟上
                 remove(item.id)
-                flash = "这笔别的手机已经处理过了"
+                flash = "这笔已经处理过了"
                 onAccepted?()
             }
         } catch {
@@ -84,10 +84,16 @@ final class HeldModel {
         busy.insert(item.id)
         defer { busy.remove(item.id) }
         do {
-            _ = try await backend.resolveHeld(item.id, false)
+            let outcome = try await backend.resolveHeld(item.id, false)
             remove(item.id)
             confirmDiscard = nil
-            flash = "这笔不要了"
+            if case .gone = outcome {
+                // 404：别的手机可能已经把它记上了，不能说「不要了」；同步一次让记的账跟上（Opus #57 第 1 轮建议 1）
+                flash = "这笔已经处理过了"
+                onAccepted?()
+            } else {
+                flash = "这笔不要了"
+            }
         } catch {
             // 先关掉确认面板，提示才不会被面板挡住
             confirmDiscard = nil

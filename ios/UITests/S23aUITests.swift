@@ -305,6 +305,7 @@ final class DeviceStub: @unchecked Sendable {
     private var heldValue: [String] = []
     private var staleValue: Set<String> = []
     private var rejectValue: Set<String> = []
+    private var goneValue: Set<String> = []
     private var resolveLog: [(String, String)] = []
     private var last = ""
 
@@ -335,6 +336,8 @@ final class DeviceStub: @unchecked Sendable {
     var staleIds: Set<String> { get { lock.withLock { staleValue } } set { lock.withLock { staleValue = newValue } } }
     /// 这些 id「记上」时服务器跑了没收（200 rejected invalid），这笔就此了结
     var rejectIds: Set<String> { get { lock.withLock { rejectValue } } set { lock.withLock { rejectValue = newValue } } }
+    /// 这些 id 不管记上还是不要都回 404（别的手机已经处理过了）
+    var goneIds: Set<String> { get { lock.withLock { goneValue } } set { lock.withLock { goneValue = newValue } } }
     /// 收到的 resolve：(id, action)
     var resolves: [(String, String)] { lock.withLock { resolveLog } }
 
@@ -421,6 +424,7 @@ final class DeviceStub: @unchecked Sendable {
                 let action = ((try? JSONSerialization.jsonObject(with: body)) as? [String: String])?["action"] ?? ""
                 resolveLog.append((parts[2], action))
                 guard let i = heldValue.firstIndex(where: { $0.contains(#""id":"\#(parts[2])""#) }) else { return (404, #"{"code":"not_found"}"#) }
+                if goneValue.contains(parts[2]) { heldValue.remove(at: i); return (404, #"{"code":"not_found"}"#) }
                 if action == "accept", staleValue.contains(parts[2]) { return (409, #"{"code":"stale"}"#) }
                 heldValue.remove(at: i)
                 if action == "accept", rejectValue.contains(parts[2]) { return (200, #"{"id":"\#(parts[2])","status":"rejected","code":"invalid"}"#) }
