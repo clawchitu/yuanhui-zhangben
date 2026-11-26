@@ -86,6 +86,18 @@ final class S23aHeldUITests: XCTestCase {
         wait("409 后也只能不要") { reasons.count == 2 && app.buttons.matching(identifier: "held.accept").count == 0 }
     }
 
+    /// 记上了但服务器跑了没收（invalid 等，服务器已了结）：这笔从列表去掉、说清楚，不让人再去点「不要」
+    func testAcceptRejectedRemovesWithNote() {
+        stub.held = [DeviceStub.heldStockIn(id: Self.a)]
+        stub.rejectIds = [Self.a]
+        let app = launch(route: "held")
+        XCTAssertTrue(el(app, "held.accept").waitForExistence(timeout: 10))
+        el(app, "held.accept").tap()
+        XCTAssertTrue(el(app, "held.empty").waitForExistence(timeout: 10))
+        XCTAssertEqual(el(app, "held.flash").label, "这笔记不上，服务器没收，已经去掉了")
+        XCTAssertEqual(stub.resolves.map(\.1), ["accept"])
+    }
+
     /// 原来是收银员的手机补传的进货（T37 的老数据）：说明是收银员不能做的
     func testCashierHeldOnlyDiscard() {
         stub.held = [DeviceStub.heldStockIn(id: Self.a, label: "小李", role: "cashier", canAccept: false)]

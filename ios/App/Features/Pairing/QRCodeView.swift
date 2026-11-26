@@ -14,6 +14,8 @@ struct QRCodeView: View {
                 .resizable()
                 .aspectRatio(1, contentMode: .fit)
                 .opacity(dimmed ? 0.12 : 1)
+                // 过期占位只是个样子：糊掉，相机认不出（免得有人对着它扫）
+                .blur(radius: dimmed ? 6 : 0)
         } else {
             Rectangle().fill(Tokens.Palette.mute)
         }

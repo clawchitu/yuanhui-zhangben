@@ -152,12 +152,13 @@ final class S23aLiveUITests: XCTestCase {
         let p = try Self.newProduct(a, name: name)
         XCTAssertEqual(try a.push([Self.sale(p, name: name)]).first?["status"] as? String, "applied")
         let code = try a.pairCode(role: "family")
+        // 20 秒从 B 开始扫码算起（含启动 App、兑码、首次同步、点掉 16），不是从进首页算
+        let t0 = Date()
         let app = scan(code)
         toHome(app)
-        let t0 = Date()
-        log("B 进了首页")
-        waitRecord(app, name, timeout: 20)
-        log("B 看到甲的卖出，用时 \(String(format: "%.1f", Date().timeIntervalSince(t0))) 秒")
+        log("B 进了首页，扫码起 \(String(format: "%.1f", Date().timeIntervalSince(t0))) 秒")
+        waitRecord(app, name, timeout: max(1, 20 - Date().timeIntervalSince(t0)))
+        log("B 看到甲的卖出，扫码起用时 \(String(format: "%.1f", Date().timeIntervalSince(t0))) 秒")
         XCTAssertLessThanOrEqual(Date().timeIntervalSince(t0), 20)
         shot(app, "s23a-live-b-sees-a")
         // 同一个码再扫：另一台扫失败
@@ -254,10 +255,11 @@ final class S23aLiveUITests: XCTestCase {
         shot(app, "s23a-live-held")
         app.buttons["held.accept"].firstMatch.tap()
         XCTAssertTrue(el(app, "held.flash").waitForExistence(timeout: 10))
-        app.terminate()
-        let again = launch(["-uiRoute", "records"])
-        waitRecord(again, name, timeout: 30)
-        shot(again, "s23a-live-held-in-records")
+        // 不重启 App：记上后那次同步（onAccepted → kick）把流水拉下来，回首页进「记的账」就看得到
+        for _ in 0..<4 where !el(app, "page.home").exists { app.buttons["返回"].firstMatch.tap(); RunLoop.current.run(until: Date().addingTimeInterval(0.8)) }
+        XCTAssertTrue(el(app, "page.home").waitForExistence(timeout: 5))
+        waitRecord(app, name, timeout: 30)
+        shot(app, "s23a-live-held-in-records")
         let held = try a.call("GET", "/v1/held-ops").json["held"] as? [[String: Any]] ?? []
         XCTAssertFalse(held.contains { $0["id"] as? String == stock["id"] as? String }, "服务器上这笔已处理")
     }

@@ -65,8 +65,14 @@ final class HeldModel {
                 onAccepted?()
             case .onlyDiscard:
                 if let i = items?.firstIndex(where: { $0.id == item.id }) { items?[i].canAccept = false }
-            case .gone, .discarded:
+            case .rejected:
                 remove(item.id)
+                flash = "这笔记不上，服务器没收，已经去掉了"
+            case .gone, .discarded:
+                // 别的手机已经处理过了：可能已经记上，同步一次让记的账跟上
+                remove(item.id)
+                flash = "这笔别的手机已经处理过了"
+                onAccepted?()
             }
         } catch {
             flash = PairingModel.message(error)
@@ -83,6 +89,8 @@ final class HeldModel {
             confirmDiscard = nil
             flash = "这笔不要了"
         } catch {
+            // 先关掉确认面板，提示才不会被面板挡住
+            confirmDiscard = nil
             flash = PairingModel.message(error)
         }
     }
