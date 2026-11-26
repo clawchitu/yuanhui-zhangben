@@ -238,7 +238,6 @@ final class S23bLiveUITests: XCTestCase {
         XCTAssertTrue(banner.waitForExistence(timeout: 30), "首页提示账号正在注销")
         app.terminate()
         app = launch(["-uiRoute", "sell", "-uiScan", code, "-uiAutoCommit", "-uiProbe"])
-        XCTAssertTrue(el(app, "sell.deleting").waitForExistence(timeout: 20), "卖出页提示注销中")
         XCTAssertTrue(el(app, "sell.done").waitForExistence(timeout: 20), "注销中照样能卖")
         app.terminate()
         app = launch()

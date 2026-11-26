@@ -98,7 +98,8 @@ final class SellTagFitUITests: XCTestCase {
     }
 
     /// 篮子里已经有别的（价签下面还有行；第 3 行起取景框收小）：最新扫的长名在价签里，步进器照样整个露出来
-    /// S23b-2：注销申请中卖出页顶上多一条提示，价签和加减按钮照样整个露在结算条上面（顶栏连提示条一起量）
+    /// S23b-2：注销申请中卖出页的提示只在空篮时浮在虚线框上；篮里有货时价签和加减按钮照样整个露在结算条上面
+    /// （Opus #62 建议 1：提示条放进布局时，iPhone SE 最大字号下加减按钮被挤到结算条后面）
     func testFocusStepperFullyVisibleWhileDeletePending() {
         let until = ["-uiDeletePending", "2099-01-01T00:00:00.000Z"]
         check("deleting-water-axmax", largeText: true, ax: true, scan: [Self.wrap], items: 1, extra: until)

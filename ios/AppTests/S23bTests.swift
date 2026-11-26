@@ -18,6 +18,8 @@ final class S23bTests: XCTestCase {
         var cancelError: Error?
         var meUntil: String?
         var meUsername: String? = "yuanhui"
+        /// `/v1/me` 回来之前等这么久（造「撤回之后旧的 /v1/me 才回来」）
+        var meDelay: Duration = .zero
         var revoked = 2
         func log(_ s: String) { lock.withLock { calls.append(s) } }
         var backend: AccountBackend {
@@ -27,7 +29,8 @@ final class S23bTests: XCTestCase {
                 cancelDeletion: { self.log("cancel"); if let e = self.lock.withLock({ self.cancelError }) { throw e } },
                 me: {
                     self.log("me")
-                    let (until, name) = self.lock.withLock { (self.meUntil, self.meUsername) }
+                    let (until, name, delay) = self.lock.withLock { (self.meUntil, self.meUsername, self.meDelay) }
+                    if delay > .zero { try? await Task.sleep(for: delay) }
                     let json = #"{"role":"family","store":{"name":"元辉烟酒店","is_demo":false},"label":"柜台手机""#
                         + (name.map { #","username":"\#($0)""# } ?? "")
                         + (until.map { #","delete_pending_until":"\#($0)""# } ?? "") + "}"
@@ -118,6 +121,42 @@ final class S23bTests: XCTestCase {
     }
 
     /// 过了 7 天：「正在删除」，不给撤回（点了也不发）；409 时以 /v1/me 为准
+    /// Opus #62 建议 2：进页面发出的 /v1/me 还没回来就撤回成功了；旧的 /v1/me 晚到（还带 delete_pending_until）不把本机标回注销中
+    func testLateMeAfterCancelIgnored() async {
+        let fake = FakeAccount()
+        let until = "2026-11-26T11:48:00.000Z"
+        fake.meUntil = until
+        fake.meDelay = .milliseconds(400)
+        let m = AccountModel(backend: fake.backend, deletePendingUntil: until, now: { self.now })
+        var changed: [String?] = []
+        m.onDeletionChanged = { changed.append($0) }
+        let late = Task { await m.refresh() }
+        try? await Task.sleep(for: .milliseconds(50))
+        await m.cancelDeletion()
+        await late.value
+        XCTAssertEqual(m.deletion, .none, "晚到的 /v1/me 不算")
+        XCTAssertEqual(changed, [nil])
+    }
+
+    /// Opus #62 建议 3：申请时没连上（可能已经办成、回包丢了）：不说「联网后再试」，告诉他怎么确认
+    func testDeleteNetworkFailureMessage() async {
+        let d = DeleteAccountModel(submit: { _ in .failed(.network) }, finished: { _ in XCTFail("不该结束") })
+        d.password = "oldpass1"
+        await d.confirm()
+        XCTAssertEqual(d.message, DeleteAccountModel.networkText)
+        XCTAssertTrue(d.message?.contains("不知道申请上没有") == true)
+        XCTAssertFalse(d.busy)
+    }
+
+    /// Opus #62 建议 4：过了 7 天（正在删除）首页提醒条不再写「点这里撤回」；收银员也不写
+    func testDeletingBannerCancelHintOnlyWithinGrace() {
+        let fam = Capabilities(role: .family)
+        XCTAssertTrue(HomeView.canCancel(fam, until: "2026-11-26T11:48:00.000Z", now: now))
+        XCTAssertFalse(HomeView.canCancel(fam, until: "2026-11-19T11:00:00.000Z", now: now), "过了 7 天")
+        XCTAssertFalse(HomeView.canCancel(Capabilities(role: .cashier), until: "2026-11-26T11:48:00.000Z", now: now))
+        XCTAssertFalse(HomeView.deletingText(pending: 2, canCancel: false).contains("点这里撤回"))
+    }
+
     func testCancelAfterGraceAndConflict() async {
         let fake = FakeAccount()
         let past = "2026-11-19T11:00:00.000Z"   // 早于 now

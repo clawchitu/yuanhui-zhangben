@@ -136,10 +136,16 @@ final class AccountModel {
 
     // MARK: 注销状态
 
+    /// 撤回成功一次加一：在途的 refresh 回来时对不上就丢掉
+    private var refreshGen = 0
+
     /// 进页面问一次服务器（拿不到就用本机记着的）
     func refresh() async {
+        let gen = refreshGen
         guard let me = try? await backend.me() else { return }
         if let name = me.username { onUsername?(name) }
+        // 撤回成功之后才回来的旧 /v1/me 不算（Opus #62 建议 2）
+        guard gen == refreshGen else { return }
         if me.deletePendingUntil != deletePendingUntil {
             deletePendingUntil = me.deletePendingUntil
             onDeletionChanged?(me.deletePendingUntil)
@@ -153,6 +159,7 @@ final class AccountModel {
         defer { cancelling = false }
         do {
             try await backend.cancelDeletion()
+            refreshGen += 1
             deletePendingUntil = nil
             cancelMessage = "已经撤回，账号照常用。没传上去的账会自动补传"
             onDeletionChanged?(nil)
@@ -181,6 +188,7 @@ final class AccountModel {
 /// 23 注销账号页的状态：再输一次密码，确认后先排空待传的账再申请（`AppModel.requestAccountDeletion`）
 @MainActor @Observable
 final class DeleteAccountModel {
+    static let networkText = "没连上服务器，不知道申请上没有。过一会儿退出来，用账号密码重新登录看看：登录后提示「账号正在注销」就是申请上了"
     var password = "" {
         didSet { let c = PasswordRule.clamp(password); if c != password { password = c } }
     }
@@ -207,7 +215,8 @@ final class DeleteAccountModel {
         case .failed(let f):
             busy = false
             if f == .wrongPassword { password = "" }
-            message = AccountModel.text(f, action: "注销")
+            // 申请可能已经到了服务器、办成了，只是回包没回来（Opus #62 建议 3）
+            message = f == .network ? Self.networkText : AccountModel.text(f, action: "注销")
         case .done, .kicked:
             password = ""
             finished(r)

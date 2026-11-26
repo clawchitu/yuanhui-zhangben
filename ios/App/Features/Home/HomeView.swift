@@ -121,6 +121,12 @@ struct HomeView: View {
         return head + "，撤回后会自动补传。" + (canCancel ? "点这里撤回" : "")
     }
 
+    /// 提醒条上写不写「点这里撤回」：要有撤回能力，而且还在 7 天内（过了就是「正在删除」，§14 S03-4；Opus #62 建议 4）
+    static func canCancel(_ caps: Capabilities, until: String?, now: Date) -> Bool {
+        guard caps.has(.account), case .pending = DeletionState.of(until, now: now) else { return false }
+        return true
+    }
+
     @ViewBuilder private func reminderBanner(_ r: HomeReminder) -> some View {
         switch r {
         case .deleting(let n):
@@ -128,7 +134,7 @@ struct HomeView: View {
             NavigationLink(value: caps.has(.account) ? Route.account : Route.pending) {
                 HStack(alignment: .center, spacing: 12) {
                     Image(systemName: "exclamationmark.octagon").font(.system(size: 22, weight: .semibold))
-                    Text(Self.deletingText(pending: n, canCancel: caps.has(.account)))
+                    Text(Self.deletingText(pending: n, canCancel: Self.canCancel(caps, until: model.figures.deletePendingUntil, now: Date())))
                         .font(TypeScale.body.weight(.semibold))
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
