@@ -106,6 +106,10 @@ final class S22dUITests: XCTestCase {
     func testSingleCandidateUsedWithoutAsking() throws {
         readyLookup([Self.cids[0]])
         let app = launch(confirmAfter: 2)
+        // S22d-16：存好之前 04a 名称旁的方块里就是这张候选图（不然只有一张时人从头到尾看不到图）
+        let thumb = el(app, "newProduct.thumb")
+        XCTAssertTrue(thumb.waitForExistence(timeout: 15))
+        wait("04a 方块显示候选图") { (thumb.value as? String) == "候选图" }
         register(app)
         XCTAssertTrue(el(app, "page.sell").waitForExistence(timeout: 10), "直接回卖出页")
         XCTAssertFalse(el(app, "page.newProductImage").exists, "不问")
@@ -133,6 +137,19 @@ final class S22dUITests: XCTestCase {
         }
         app.buttons["imageChoice.use"].tap()
         wait("select 第一张") { self.stub.requests(method: "POST").count == 1 }
+    }
+
+    /// S22d-16（真机 11/26 雪碧）：查码回 pending、1 秒后 /images 才 ready：04a 方块先是首字，候选到了就换成图，不用等存好
+    func testPendingCandidateShownOn04a() {
+        stub.lookup = #"{"found":true,"name":"\#(Self.name)","has_image":true,"image_candidates":{"state":"pending","ids":[]}}"#
+        stub.states = [#"{"state":"ready","ids":["\#(Self.cids[0])","\#(Self.cids[1])"]}"#]
+        let app = launch()
+        let field = el(app, "newProduct.name"), thumb = el(app, "newProduct.thumb")
+        XCTAssertTrue(field.waitForExistence(timeout: 15))
+        wait("查码填上名称") { (field.value as? String) == Self.name }
+        wait("候选到了，方块换成图", timeout: 8) { (thumb.value as? String) == "候选图" }
+        shot(app, "04a-candidate-thumb")
+        XCTAssertTrue(stub.requests(method: "POST").isEmpty, "存好之前不 select")
     }
 
     /// A3：一直 pending，8 秒到了也没有一张：不再问，转成「这个商品还没有图」提示拍照，一个 select 都不发；轮询不超过 8 秒
@@ -220,6 +237,9 @@ final class S22dUITests: XCTestCase {
         readyLookup(Array(Self.cids.prefix(3)))
         for (role, off) in [("cashier", false), ("family", true)] {
             let app = launch(role: role, confirmAfter: 1, off: off)
+            let thumb = el(app, "newProduct.thumb")
+            XCTAssertTrue(thumb.waitForExistence(timeout: 15))
+            XCTAssertEqual(thumb.value as? String, "首字", "\(role) off=\(off) 04a 不显示候选图")
             register(app)
             XCTAssertTrue(el(app, "page.sell").waitForExistence(timeout: 10), "\(role) off=\(off) 直接回卖出页")
             XCTAssertFalse(el(app, "page.newProductImage").exists)
