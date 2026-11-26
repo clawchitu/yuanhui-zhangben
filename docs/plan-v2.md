@@ -1431,7 +1431,7 @@ S09 的 PR（#20）提了 16 条，Fable 审核裁定如下（按评论原文；
 | T34 | PR #41 Fable 可选 1：`SyncEngine` 构造时绑定会话的 deviceId，每轮和提交事务内核对（防旧引擎跨会话串店的理论窗口） | PR #41 Fable | S23a |
 | T35 | PR #41 Fable 可选 5：恢复队列遇 401（店已清除、设备行已删）永久留着，25b/25f 加「这些账已无法补传」的说明 | PR #41 Fable | S23a |
 | T36 | PR #41 Fable 可选 8、9：`relogin` / `liveBoot` / `clearLegacyDemo` 的 `endSession` 移出主线程，`relogin` 结束的会话推迟 logout；同步与恢复上传改专用队列，不阻塞协作线程池 | PR #41 Fable | S23a |
-| T37 | PR #41 Fable 可选 10：held「记上」不看原设备角色（被踢收银员构造的进货也能被家用记上）。待裁定：S23a 显示原角色，或服务端对原角色无权的类型令 `can_accept=false` | PR #41 Fable | S23a |
+| ~~T37~~ | ~~PR #41 Fable 可选 10：held「记上」不看原设备角色（被踢收银员构造的进货也能被家用记上）~~ **已在 S23a 服务端 PR 完成**：被踢设备的 op 推送时再按被踢前的身份复核（`Guard.originalRoleAllows`，只看和收到时间无关的条件），原角色做不了的 `rejected: forbidden`、不进 held；之前已暂存的这类 op `can_accept=false`、记上回 403；`HeldOp` 加 `device_role`（`test/held.original-role.test.ts`） | PR #41 Fable | S23a |
 | T38 | 图片开关关着时服务器对 select / PUT 也回 404：手机还没取到新的 `/v1/config` 前若同步成功 3 次，暂存的选图 / 照片会按「404 满 3 次」丢掉（不算②，见 S22d-10）。可改成发之前确认开关、或 404 只在开关确认开着时计数 | PR #48 Opus 建议 1 | 待排 |
 | T39 | 会话结束时暂存的选图 / 照片随目录删掉，本机店 id 每次登录都是新的，认不出同一家店；若要「换身份后同店接着传」，需要服务器下发店 id | S22d-10、Fable 方案 5 | 待排 |
 

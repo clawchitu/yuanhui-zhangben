@@ -4,7 +4,7 @@
 // 必要时 cost_adjust 归位；原行打 voided_at。算法全在 cost.ts 的 voidEntry，这里只读库、写库。
 // 同一行产生的流水 seq 相邻递增（assertLedger 的 cost_fix 冲销断言依赖它）。已撤销的行跳过：撤销两次第二次无操作。
 // 找不到 target、target 是冲销行或自动生成的行（cost_adjust、cost_fix）→ rejected invalid 并留档。
-import type { Selectable } from "kysely";
+import type { Kysely, Selectable } from "kysely";
 import type { Database } from "../db.ts";
 import type { StoreTx } from "../sync/lock.ts";
 import { Remap } from "../sync/aliases.ts";
@@ -26,7 +26,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * 被撤销的卖出是哪台设备记的、什么时候记的。整批看批次头（批内每一行与批次头同设备、同时间）；
  * 单行只认原始的卖出行（冲销行、进货等返回 undefined → 收银员按「不满足」拒）。payload 还没过 schema，id 格式不对就当找不到。
  */
-export async function voidTargetSale(tx: StoreTx, payload: unknown): Promise<{ deviceId: string; occurredAt: Date } | undefined> {
+export async function voidTargetSale(tx: { trx: Kysely<Database>; storeId: string }, payload: unknown): Promise<{ deviceId: string; occurredAt: Date } | undefined> {
   const t = (payload as VoidPayload | undefined)?.target;
   if (!t || typeof t !== "object") return undefined;
   if (typeof t.batch_id === "string" && UUID.test(t.batch_id)) {

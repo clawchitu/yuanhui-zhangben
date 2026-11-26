@@ -1,11 +1,16 @@
 // 被退出的手机补传上来、等确认的账（§4.5、§7）：`GET /v1/held-ops`、`POST /v1/held-ops/:id/resolve`。只有家用（permissions.json）。
 // 「记上」：店铺锁内按原设备、原 occurred_at 跑同一个处理函数（push.ts 的 HANDLERS），流水带 late_from_revoked；
+// 被踢前的身份做不了的（被踢的收银员补传的进货等，T37）→ 403 forbidden、不改，只能「不要」。
 // 依赖当时账面数的（盘点、期初、补全、处理快过期）版本已变 → 409 stale、不改，只能「不要」。
 // 「不要」：status = rejected、reject_code = discarded。两种都写 resolved_at / resolved_by_device，之后那台手机重发拿到的就是新结果。
 import type { FastifyInstance } from "fastify";
 import type { Kysely } from "kysely";
 import type { Database } from "../db.ts";
 import { authOf } from "../auth/plugin.ts";
+import { identityOf } from "../auth/authenticate.ts";
+import { Guard } from "../auth/guard.ts";
+import type { Identity } from "../auth/permissions.ts";
+import { voidTargetSale } from "../ledger/void.ts";
 import { HANDLERS, type OpResult } from "../sync/push.ts";
 import { withStoreLock } from "../sync/lock.ts";
 import type { OpType } from "../sync/validate.ts";
@@ -32,32 +37,58 @@ async function canAccept(tx: { trx: Kysely<Database>; storeId: string }, type: s
 }
 
 class Stale extends Error {}
+class NotOriginalRole extends Error {}
+
+/**
+ * 被踢前的身份做不了的 op（T37）：S23a 起推送时就拒了，这里挡住之前已经暂存下来的（被踢的收银员补传的进货、盘点等）。
+ * 只能「不要」。
+ */
+async function originalRoleAllows(
+  guard: Guard,
+  tx: { trx: Kysely<Database>; storeId: string },
+  op: { type: string; payload: Record<string, unknown>; deviceId: string; role: "family" | "cashier"; accountKind: string },
+  now: Date,
+): Promise<boolean> {
+  const original = identityOf({ role: op.role, revoked_at: null }, op.accountKind) as Exclude<Identity, "revoked">;
+  return guard.originalRoleAllows(op.type, op.payload, original, {
+    now,
+    config: { demoLoginEnabled: false, recoveryMode: false },
+    callerDeviceId: op.deviceId,
+    ...(op.type === "void" ? { targetSale: await voidTargetSale(tx, op.payload) } : {}),
+  });
+}
 
 export async function heldRoutes(app: FastifyInstance): Promise<void> {
   const db = app.deps.db.kysely;
+  const guard = new Guard();
 
   app.get("/v1/held-ops", async (req) => {
     const a = authOf(req);
     const rows = await db
       .selectFrom("ops as o")
       .innerJoin("devices as d", (j) => j.onRef("d.store_id", "=", "o.store_id").onRef("d.id", "=", "o.device_id"))
-      .select(["o.id", "o.device_id", "d.label", "o.type", "o.occurred_at", "o.payload"])
+      .innerJoin("accounts as a", (j) => j.onRef("a.store_id", "=", "d.store_id").onRef("a.id", "=", "d.account_id"))
+      .select(["o.id", "o.device_id", "d.label", "d.role", "a.kind", "o.type", "o.occurred_at", "o.payload"])
       .where("o.store_id", "=", a.store.id)
       .where("o.status", "=", "held")
       .orderBy("o.received_at")
       .orderBy("o.id")
       .execute();
     const held = [];
+    const tx = { trx: db, storeId: a.store.id };
     for (const r of rows) {
       const payload = r.payload as Record<string, unknown>;
       held.push({
         id: r.id,
         device_id: r.device_id,
         device_label: r.label,
+        device_role: r.role,
         type: r.type,
         occurred_at: r.occurred_at.toISOString(),
         payload,
-        can_accept: await canAccept({ trx: db, storeId: a.store.id }, r.type, payload),
+        can_accept:
+          (await originalRoleAllows(guard, tx, { type: r.type, payload, deviceId: r.device_id, role: r.role, accountKind: r.kind }, req.receivedAt)) &&
+          (await canAccept(tx, r.type, payload)),
       });
     }
     return { held };
@@ -85,6 +116,12 @@ export async function heldRoutes(app: FastifyInstance): Promise<void> {
           if (req.body.action === "discard") {
             out = { id, status: "rejected", code: "discarded" };
           } else {
+            const dev = await tx.trx.selectFrom("devices as d")
+              .innerJoin("accounts as a", (j) => j.onRef("a.store_id", "=", "d.store_id").onRef("a.id", "=", "d.account_id"))
+              .select(["d.role", "a.kind"]).where("d.store_id", "=", tx.storeId).where("d.id", "=", op.device_id).executeTakeFirstOrThrow();
+            if (!(await originalRoleAllows(guard, tx, { type: op.type, payload, deviceId: op.device_id, role: dev.role, accountKind: dev.kind }, now))) {
+              throw new NotOriginalRole();
+            }
             if (!(await canAccept(tx, op.type, payload))) throw new Stale();
             const flags = { ...(op.flags as Record<string, unknown>), late_from_revoked: true };
             await tx.trx.updateTable("ops").set({ status: "applied", flags: JSON.stringify(flags), resolved_at: now, resolved_by_device: a.device.id })
@@ -107,6 +144,7 @@ export async function heldRoutes(app: FastifyInstance): Promise<void> {
         if (!result) return sendError(reply, 404, "not_found");
         return result;
       } catch (e) {
+        if (e instanceof NotOriginalRole) return sendError(reply, 403, "forbidden", { message: "这台手机原来是收银员的，这笔只能不要" });
         if (e instanceof Stale) return sendError(reply, 409, "stale", { message: "账面已经变了，只能不要，重新盘一次" });
         throw e;
       }
