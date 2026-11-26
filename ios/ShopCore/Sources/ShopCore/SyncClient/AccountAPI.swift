@@ -101,7 +101,7 @@ extension APIClient {
         return r.revoked
     }
 
-    /// `GET /v1/me`：角色、店名、设备名、注销状态
+    /// `GET /v1/me`：角色、店名、设备名、账号名、注销状态
     public func me(token: String) async throws -> AccountMe {
         try await send("GET", "/v1/me", body: nil as [String: String]?, token: token, timeoutMs: 10_000)
     }

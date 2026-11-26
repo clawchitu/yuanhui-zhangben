@@ -108,9 +108,10 @@ final class AppServices {
         let ref = TokenRef.forDevice(deviceId)
         try tokens.save(grant.token, ref: ref)
         if grant.store.isDemo == true { defaults.set(deviceId.uuidString, forKey: AuthDefaults.demoDeviceId) }
-        // S23b：服务器给了账号名（家用设备的会话）就记下，「账号与密码」页显示
-        if let name = grant.username { rememberUsername(name, deviceId: deviceId) }
         else { defaults.removeObject(forKey: AuthDefaults.demoDeviceId) }
+        // S23b：服务器给了账号名（家用设备的会话）就记下，「账号与密码」页显示；没给的（收银员）把上一个会话的清掉
+        if let name = grant.username { rememberUsername(name, deviceId: deviceId) }
+        else { defaults.removeObject(forKey: AuthDefaults.sessionUsername) }
         let s = try LocalSession(deviceId: deviceId, storeId: UUID(), role: grant.role, tokenRef: ref,
                                  storeName: grant.store.name, deviceLabel: grant.label)
         do {

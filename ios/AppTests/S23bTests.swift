@@ -113,6 +113,31 @@ final class S23bTests: XCTestCase {
         let cashier = UUID()
         _ = try await services.establish(try grant("", role: "cashier"), deviceId: cashier, db: db)
         XCTAssertNil(services.username(deviceId: cashier))
+        XCTAssertNil(services.username(deviceId: id), "换了会话、新会话没给账号名：上一个的清掉")
+    }
+
+    /// 自审必须修 1：记账号名不能动「演示店会话」的标记（S22c 演示店不请求商品图）。
+    /// 演示店里开通的收银员（响应 is_demo、不带 username）仍是演示会话；之后普通家用登录清掉标记
+    func testEstablishKeepsDemoFlag() async throws {
+        let db = try LocalDB.inMemory()
+        let bases = try XCTUnwrap(APIBaseStore(defaultBase: "https://api.yuanhuishop.cn",
+                                               policy: APIBasePolicy(hosts: ["api.yuanhuishop.cn"]), defaults: defaults))
+        let services = AppServices(api: APIClient(bases: bases), tokens: MemoryTokenStore(), defaults: defaults, build: 1)
+        func grant(demo: Bool, role: String, extra: String) throws -> SessionGrant {
+            try JSONDecoder().decode(SessionGrant.self, from: Data(#"""
+                {"token":"t","role":"\#(role)","store":{"name":"演示小店","is_demo":\#(demo)},"label":"x","epoch":"\#(UUID().uuidString)"\#(extra)}
+                """#.utf8))
+        }
+        let demoCashier = UUID()
+        _ = try await services.establish(try grant(demo: true, role: "cashier", extra: ""), deviceId: demoCashier, db: db)
+        XCTAssertTrue(services.isDemoSession(demoCashier))
+        let demoFamily = UUID()
+        _ = try await services.establish(try grant(demo: true, role: "family", extra: #","username":"review""#), deviceId: demoFamily, db: db)
+        XCTAssertTrue(services.isDemoSession(demoFamily))
+        let family = UUID()
+        _ = try await services.establish(try grant(demo: false, role: "family", extra: #","username":"yuanhui""#), deviceId: family, db: db)
+        XCTAssertFalse(services.isDemoSession(family))
+        XCTAssertFalse(services.isDemoSession(demoFamily))
     }
 
     /// 本机没记着账号名：进「账号与密码」问 `/v1/me`，拿到就交给 App 记下；没给（旧服务器）不动
