@@ -155,6 +155,8 @@ final class S23aUITests: XCTestCase {
         XCTAssertTrue(title.waitForExistence(timeout: 5))
         XCTAssertEqual(title.label, "让「爸爸的手机」退出？")
         XCTAssertTrue(app.staticTexts["退出后它要重新扫码才能用。还没传上去的账会先传完。"].exists)
+        // 抽屉里的字跟着大字模式：标题行高大字时约 32pt，抽屉没带上字号时约 25pt（只按系统默认字号）
+        XCTAssertGreaterThan(title.frame.height, 29, "确认面板标题按大字模式显示：\(title.frame.height)")
         shot(app, "26")
         el(app, "devices.revoke.cancel").tap()
         wait("面板关上") { !self.el(app, "confirm.title").exists }

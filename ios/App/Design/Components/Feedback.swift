@@ -153,6 +153,8 @@ struct ConfirmSheetModifier<Item: Identifiable, Panel: View>: ViewModifier {
             }
             .scrollBounceBehavior(.basedOnSize)
             .background(Tokens.Palette.card)
+            // 抽屉是新的呈现层，不继承根视图上大字模式夹的字号范围，这里把弹出它的页面当时的字号带进去
+            .dynamicTypeSize(typeSize)
             .presentationDetents(typeSize.isAccessibilitySize ? [.large] : [.medium, .large])
             .presentationCornerRadius(Tokens.Radius.sheet)
             .accessibilityElement(children: .contain)
