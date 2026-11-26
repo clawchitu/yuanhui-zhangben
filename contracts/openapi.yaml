@@ -221,7 +221,7 @@ paths:
       tags: [查询]
       operationId: barcodeImageCandidates
       summary: 条码的商品图候选（S22d，供轮询）
-      description: 平时只读库、不调快鸟；一张能用的候选都没有且条码库地址已过期时，服务器重新问一次快鸟再登记、回 pending（每条码每天最多一次，plan-v2 §14 S22d-15）。每设备每分钟 60 次（超了 429 rate_limited）。图片开关关着 404；演示店恒为 `{state:none, ids:[]}`。收银员 403。
+      description: 只读库、不调快鸟。每设备每分钟 60 次（超了 429 rate_limited）。图片开关关着 404；演示店恒为 `{state:none, ids:[]}`。收银员 403。
       x-permission: GET /v1/barcode-lookup/{barcode}/images
       parameters:
         - name: barcode
