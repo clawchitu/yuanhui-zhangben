@@ -111,16 +111,60 @@ final class S24LiveUITests: XCTestCase {
             let e = el(app, "reports.low.\(i)")
             reveal(app, e)
             XCTAssertTrue(e.label.contains(it["name"] as! String), e.label)
-            XCTAssertEqual(e.value as? String, String(Self.int(it["qty"])))
-            log("reports.low.\(i)「\(e.label)」")
+            let q = Self.int(it["qty"])
+            XCTAssertEqual(e.value as? String, String(q))
+            // 看得见的字：库存 ≤ 0「没货了」，否则「还剩 <接口的数> <单位>」
+            XCTAssertTrue(q <= 0 ? e.label.hasSuffix(", 没货了") : e.label.contains(", 还剩 \(q) "), "\(e.label) / 接口 \(q)")
+            log("reports.low.\(i)「\(e.label)」= 接口 \(q)")
         }
         for (i, it) in ((t["expiring"] as? [[String: Any]]) ?? []).prefix(2).enumerated() {
             let e = el(app, "reports.expiring.\(i)")
             reveal(app, e)
             XCTAssertTrue(e.label.contains(it["name"] as! String), e.label)
             XCTAssertEqual(e.value as? String, it["expiry_date"] as? String)
+            // 「已过期 / 今天到期 / N 天后」按接口的 date（服务器的今天）和 expiry_date 算
+            let days = Self.dayDiff(it["expiry_date"] as! String, t["date"] as! String)
+            let want = days < 0 ? "已过期" : days == 0 ? "今天到期" : "\(days) 天后"
+            XCTAssertTrue(e.label.hasSuffix(", \(want)"), "\(e.label) / 应为 \(want)")
             log("reports.expiring.\(i)「\(e.label)」")
         }
+    }
+
+    static func dayDiff(_ a: String, _ b: String) -> Int {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.timeZone = TimeZone(identifier: "UTC")
+        return Int((f.date(from: a)!.timeIntervalSince(f.date(from: b)!) / 86_400).rounded())
+    }
+
+    /// 柱状图：图例「今天」「最多」= 接口 daily 里今天（上海）那天、最多那天；点一根柱子，写出来的数 = 接口那天的 sold_fen
+    private func checkChart(_ app: XCUIApplication, _ m: [String: Any]) {
+        let daily = (m["daily"] as? [[String: Any]]) ?? []
+        let sold = Dictionary(uniqueKeysWithValues: daily.map { ($0["date"] as! String, Self.int($0["sold_fen"])) })
+        let chart = el(app, "reports.chart")
+        reveal(app, chart)
+        let today = ISO8601DateFormatter.string(from: Date(), timeZone: TimeZone(identifier: "Asia/Shanghai")!, formatOptions: [.withFullDate])
+        if let t = sold[today] {
+            XCTAssertTrue(el(app, "reports.chart.today").label.hasSuffix("今天 \(Self.compact(t).dropFirst())"), el(app, "reports.chart.today").label)
+            log("图例「\(el(app, "reports.chart.today").label)」= 接口 \(today) \(t)")
+        } else {
+            XCTAssertFalse(el(app, "reports.chart.today").exists, "接口里没有今天，图例不写今天")
+        }
+        if let mx = sold.values.filter({ $0 > 0 }).max() {
+            XCTAssertTrue(el(app, "reports.chart.max").label.hasSuffix("最多 \(Self.compact(mx).dropFirst())"), el(app, "reports.chart.max").label)
+            log("图例「\(el(app, "reports.chart.max").label)」= 接口最多 \(mx)")
+        }
+        // 点在 19 日附近（夹具 1–20 日都有数）
+        let days = daily.count
+        guard days > 0 else { return }
+        chart.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5)).tap()
+        let sel = el(app, "reports.chart.selected")
+        XCTAssertTrue(sel.waitForExistence(timeout: 5), "点了柱子显示数值")
+        let day = Int(sel.label.components(separatedBy: "月")[1].components(separatedBy: "日")[0]) ?? 0
+        let date = "\((m["month"] as! String))-\(String(format: "%02d", day))"
+        let want = sold[date] ?? Int64.min
+        XCTAssertEqual(sel.value as? String, String(want), "点中 \(date)：\(sel.label)")
+        XCTAssertTrue(sel.label.hasSuffix("卖了 \(Self.money(want))"), "\(sel.label) / 接口 \(want)")
+        log("点柱子「\(sel.label)」= 接口 \(date) \(want)")
+        chart.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.5)).tap()
     }
 
     /// 「有 N 样进价没填」「有 N 笔损耗没算进价」：N 和接口一致，为 0 不显示
@@ -148,6 +192,7 @@ final class S24LiveUITests: XCTestCase {
         figure(app, "reports.expireLoss", label: Self.compact(Self.int(m["expire_loss_fen"])), raw: Self.int(m["expire_loss_fen"]))
         checkMissing(app, m)
         // 对账：第一行 = 月初 + 进货，其余每行 = 接口那一行；各行相加 = 最后一行 = 接口的月末货值
+        checkChart(app, m)
         let start = Self.int(rec["stock_value_start_fen"])
         var expect = [start + stockIn]
         expect += rows.filter { $0["key"] as? String != "stock_in" }.map { Self.int($0["amount_fen"]) }
@@ -168,6 +213,8 @@ final class S24LiveUITests: XCTestCase {
         let end = el(app, "reports.recon.end")
         reveal(app, end)
         XCTAssertEqual(end.value as? String, String(Self.int(rec["stock_value_end_fen"])))
+        let endShown = Self.compact(Self.int(rec["stock_value_end_fen"])).dropFirst()
+        XCTAssertTrue(end.label.hasSuffix(", \(endShown)"), "最后一行看得见的数：\(end.label) / 接口 \(endShown)")
         XCTAssertEqual(sum, Self.int(rec["stock_value_end_fen"]), "对账各行相加等于最后一行")
         XCTAssertTrue(end.label.contains(current ? "现在店里货值" : "底店里货值"), end.label)
         log("reports.recon.end「\(end.label)」；各行相加 \(sum)")
