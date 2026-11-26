@@ -101,7 +101,9 @@ struct LogoutView: View {
             ConfirmPanel(title: "退出登录？", message: "退出以后，这台手机上的账要重新登录才能看。待传的账会先传上去。",
                          confirmTitle: "退出登录", cancelTitle: "不退了", mode: .neutral,
                          confirmStyle: .dark, confirmImage: nil, confirmId: "logout.confirm", cancelId: "logout.cancel",
-                         onConfirm: { phase = .working; ask = nil; Task { await run() } },
+                         busy: phase != .confirm,
+                         // 面板收起的动画里再点一下不会再退一次
+                         onConfirm: { guard phase == .confirm else { return }; phase = .working; ask = nil; Task { await run() } },
                          onCancel: { ask = nil })
         }
         .onChange(of: ask == nil) { _, closed in

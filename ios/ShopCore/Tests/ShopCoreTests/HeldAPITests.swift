@@ -33,11 +33,12 @@ import Testing
         #expect(stub.requests.first?.path == "/v1/held-ops")
     }
 
-    /// 记上 / 不要：发 {action}；409 stale、403 forbidden（记上时）= 只能不要；404 = 已经处理过了
+    /// 记上 / 不要：发 {action}；409 stale、403 forbidden（记上时）= 只能不要；404 = 已经处理过了；记上回 rejected = 已了结
     @Test func resolveOutcomes() async throws {
         let id = UUID()
         let replies: [(Int, String)] = [(200, #"{"id":"x","status":"applied"}"#), (200, #"{"id":"x","status":"rejected","code":"discarded"}"#),
-                                        (409, #"{"code":"stale"}"#), (403, #"{"code":"forbidden"}"#), (404, #"{"code":"not_found"}"#)]
+                                        (409, #"{"code":"stale"}"#), (403, #"{"code":"forbidden"}"#), (404, #"{"code":"not_found"}"#),
+                                        (200, #"{"id":"x","status":"rejected","code":"invalid"}"#)]
         let n = LockedCounter()
         let stub = try LocalStub { _ in let r = replies[n.next()]; return .init(status: r.0, body: r.1) }
         defer { stub.stop() }
@@ -47,8 +48,10 @@ import Testing
         #expect(try await api.resolveHeld(id: id, accept: true, token: "t") == .onlyDiscard)
         #expect(try await api.resolveHeld(id: id, accept: true, token: "t") == .onlyDiscard)
         #expect(try await api.resolveHeld(id: id, accept: true, token: "t") == .gone)
+        // 记上后服务器跑了没收（invalid 等）：已经了结，不是「只能不要」
+        #expect(try await api.resolveHeld(id: id, accept: true, token: "t") == .rejected("invalid"))
         let bodies = stub.requests.map { try? JSONSerialization.jsonObject(with: $0.body) as? [String: String] }
-        #expect(bodies.map { $0?["action"] } == ["accept", "discard", "accept", "accept", "accept"])
+        #expect(bodies.map { $0?["action"] } == ["accept", "discard", "accept", "accept", "accept", "accept"])
         #expect(stub.requests.first?.path == "/v1/held-ops/\(id.uuidString.lowercased())/resolve")
     }
 

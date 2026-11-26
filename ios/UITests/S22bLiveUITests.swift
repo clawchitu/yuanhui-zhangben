@@ -96,6 +96,8 @@ final class S22bLiveUITests: XCTestCase {
     private func logoutOffline(expect n: Int) {
         let app = launch(["-uiOffline", "-uiRoute", "settings,logout"])
         XCTAssertTrue(el(app, "page.logout").waitForExistence(timeout: 20))
+        // S23a 起确认在 26 面板里（进页自动弹出），等面板出来再点
+        XCTAssertTrue(el(app, "logout.confirm").waitForExistence(timeout: 10))
         el(app, "logout.confirm").tap()
         XCTAssertTrue(el(app, "logout.pending").waitForExistence(timeout: 30))
         XCTAssertEqual(el(app, "logout.pending").label, "还有 \(n) 笔待传，联网后会自动补传")

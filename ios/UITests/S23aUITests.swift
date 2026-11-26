@@ -94,6 +94,22 @@ final class S23aUITests: XCTestCase {
         XCTAssertTrue(el(app, "pairing.countdown").label.hasPrefix("1:5") || el(app, "pairing.countdown").label.hasPrefix("2:00"))
     }
 
+    /// 从开通页点进「待确认的账」再回来：码接着倒计时、到 0 照样显示过期（离开时停了轮询，回来要接上）
+    func testReturnFromHeldKeepsCountdown() {
+        stub.ttl = 8
+        let app = launch()
+        XCTAssertTrue(el(app, "pairing.qr").waitForExistence(timeout: 15))
+        let go = el(app, "devices.held.旧手机")
+        XCTAssertTrue(go.waitForExistence(timeout: 10))
+        for _ in 0..<4 where !go.isHittable { app.swipeUp() }
+        go.tap()
+        XCTAssertTrue(el(app, "page.held").waitForExistence(timeout: 10))
+        app.buttons["返回"].firstMatch.tap()
+        XCTAssertTrue(el(app, "page.pairing").waitForExistence(timeout: 10))
+        XCTAssertTrue(el(app, "pairing.expired").waitForExistence(timeout: 15), "回来后到 0 显示过期")
+        XCTAssertEqual(el(app, "pairing.renew").label, "换一个新码")
+    }
+
     /// 服务器先说过期了（出码的手机被退出、或服务器的钟快）：照样显示 25d
     func testServerSaysExpired() {
         stub.statusAfterPolls = (1, "expired", nil)
@@ -288,6 +304,7 @@ final class DeviceStub: @unchecked Sendable {
     private var revokeLog: [String] = []
     private var heldValue: [String] = []
     private var staleValue: Set<String> = []
+    private var rejectValue: Set<String> = []
     private var resolveLog: [(String, String)] = []
     private var last = ""
 
@@ -316,6 +333,8 @@ final class DeviceStub: @unchecked Sendable {
     var held: [String] { get { lock.withLock { heldValue } } set { lock.withLock { heldValue = newValue } } }
     /// 这些 id 「记上」回 409 stale
     var staleIds: Set<String> { get { lock.withLock { staleValue } } set { lock.withLock { staleValue = newValue } } }
+    /// 这些 id「记上」时服务器跑了没收（200 rejected invalid），这笔就此了结
+    var rejectIds: Set<String> { get { lock.withLock { rejectValue } } set { lock.withLock { rejectValue = newValue } } }
     /// 收到的 resolve：(id, action)
     var resolves: [(String, String)] { lock.withLock { resolveLog } }
 
@@ -404,6 +423,7 @@ final class DeviceStub: @unchecked Sendable {
                 guard let i = heldValue.firstIndex(where: { $0.contains(#""id":"\#(parts[2])""#) }) else { return (404, #"{"code":"not_found"}"#) }
                 if action == "accept", staleValue.contains(parts[2]) { return (409, #"{"code":"stale"}"#) }
                 heldValue.remove(at: i)
+                if action == "accept", rejectValue.contains(parts[2]) { return (200, #"{"id":"\#(parts[2])","status":"rejected","code":"invalid"}"#) }
                 return (200, action == "accept" ? #"{"id":"\#(parts[2])","status":"applied"}"# : #"{"id":"\#(parts[2])","status":"rejected","code":"discarded"}"#)
             case ("POST", 4) where parts[1] == "devices" && parts[3] == "revoke":
                 revokeLog.append(parts[2])

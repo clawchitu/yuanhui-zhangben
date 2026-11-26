@@ -76,6 +76,8 @@ public enum HeldResolution: Equatable, Sendable {
     case onlyDiscard
     /// 已经被别的手机处理过了（404）
     case gone
+    /// 记上时服务器跑了一遍但没收（200 rejected：invalid、id_conflict 等）：服务器已把这笔了结，不用再点「不要」
+    case rejected(String?)
 }
 
 extension APIClient {
@@ -86,12 +88,13 @@ extension APIClient {
 
     /// 记上 / 不要。服务器在店铺锁里处理、处理过的再处理回 404，所以下发地址连不上时可以退回默认地址重发
     public func resolveHeld(id: UUID, accept: Bool, token: String) async throws -> HeldResolution {
-        struct Result: Decodable { let status: String }
+        struct Result: Decodable { let status: String; let code: String? }
         do {
             let r: Result = try await send("POST", "/v1/held-ops/\(id.uuidString.lowercased())/resolve",
                                            body: ["action": accept ? "accept" : "discard"], token: token)
             if !accept { return .discarded }
-            return r.status == "applied" ? .accepted : .onlyDiscard
+            // held.ts：处理函数又回了 held 的也按记上存（status 改 applied）；rejected 的已经了结
+            return r.status == "rejected" ? .rejected(r.code) : .accepted
         } catch APIError.server(409, "stale", _, _) {
             return .onlyDiscard
         } catch APIError.server(403, "forbidden", _, _) where accept {

@@ -26,14 +26,22 @@ final class PairingModel {
     var pollInterval: Duration = .seconds(2)
 
     private(set) var tab: Tab = .family
+    /// 上限按码点数算（服务器 ajv 的 maxLength 数的是码点，带 ZWJ 的表情一个字符占好几个码点）
     var cashierName = "" {
-        didSet { if cashierName.count > Self.labelMax { cashierName = String(cashierName.prefix(Self.labelMax)) } }
+        didSet {
+            if cashierName.unicodeScalars.count > Self.labelMax {
+                cashierName = String(String.UnicodeScalarView(cashierName.unicodeScalars.prefix(Self.labelMax)))
+            }
+        }
     }
     private(set) var code: CodeState = .idle
     private(set) var devices: [DeviceInfo]?
     private(set) var devicesError: String?
     /// 「让它退出」确认面板对着的手机（26）
-    var confirmRevoke: DeviceInfo?
+    var confirmRevoke: DeviceInfo? {
+        // 换了一台（或关了面板）：上一台的出错提示不带过去
+        didSet { if confirmRevoke?.id != oldValue?.id { revokeError = nil } }
+    }
     private(set) var revoking = false
     private(set) var revokeError: String?
     /// 设置页「已登录的手机」右侧的台数、「待确认的账」笔数跟着刷新
@@ -52,9 +60,20 @@ final class PairingModel {
 
     // MARK: 切页、出码
 
-    /// 进页面：家人页直接出一个码，并拉一次手机列表
+    /// 进页面：家人页直接出一个码，并拉一次手机列表。
+    /// 从这页点进别的页（「待确认的账」）再回来也会走这里：离开时停了轮询，回来要接上——
+    /// 正在显示的码接着轮询（已经到点的马上显示过期），离开时还在出码的那次结果被丢了，重新出一个
     func appear() {
-        if case .idle = code, tab == .family { newCode() }
+        switch code {
+        case .idle: if tab == .family { newCode() }
+        case .loading: newCode()
+        case .showing(let t, let expires, _):
+            if poll == nil {
+                generation += 1
+                startPolling(t, expires: expires, gen: generation)
+            }
+        case .expired, .used, .failed: break
+        }
         Task { await refreshDevices() }
     }
 
