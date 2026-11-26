@@ -13,9 +13,9 @@ final class SellTagFitUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launch(largeText: Bool, ax: Bool, scan: [String]) -> XCUIApplication {
+    private func launch(largeText: Bool, ax: Bool, scan: [String], role: String = "family") -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-uiFixture", "home", "-uiLargeText", largeText ? "on" : "off", "-uiRoute", "sell",
+        app.launchArguments = ["-uiFixture", "home", "-uiRole", role, "-uiLargeText", largeText ? "on" : "off", "-uiRoute", "sell",
                                "-uiWrapName", "-uiLongName", "-uiScan", scan.joined(separator: ",")] + (ax ? Self.maxAX : [])
         app.launch()
         return app
@@ -102,5 +102,17 @@ final class SellTagFitUITests: XCTestCase {
         check("water-2lines-large", largeText: true, ax: false, scan: [Self.beer, Self.wrap], items: 2)
         check("water-3lines-large", largeText: true, ax: false, scan: [Self.beer, Self.noodle, Self.wrap], items: 3)
         check("maotai-3lines-axmax", largeText: true, ax: true, scan: [Self.beer, Self.noodle, Self.long], items: 3)
+    }
+
+    /// CI 回归（#60）：收银员、大字模式、普通长度的名字——价签用 0 档（照稿子），缩略图在；不能一上来就收到去掉缩略图的 3 档
+    func testCashierNormalNameKeepsThumb() {
+        let app = launch(largeText: true, ax: false, scan: [Self.noodle], role: "cashier")
+        wait("一共 1 件") { el(app, "sell.itemCount").label == "一共 1 件" }
+        XCTAssertTrue(el(app, "sell.qty.focus").waitForExistence(timeout: 5))
+        waitStable(app, el(app, "sell.checkout"))
+        shot(app, "cashier-noodle-large")
+        // 缩略图读屏不读、找不到元素：看名称左边让没让出缩略图的位置（3 档没缩略图，名称贴左边距 16）
+        let tag = el(app, "sell.tag").frame, name = el(app, "priceTag.name").frame
+        XCTAssertGreaterThanOrEqual(name.minX - tag.minX, 16 + 40, "名称左边留着缩略图 \(name) / 价签 \(tag)")
     }
 }

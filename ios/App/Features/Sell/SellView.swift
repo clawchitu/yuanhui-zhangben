@@ -295,7 +295,9 @@ struct FocusLineCard: View {
     private func tag(tight: Int) -> some View {
         PriceTag(name: line.name, caption: caption, unitPriceCents: Int(SellModel.unitPriceFen(line)),
                  initial: ProductNaming.isPlaceholder(line.name) ? nil : line.name.first.map(String.init),
-                 imageRef: Thumb.ref(line.conversion.product), footerVerticalPadding: tight >= 2 ? 2 : 6,
+                 // 隐藏的量高副本不取图（缩略图大小一样，高度不变）：不多下一次图，也不算进「显示了几张图」的调试计数
+                 imageRef: measureTight == nil ? Thumb.ref(line.conversion.product) : nil,
+                 footerVerticalPadding: tight >= 2 ? 2 : 6,
                  compact: true, tight: tight) {
             HStack {
                 Text("买几个").font(TypeScale.body.weight(.bold)).foregroundStyle(Tokens.Palette.ink)
