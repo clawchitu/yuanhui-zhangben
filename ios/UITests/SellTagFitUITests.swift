@@ -13,10 +13,10 @@ final class SellTagFitUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launch(largeText: Bool, ax: Bool, scan: [String], role: String = "family") -> XCUIApplication {
+    private func launch(largeText: Bool, ax: Bool, scan: [String], role: String = "family", extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-uiFixture", "home", "-uiRole", role, "-uiLargeText", largeText ? "on" : "off", "-uiRoute", "sell",
-                               "-uiWrapName", "-uiLongName", "-uiScan", scan.joined(separator: ",")] + (ax ? Self.maxAX : [])
+                               "-uiWrapName", "-uiLongName", "-uiScan", scan.joined(separator: ",")] + (ax ? Self.maxAX : []) + extra
         app.launch()
         return app
     }
@@ -54,8 +54,8 @@ final class SellTagFitUITests: XCTestCase {
         }
     }
 
-    private func check(_ ctx: String, largeText: Bool, ax: Bool, scan: [String], items: Int) {
-        let app = launch(largeText: largeText, ax: ax, scan: scan)
+    private func check(_ ctx: String, largeText: Bool, ax: Bool, scan: [String], items: Int, extra: [String] = []) {
+        let app = launch(largeText: largeText, ax: ax, scan: scan, extra: extra)
         wait("\(ctx)：一共 \(items) 件（现在「\(el(app, "sell.itemCount").label)」）") {
             el(app, "sell.itemCount").label == "一共 \(items) 件"
         }
@@ -98,6 +98,13 @@ final class SellTagFitUITests: XCTestCase {
     }
 
     /// 篮子里已经有别的（价签下面还有行；第 3 行起取景框收小）：最新扫的长名在价签里，步进器照样整个露出来
+    /// S23b-2：注销申请中卖出页顶上多一条提示，价签和加减按钮照样整个露在结算条上面（顶栏连提示条一起量）
+    func testFocusStepperFullyVisibleWhileDeletePending() {
+        let until = ["-uiDeletePending", "2099-01-01T00:00:00.000Z"]
+        check("deleting-water-axmax", largeText: true, ax: true, scan: [Self.wrap], items: 1, extra: until)
+        check("deleting-maotai-3lines-axmax", largeText: true, ax: true, scan: [Self.beer, Self.noodle, Self.long], items: 3, extra: until)
+    }
+
     func testFocusStepperFullyVisibleWithOtherLines() {
         check("water-2lines-large", largeText: true, ax: false, scan: [Self.beer, Self.wrap], items: 2)
         check("water-3lines-large", largeText: true, ax: false, scan: [Self.beer, Self.noodle, Self.wrap], items: 3)

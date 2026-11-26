@@ -34,6 +34,9 @@ struct HomeFigures: Equatable, Sendable {
     var clockSkewMinutes: Int?
     /// S22b：服务器拒收、还没点「知道了」的笔数（「N 笔没记上」提醒条；拒收的不再重试）
     var rejectedCount = 0
+    /// S23b：账号在注销申请中（服务器给的 `delete_pending_until`，来自同步响应、登录响应或 `/v1/me`）。
+    /// 这期间服务器一笔都不应用，手机不推、留在本机（§4.2、§14 S04-2），首页和卖出页提示
+    var deletePendingUntil: String?
 
     /// 设计稿 01 / 02 / 21a 上的数
     static let design = HomeFigures(pendingCount: 0, staleUnsyncedCount: 0, expiringCount: 3,
@@ -64,10 +67,14 @@ enum HomeReminder: Hashable, Sendable {
     case expiring(Int)
     /// 手机时间不准（T5）：差了几分钟
     case clockOff(Int)
+    /// S23b：账号正在注销（`delete_pending_until`），记的账先存在本机。N = 待传笔数
+    case deleting(pending: Int)
 
     /// 要显示哪些提醒、按什么顺序。快过期只给有「处理快过期」能力的手机（收银员没有黄条，S27）
     static func list(_ f: HomeFigures, capabilities: Capabilities) -> [HomeReminder] {
         var r: [HomeReminder] = []
+        // 注销中放最上面：这期间记的账都传不上去（§14 S04-2）
+        if f.deletePendingUntil != nil { r.append(.deleting(pending: f.livePendingCount)) }
         if f.rejectedCount > 0 { r.append(.rejected(f.rejectedCount)) }
         if f.staleUnsyncedCount > 0 {
             r.append(.unsynced(total: max(f.livePendingCount, f.staleUnsyncedCount), overdue: f.staleUnsyncedCount))
@@ -241,6 +248,7 @@ final class AppModel {
         setLivePending(st.totalPendingCount)
         figures.staleUnsyncedCount = st.overdueCount
         figures.rejectedCount = (try? db.rejectedUnseenCount()) ?? 0
+        figures.deletePendingUntil = st.deletePendingUntil
         if let off = clockOffset, abs(off) >= Self.clockSkewThreshold {
             figures.clockSkewMinutes = Int((abs(off) / 60).rounded())
         } else {
@@ -392,6 +400,34 @@ final class AppModel {
 
     // MARK: - S22b 没记上、退出登录
 
+    /// 退出登录、申请注销之前的排空（§4.5、S22b）：停掉定时同步、等在途的那趟跑完，再用当前令牌传一趟（推完 outbox、拉到底）。
+    /// 排空时发现这台手机已经被踢：会话已由引擎退役，剩下的用同一个旧令牌由恢复队列补传，返回 true（调用方按被踢走 25b / 25f）。
+    /// 开写事务、压缩都在后台线程。之后同步协调器不再通知「退出了」，要接着用就调 `resumeSync()`
+    func drainOutbox() async -> Bool {
+        sync?.stop()
+        await sync?.idle()
+        guard let sync else { return false }
+        sync.onSignedOut = nil
+        let db = db
+        let engine = SyncEngine(db: db, appBuild: services?.build ?? 0, transport: sync.transportForDrain)
+        let r = await Task.detached(priority: .userInitiated) { () -> Error? in
+            do { try engine.sync(); return nil } catch { return error }
+        }.value
+        guard case .revoked(let discard)? = r as? SyncError else { return false }
+        if discard { sync.onDiscard?() }   // 演示店重置：令牌也删
+        if let recovery = sync.recovery { _ = await recovery.run() }
+        return true
+    }
+
+    /// 排空之后没退成（申请注销没成功）：同步接着跑，被踢照常通知
+    func resumeSync() {
+        guard let sync else { return }
+        let db = db
+        sync.onSignedOut = { NotificationCenter.default.post(name: AppRoot.signedOut, object: db) }
+        sync.start()
+        sync.kick()
+    }
+
     /// 「N 笔没记上」点「知道了」
     func acknowledgeRejected() {
         try? db.acknowledgeRejected()
@@ -413,26 +449,8 @@ final class AppModel {
     /// PR #41 必须修 1：笔数按**这个会话**（设备 + 店）数，不按「当前会话」（排空中被踢，会话已退役，「当前」就是空的）；
     /// 只要这个会话还有没拿到结果的 op，旧令牌一律不删；排空收到被踢就按被踢流程走，不调 logout。
     func logout() async -> LogoutOutcome {
-        sync?.stop()
-        await sync?.idle()
         let db = db, ref = session.tokenRef, deviceId = session.deviceId, storeId = session.storeId
-        var revoked = false
-        var drainError: Error?
-        if let sync {
-            sync.onSignedOut = nil
-            let engine = SyncEngine(db: db, appBuild: services?.build ?? 0, transport: sync.transportForDrain)
-            let r = await Task.detached(priority: .userInitiated) { () -> Error? in
-                do { try engine.sync(); return nil } catch { return error }
-            }.value
-            if case .revoked? = r as? SyncError { revoked = true }
-            drainError = r
-        }
-        if revoked {
-            if case .revoked(true)? = drainError as? SyncError { sync?.onDiscard?() }   // 演示店重置：令牌也删
-            // 会话已由引擎退役（原因 kicked_*，演示店重置则已丢弃）；剩下的用同一个旧令牌由恢复队列补传
-            if let recovery = sync?.recovery { _ = await recovery.run() }
-            return .kicked
-        }
+        if await drainOutbox() { return .kicked }
         let pending = (try? db.pendingCount(deviceId: deviceId, storeId: storeId)) ?? 1
         var loggedOut = false
         if pending == 0, let services, let token = try? services.tokens.token(ref: ref) {

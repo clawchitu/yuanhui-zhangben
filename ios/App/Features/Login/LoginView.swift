@@ -13,6 +13,18 @@ struct LoginView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
+                if let notice = model.notice {
+                    Text(notice)
+                        .font(TypeScale.body.weight(.bold))
+                        .foregroundStyle(Tokens.Palette.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Tokens.Palette.tagTint, in: RoundedRectangle(cornerRadius: Tokens.Radius.banner))
+                        .padding(.top, 26)
+                        .accessibilityIdentifier("login.notice")
+                }
                 if let lock = model.lockText {
                     lockBanner(lock).padding(.top, 26)
                 }

@@ -200,6 +200,26 @@ describe("注销", () => {
     }
   });
 
+  it("契约（S23b-2）：申请注销请求体不对 → 400，撤回注销没令牌 / 已被退出 → 401，两个码都写在 openapi 里", async () => {
+    const shop = await makeLoginShop(tdb);
+    const app = makeApp(tdb);
+    const boss = await login(app, shop.username);
+    const bad = await app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(boss.token), payload: {} });
+    const anon = await app.inject({ method: "POST", url: "/v1/account/delete-cancel" });
+    // 申请注销让全部设备退出；拿着被退出的令牌来撤回 → 401 revoked（要先用账号密码重新登录）
+    await app.inject({ method: "POST", url: "/v1/account/delete-request", headers: bearer(boss.token), payload: { password: PASSWORD } });
+    const revoked = await app.inject({ method: "POST", url: "/v1/account/delete-cancel", headers: bearer(boss.token) });
+    await app.close();
+    expect([bad.statusCode, bad.json().code]).toEqual([400, "invalid"]);
+    expect([anon.statusCode, anon.json().code]).toEqual([401, "unauthorized"]);
+    expect([revoked.statusCode, revoked.json().code]).toEqual([401, "revoked"]);
+    const api = await loadOpenApi();
+    expect(Object.keys(api.paths["/v1/account/delete-request"].post.responses)).toContain("400");
+    expect(Object.keys(api.paths["/v1/account/delete-cancel"].post.responses)).toContain("401");
+    const v = validatorFor(api.components.schemas.Error);
+    for (const r of [bad, anon, revoked]) expect(v(r.json()), JSON.stringify(v.errors)).toBe(true);
+  });
+
   it("不在注销中撤回 → 409 not_delete_pending；超过 7 天 → 409", async () => {
     const shop = await makeLoginShop(tdb);
     const clock = new TestClock();

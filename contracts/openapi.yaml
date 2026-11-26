@@ -714,6 +714,7 @@ paths:
                 required: [delete_pending_until]
                 properties:
                   delete_pending_until: { $ref: "#/components/schemas/DateTime" }
+        "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
@@ -726,6 +727,7 @@ paths:
       x-permission: POST /v1/account/delete-cancel
       responses:
         "204": { description: 已撤回 }
+        "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
 components:

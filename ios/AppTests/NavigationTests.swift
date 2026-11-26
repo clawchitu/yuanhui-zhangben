@@ -6,7 +6,7 @@ import XCTest
 final class NavigationTests: XCTestCase {
     /// 收银员到不了的页（S15 验收）+ 账号、设备管理、改名（§6.2）
     static let cashierForbidden: Set<Route> = [.stockIn, .reports, .products, .count, .expiry, .pairing,
-                                               .devices, .held, .account, .deviceName]
+                                               .devices, .held, .account, .deleteAccount, .deviceName]
 
     func testRouteGateFollowsCapabilities() {
         let cashier = Capabilities(role: .cashier)

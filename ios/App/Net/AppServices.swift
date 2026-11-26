@@ -116,9 +116,12 @@ final class AppServices {
                                  storeName: grant.store.name, deviceLabel: grant.label)
         do {
             let epoch = grant.epoch
+            let deletePending = grant.deletePendingUntil
             try await Task.detached(priority: .userInitiated) {
                 try db.beginSession(s)
                 try db.setMeta(.serverEpoch, epoch)
+                // S23b：账号在注销申请中（7 天内登录）：开会话时就记下，首页马上提示、可撤回；第一趟同步之前就不推（§14 S04-2）
+                try db.setMeta(.deletePendingUntil, deletePending)
             }.value
         } catch {
             tokens.delete(ref: ref)

@@ -165,4 +165,99 @@ final class S23bLiveUITests: XCTestCase {
         XCTAssertEqual(back.status, 204)
         log("旧密码 401、新密码 200、另一台 /v1/me 200；已改回")
     }
+
+    // MARK: S23b-2 注销
+
+    private static func iso(_ d: Date) -> String {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f.string(from: d)
+    }
+
+    private func syncLabel(_ app: XCUIApplication) -> String {
+        let l = app.descendants(matching: .any).matching(identifier: "syncStatus").allElementsBoundByIndex.map(\.label).joined(separator: " ")
+        for k in ["已同步", "没网"] where l.contains(k) { return k }
+        if let r = l.range(of: #"\d+ 笔待传"#, options: .regularExpression) { return String(l[r]) }
+        return l
+    }
+
+    private func entries(_ token: String, epoch: String) throws -> Int {
+        let r = try call("POST", "/v1/sync", ["epoch": epoch, "cursors": ["catalog": 0, "ledger": 0], "app_build": 1, "ops": []], token: token)
+        XCTAssertEqual(r.status, 200)
+        return ((r.json["changes"] as? [String: Any])?["entries"] as? [Any])?.count ?? -1
+    }
+
+    /// S23b-2：手机上有 1 笔没传 → 确认注销：先排空（这笔入账）再申请，回登录页（说怎么撤回）；
+    /// 7 天内重新登录：首页「账号正在注销」，照样能卖，卖的留在手机上不入账；点提醒条进「账号与密码」撤回 → 自动补传、入账
+    func testB_DeleteRequestHoldsSalesUntilCancel() throws {
+        // 另一台手机（测试进程）登记一个商品
+        let other = try apiLogin(password)
+        let token = other.json["token"] as! String, epoch = other.json["epoch"] as! String
+        let pid = UUID().uuidString.lowercased(), code = "69" + String(Int(Date().timeIntervalSince1970 * 1000) % 100_000_000_000)
+        let up = try call("POST", "/v1/sync", ["epoch": epoch, "cursors": ["catalog": 0, "ledger": 0], "app_build": 1, "pull": false,
+                                               "ops": [["id": UUID().uuidString.lowercased(), "type": "product_upsert", "occurred_at": Self.iso(Date()),
+                                                        "payload": ["product_id": pid, "barcode": code, "name": "S23B 注销联调水", "price_fen": 300,
+                                                                    "quick": false, "base_unit": "瓶"]]]], token: token)
+        XCTAssertEqual((up.json["results"] as? [[String: Any]])?.first?["status"] as? String, "applied")
+        let before = try entries(token, epoch: epoch)
+        XCTAssertGreaterThanOrEqual(before, 0, "拉得到流水")
+
+        // App：登录，同步拉到商品后断网卖 1 笔（留在本机待传）
+        var app = freshLogin()
+        wait("已同步", timeout: 60) { syncLabel(app) == "已同步" }
+        app.terminate()
+        app = launch(["-uiOffline", "-uiRoute", "sell", "-uiScan", code, "-uiAutoCommit", "-uiProbe"])
+        XCTAssertTrue(el(app, "sell.done").waitForExistence(timeout: 20), "断网也记好了")
+        app.terminate()
+
+        // 联网 → 设置 → 账号与密码 → 注销账号 → 输密码 → 确认注销
+        app = launch()
+        XCTAssertTrue(el(app, "page.home").waitForExistence(timeout: 30))
+        openAccount(&app)
+        let link = el(app, "settings.item.deleteAccount")
+        reveal(app, link)
+        link.tap()
+        XCTAssertTrue(el(app, "page.deleteAccount").waitForExistence(timeout: 10))
+        type(app, "deleteAccount.password", password)
+        app.buttons["deleteAccount.confirm"].tap()
+        XCTAssertTrue(el(app, "page.login").waitForExistence(timeout: 60), "申请后回登录页")
+        let notice = el(app, "login.notice")
+        XCTAssertTrue(notice.waitForExistence(timeout: 10))
+        XCTAssertTrue(notice.label.contains("可以撤回"), notice.label)
+        shot(app, "live-login-after-delete")
+        log("登录页：\(notice.label)")
+        XCTAssertEqual(try call("GET", "/v1/me", token: token).status, 401, "申请注销让全部手机退出（含另一台）")
+        // 7 天内重新登录：注销中（拉取照常，用新令牌数流水）
+        let again = try apiLogin(password)
+        XCTAssertNotNil(again.json["delete_pending_until"], "注销中登录响应带 delete_pending_until")
+        let token2 = again.json["token"] as! String, epoch2 = again.json["epoch"] as! String
+        XCTAssertEqual(try entries(token2, epoch: epoch2), before + 1, "申请之前先把没传的那笔传上去了")
+
+        // App 重新登录：照样能卖，卖的不入账
+        app.terminate()
+        app = freshLogin()
+        let banner = el(app, "home.banner.deleting")
+        XCTAssertTrue(banner.waitForExistence(timeout: 30), "首页提示账号正在注销")
+        app.terminate()
+        app = launch(["-uiRoute", "sell", "-uiScan", code, "-uiAutoCommit", "-uiProbe"])
+        XCTAssertTrue(el(app, "sell.deleting").waitForExistence(timeout: 20), "卖出页提示注销中")
+        XCTAssertTrue(el(app, "sell.done").waitForExistence(timeout: 20), "注销中照样能卖")
+        app.terminate()
+        app = launch()
+        XCTAssertTrue(el(app, "home.banner.deleting").waitForExistence(timeout: 30))
+        wait("首页提醒条说 1 笔还没记上", timeout: 30) { el(app, "home.banner.deleting").label.contains("1 笔还没记上") }
+        RunLoop.current.run(until: Date().addingTimeInterval(5))
+        XCTAssertEqual(try entries(token2, epoch: epoch2), before + 1, "注销中卖的不入账")
+
+        // 点提醒条进「账号与密码」撤回 → 自动补传
+        el(app, "home.banner.deleting").tap()
+        XCTAssertTrue(el(app, "page.account").waitForExistence(timeout: 10))
+        let cancel = app.buttons["account.cancelDeletion"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10))
+        cancel.tap()
+        let msg = el(app, "account.cancelMessage")
+        XCTAssertTrue(msg.waitForExistence(timeout: 20))
+        log("撤回：\(msg.label)")
+        XCTAssertNil(try call("GET", "/v1/me", token: token2).json["delete_pending_until"], "服务器上撤回了")
+        try wait("撤回后自动补传、入账", timeout: 60) { try entries(token2, epoch: epoch2) == before + 2 }
+        log("流水：申请前 \(before)，排空后 +1，撤回补传后 +2")
+    }
 }

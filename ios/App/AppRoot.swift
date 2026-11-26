@@ -119,6 +119,8 @@ struct AppRoot: View {
             guard let db = note.object as? LocalDB else { return }
             if case .app(let model, _) = boot { model.sync?.stop(); model.images?.shutdown() }
             boot = AppRoot.afterSignOut(db: db, services: services)
+            // S23b：刚申请了注销，登录页顶上说一句怎么撤回
+            if case .signedOut(let login) = boot, let notice = note.userInfo?["notice"] as? String { login.notice = notice }
             Task { await recoverSignedOut() }
         }
         .onReceive(NotificationCenter.default.publisher(for: AppRoot.showLogin)) { note in
@@ -421,9 +423,13 @@ struct AppRoot: View {
                              fixedNow: UIFixture.designNow)
         model.liveRecent = liveRecent
         model.sellFixture = SellFixture.from(args)
-        // S23b：账号名（家用 / 审核默认 yuanhui；none = 本机没记着）
+        // S23b：账号名、注销申请中
         let username = UIFixture.value(for: "-uiUsername", in: args) ?? (role == .cashier ? "none" : "yuanhui")
         model.accountName = username == "none" ? nil : username
+        if let until = UIFixture.value(for: "-uiDeletePending", in: args) {
+            try db.setMeta(.deletePendingUntil, until)
+            model.figures.deletePendingUntil = until
+        }
         // 顶栏待传的 4 秒延迟：夹具里默认不等，带 -uiPendingDelay [秒] 才开
         if args.contains("-uiPendingDelay") {
             model.pendingDelay = .seconds(UIFixture.value(for: "-uiPendingDelay", in: args).flatMap(Double.init) ?? 4)
