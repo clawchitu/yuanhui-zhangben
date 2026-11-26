@@ -39,7 +39,7 @@ struct SettingsView: View {
     @ViewBuilder private var familyBody: some View {
         let f = model.figures
         SettingsCard {
-            largeTextRow(subtitle: "字更大，看得更清楚（只管这台手机）")
+            largeTextRow(subtitle: "字更大，看得更清楚")
             if caps.has(.renameDevice) {
                 RowDivider()
                 SettingsLink(.deviceName, title: "这台手机的名字", value: model.session.deviceLabel)
