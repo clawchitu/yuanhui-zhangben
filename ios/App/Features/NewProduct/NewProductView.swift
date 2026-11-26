@@ -1,5 +1,6 @@
 import ShopCore
 import SwiftUI
+import UIKit
 
 /// 登记 / 整件码做完交给调用方（卖出页把它放进购物篮）
 enum RegistrationOutcome: Equatable {
@@ -160,6 +161,12 @@ struct NewProductView: View {
                         thumbnail: imageChoice?.bytes[cid])
     }
 
+    /// 04a 方块里先显示的候选图：服务器顺序里第一张缩图已经下好的（存好后的选图页默认也选它）
+    private var candidatePreview: UIImage? {
+        guard let choice = imageChoice, let first = choice.usable.first else { return nil }
+        return choice.thumbs[first]
+    }
+
     // MARK: 04a / 04c / 25e
 
     private var basic: some View {
@@ -189,8 +196,18 @@ struct NewProductView: View {
                         .accessibilityIdentifier("newProduct.nameLabel")
                     // 名称框多行：长名自动换行，首字头像与框顶对齐（真机 11/24：单行把「农夫山泉 饮用天然水 550…」截掉了）
                     HStack(alignment: .top, spacing: 12) {
-                        Thumb(initial: initial, size: 64, fill: Tokens.Palette.line.opacity(0.6))
-                            .overlay { if initial == nil { Text("?").font(.system(size: 34, weight: .bold)).foregroundStyle(Tokens.Palette.ink2) } }
+                        // 候选图的第一张一到就放进这个方块（真机 11/26 雪碧：查码 1 秒后图就到了，04a 却一直只显示首字；
+                        // 只有一张时存好后直接用它、不再问，人从头到尾看不到图）。只换方块里的内容，不改 04a 的布局（§14 S22d-7、S22d-16）
+                        let preview = candidatePreview
+                        Thumb(image: preview.map { Image(uiImage: $0) }, initial: initial, size: 64, fill: Tokens.Palette.line.opacity(0.6))
+                            .overlay { if initial == nil, preview == nil { Text("?").font(.system(size: 34, weight: .bold)).foregroundStyle(Tokens.Palette.ink2) } }
+                            .overlay {
+                                Color.clear
+                                    .accessibilityElement()
+                                    .accessibilityLabel("商品图")
+                                    .accessibilityValue(preview == nil ? "首字" : "候选图")
+                                    .accessibilityIdentifier("newProduct.thumb")
+                            }
                         nameBox(lines: nameFocused ? editLines : fit.lines)
                     }
                     // 名称末尾像条码：提示单独在名称框下面，名称一改就清；人点了才去掉（PR #31 Codex 1、Fable 建议 4）
