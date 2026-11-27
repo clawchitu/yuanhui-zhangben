@@ -70,7 +70,8 @@ public enum CountRule {
     /// 「没错」能不能点：账上是负数时数不出这个数，要填实际数
     public static func canConfirmBook(_ book: Int64) -> Bool { book >= 0 }
 
-    /// 本月（上海）的起止（含两头），按 `occurred_at` 的统一格式（固定 +08:00、毫秒）字符串比较
+    /// 本月（上海）的起止（含两头），按 `occurred_at` 的统一格式（固定 +08:00、毫秒）字符串比较：
+    /// 本地库里的时间一律是这个格式（`SyncEngine.normalizeTimestamp`、`Op.formatTimestamp`），所以每月都写到 31 日也对
     public static func monthBounds(_ day: CalendarDate) -> (String, String) {
         let ym = String(format: "%04d-%02d", day.year, day.month)
         return ("\(ym)-01T00:00:00.000+08:00", "\(ym)-31T23:59:59.999+08:00")
@@ -94,7 +95,9 @@ extension LocalDB {
         return try countItem(conv.product.id)
     }
 
-    /// 12a / 12b「去数」：一个商品的账面数（收银员手机没有账面数，返回 nil）
+    /// 12a / 12b「去数」：一个商品的账面数（收银员手机没有账面数，返回 nil）。读的是服务器基线，不叠本机没传的增减：
+    /// 盘点页进来先排空一次（`drainForOnline`），盘点页本身不记别的账，所以这时基线就是服务器现在的。
+    /// 待确认商品照样返回（`product.needsReview`），由页面挡下、让人去 22b 补全
     public func countItem(_ productId: UUID) throws -> CountItem? {
         try writer.read { db in
             let id = try Self.canonicalProductId(db, productId)

@@ -133,6 +133,20 @@ final class CountTests: XCTestCase, @unchecked Sendable {
         XCTAssertNil(try db.countItem(barcode: "6999999999999"))
     }
 
+    /// 商品被合并（本机记了 product_remap）：拿旧 id 去数，认成赢家、用赢家的账面数和版本
+    func testRemappedProductIdCountsTheWinner() throws {
+        let db = try makeDB()
+        let old = UUID()
+        try sqlExec(db, "INSERT INTO product_remap (store_id, old_id, new_id) VALUES (?, ?, ?)",
+                    [DemoSeed.storeId.uuidString, old.uuidString, beer.uuidString])
+        let it = try XCTUnwrap(try db.countItem(old))
+        XCTAssertEqual(it.id, beer)
+        XCTAssertEqual(it.stockQty, 48)
+        guard case .submit(let op) = try db.countOp(productId: old, counted: 47, expectedVer: 1) else { return XCTFail() }
+        XCTAssertEqual((op.payload as? CountPayload)?.productId, beer, "交的是赢家的 id")
+        XCTAssertEqual(try db.countProgress(today: today, alsoCounted: [old]).counted, 1, "刚交的旧 id 也算到赢家上")
+    }
+
     // MARK: - 只能联网：先传完、版本变了先问、stale、确认后重交
 
     final class FakeServer: @unchecked Sendable {
