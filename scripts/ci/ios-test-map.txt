@@ -90,7 +90,8 @@ ui ios/App/Net/ImageChanges.swift    S16UITests S17UITests S18UITests S19UITests
 ui ios/ShopCore/Sources/ShopCore/Basket/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
 ui ios/ShopCore/Sources/ShopCore/Allocation/*  S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
 ui ios/ShopCore/Sources/ShopCore/Expiry/*      S27UITests
-ui ios/ShopCore/Sources/ShopCore/Images/*      S22cUITests S22dUITests S27UITests
+# 商品图缓存和下载：网络层 ProductImages / ImageChanges 在用 → 带上它们那一组，加快过期页（缩略图）
+ui ios/ShopCore/Sources/ShopCore/Images/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S27UITests
 ui ios/ShopCore/Sources/ShopCore/StockIn/*     S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
 
 # ---------- UI 测试里的共用桩（别的类也在用） ----------
