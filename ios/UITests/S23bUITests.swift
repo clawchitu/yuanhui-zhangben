@@ -224,7 +224,10 @@ final class S23bUITests: XCTestCase {
     }
 
     /// 原密码错（401 bad_credentials）、错多了限速（429，retry_after_s 601 → 11 分钟）：按服务器回的码说
-    func testWrongOldPasswordAndRateLimit() {
+    func testWrongOldPasswordAndRateLimit() throws {
+        // 隔离（11/27，负责人定）：本机单跑、连跑 S21–S23b 都过；CI 全量里反复失败（先是「等不到：键盘收起来」，
+        // #78 放宽后又是「等不到：限速」）。查清之前跳过，见 plan-v2 §14 T46
+        try XCTSkipIf(true, "隔离：CI 全量里不稳（plan-v2 §14 T46）")
         let app = launch()
         type(app, "account.old", "wrongpw")
         type(app, "account.new", "newpass88", next: true)
