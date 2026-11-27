@@ -81,9 +81,8 @@ enum Route: String, Hashable, CaseIterable, Sendable {
     /// 还没做的页面在哪一段做（占位页上显示）
     var plannedIn: String? {
         switch self {
-        case .count: "S26"
         case .privacy: "S21"
-        case .logout, .pending, .pairing, .devices, .held, .account, .deleteAccount, .reports, .expiry, .products: nil
+        case .logout, .pending, .pairing, .devices, .held, .account, .deleteAccount, .reports, .expiry, .products, .count: nil
         case .sell, .manualCode, .discount, .stockIn, .settings, .deviceName, .scanner, .records, .undoLast: nil
         }
     }
@@ -106,7 +105,7 @@ struct RouteView: View {
     /// 这条路由在这些能力下出哪种页面（纯函数，单元测试逐个路由 × 身份测）
     enum Content: Equatable {
         case denied, sell, manualCode, discountEntry, stockIn, settings, deviceName, scanner, records, logout, pending, pairing, devices, held
-        case account, deleteAccount, reports, expiry, products, placeholder
+        case account, deleteAccount, reports, expiry, products, count, placeholder
     }
 
     static func content(for route: Route, capabilities: Capabilities) -> Content {
@@ -130,6 +129,7 @@ struct RouteView: View {
         case .reports: return .reports
         case .expiry: return .expiry
         case .products: return .products
+        case .count: return .count
         default: return .placeholder
         }
     }
@@ -162,6 +162,9 @@ struct RouteView: View {
             case .expiry: ExpiryView()
             // 商品（S25）：11 列表 → 22 改商品 / 22b 待确认补全
             case .products: ProductsView()
+            // 盘点（S26）：12a 扫码数 / 12b 还有几种没数；必须联网
+            case .count: CountView(db: model.db, backend: model.makeCountBackend(), clock: { [model] in model.now },
+                                   fixture: model.sellFixture)
             case .placeholder: PlaceholderPage(route: route, layout: model.layout)
             }
         }
