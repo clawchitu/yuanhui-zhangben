@@ -318,7 +318,7 @@ unset A S K
 
 | 触发 | 跑什么 | 大约多久 |
 |---|---|---|
-| PR（改 `ios/**`、`contracts/**`、`scripts/ci/**`、`ios.yml`） | 编译 + 全部单元测试 + 冒烟集 + 按改动路径选的 UI 测试（2 路并行）+ Release / Beta 构建检查 | 10–15 分钟 |
+| PR（改 `ios/**`、`contracts/**`、`scripts/ci/**`、`ios.yml`） | 编译 + 全部单元测试 + 冒烟集 + 按改动路径选的 UI 测试 + Release / Beta 构建检查 | 10–15 分钟 |
 | PR 改到公共层 / 导航 / 数据模型 / 契约 / 没登记的路径 | 全量 | 约 60 分钟 |
 | push 到 main | 全量；main 上同一时间只跑一轮：正在跑的跑完，排队的只留最新一个 | 约 60 分钟 |
 | 每晚北京时间 03:00（schedule） | 全量（和 main 的 push 共用一组排队） | 约 60 分钟 |
@@ -331,4 +331,4 @@ unset A S K
   - 偶发失败（重跑能过）：在 Actions 里对那轮 run 点 Re-run（重跑没完之前仍按红算），或 `gh workflow run ios.yml --ref main`，绿了就解锁。
   - `--fix-main` 还要求 PR 已经 rebase 到 main 红的那次提交之后，防止拿没包含坏提交的旧分支绕过。
 - **锁的本地验证**：`scripts/ci/test-merge-pr-main-lock.sh`（假 gh，不连 GitHub）。
-- **并行测试的克隆**：选测时 xcodebuild 开 2 路并行，在 `~/Library/Developer/XCTestDevices` 下建「Clone N of yuanhui-ci-<run_id>-<attempt>」，跑完自己删；被取消时由工作流最后一步只删名字对得上本次的克隆。
+- **不开并行测试**：11/27 试过 2 路并行（xcodebuild 克隆模拟器），克隆首次启动把这台共用的 Mac 压到 load 100+，UI 测试 35 分钟没跑完，已改回单台串行。
