@@ -278,3 +278,5 @@ private struct ChoiceButton: View {
         .disabled(!enabled)
     }
 }
+
+// CI 选测验证用（临时分支，验完删掉）
