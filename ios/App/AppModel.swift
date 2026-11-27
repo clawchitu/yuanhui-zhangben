@@ -429,6 +429,52 @@ final class AppModel {
         return true
     }
 
+    /// 22b 交补全的通道（S25）：先停掉定时同步、等在途的那趟跑完（不和它同时写本地库、游标不倒退），排空 outbox、
+    /// 拉到底，再单独交 `product_review_complete`；交完让同步接着跑。没有网络服务（夹具）时返回 nil，页面按没网处理。
+    /// Debug 的 `-uiReviewOutcome applied|stale` 换成假通道（UI 测试用）
+    func makeReviewBackend() -> ReviewBackend? {
+        #if DEBUG
+        if let o = UIFixture.value(for: "-uiReviewOutcome", in: ProcessInfo.processInfo.arguments) {
+            return ReviewBackend.fixture(outcome: o, db: db)
+        }
+        #endif
+        guard let sync else { return nil }
+        let db = db, build = services?.build ?? 0, transport = sync.transportForDrain
+        let engine = SyncEngine(db: db, appBuild: build, transport: transport)
+        return ReviewBackend(
+            drain: { [weak self] in
+                await self?.pauseSync()
+                do { try await Task.detached(priority: .userInitiated) { try engine.drainForOnline() }.value } catch {
+                    await self?.afterOnline(error); throw error
+                }
+            },
+            submit: { [weak self] op in
+                do {
+                    let r = try await Task.detached(priority: .userInitiated) { try engine.submitOnline(op) }.value
+                    await self?.afterOnline(nil)
+                    return r
+                } catch { await self?.afterOnline(error); throw error }
+            })
+    }
+
+    private func pauseSync() async {
+        sync?.stop()
+        await sync?.idle()
+    }
+
+    /// 交完（或交不上）：被踢了走 25b / 25f；否则同步接着跑
+    private func afterOnline(_ error: Error?) async {
+        if case .revoked(let discard)? = error as? SyncError {
+            // 和 drainOutbox 一样：被踢了用同一个旧令牌把剩下的补传，再走 25b / 25f
+            if discard { sync?.onDiscard?() }
+            if let recovery = sync?.recovery { _ = await recovery.run() }
+            NotificationCenter.default.post(name: AppRoot.signedOut, object: db)
+            return
+        }
+        sync?.start()
+        sync?.kick()
+    }
+
     /// 排空之后没退成（申请注销没成功）：同步接着跑，被踢照常通知
     func resumeSync() {
         guard let sync else { return }

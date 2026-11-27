@@ -188,7 +188,7 @@ final class NewProductModel {
     var price = YuanInput() { didSet { error = nil; confirmZeroPrice = false } }
 
     // 04b
-    var cost = YuanInput() { didSet { error = nil } }
+    var cost = YuanInput() { didSet { error = nil; confirmZeroCost = false; zeroCostAccepted = false } }
     var qtyText = "" { didSet { if qtyText != DigitsInput.sanitize(qtyText, maxDigits: 7) { qtyText = DigitsInput.sanitize(qtyText, maxDigits: 7) } } }
     var trackExpiry = false
     var year = "" { didSet { if year != DigitsInput.sanitize(year, maxDigits: 4) { year = DigitsInput.sanitize(year, maxDigits: 4) } } }
@@ -202,6 +202,9 @@ final class NewProductModel {
     private(set) var error: String?
     /// 卖价填 0 时等人确认（「卖价是 0 元，确定吗」）：打一个「0」就按 ¥0.00 卖出去太容易误存（PR #30 Fable 建议 2）
     private(set) var confirmZeroPrice = false
+    /// 进价明确填了 0 时等人确认（「进价是 0 元，确定吗」，和进货页一样，§14 T33）。没填（空）是「进价未知」，不问
+    private(set) var confirmZeroCost = false
+    private var zeroCostAccepted = false
     /// 写名称时扣了扫码枪：名称末尾像是打进了一串条码（PR #30 Fable 建议 3）
     private(set) var nameScanNotice: String?
     /// 名称末尾像条码的那串数字：只提示，人点了「是条码，去掉这串数字」才去（PR #31 Codex 必须改 1：不自动删名称）
@@ -295,9 +298,13 @@ final class NewProductModel {
     }
 
     /// 04b「存好」：带期初（货架数量、进价、到期日）和保质期设置
-    func saveMore(confirmedZero: Bool = false) -> PackConversion? {
+    /// 进价填的是 0（不是没填）：第一次只请人确认，`confirmedZeroCost` 为真时照存（§14 T33）
+    func saveMore(confirmedZero: Bool = false, confirmedZeroCost: Bool = false) -> PackConversion? {
         guard canSaveBasic, let p = priceFen, !quick, zeroPriceConfirmed(p, confirmedZero) else { return nil }
         if cost.overLimit { error = "进价最多 ¥\(Money.yuanString(Int(Limits.maxFen)))"; return nil }
+        if confirmedZeroCost { zeroCostAccepted = true }
+        if cost.fen == 0, !zeroCostAccepted { confirmZeroCost = true; return nil }
+        confirmZeroCost = false
         var expiryDate: CalendarDate?
         if trackExpiry, !expiryUnknown, !(year.isEmpty && month.isEmpty && day.isEmpty) {
             guard let y = Int(year), let m = Int(month), let d = Int(day), year.count == 4,
@@ -323,6 +330,8 @@ final class NewProductModel {
     }
 
     func cancelZeroPrice() { confirmZeroPrice = false }
+
+    func cancelZeroCost() { confirmZeroCost = false }
 
     /// 名称框按了回车（扫码枪的后缀是回车，§14 S14-4）：名称末尾是一串 8 位以上的数字，像扫码枪打进来的条码，
     /// 在名称框下面提示一句。名称一个字不动——「配件 12345678」「20261121」这样的名称照原样存（PR #31 Codex 必须改 1）；
