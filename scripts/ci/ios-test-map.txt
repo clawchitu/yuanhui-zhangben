@@ -1,0 +1,97 @@
+# iOS CI 选测规则：PR 改了哪些路径 → 在 PR 上跑哪些 UI 测试。
+# 由 scripts/ci/ios-select-tests.sh 读；改了本文件，跑 scripts/ci/ios-select-tests.sh --self-test 看规则还对不对。
+#
+# PR 上一律跑：干净 checkout 编译 + 全部单元测试（YuanhuiZhangbenTests、ShopCoreTests）+ 下面的冒烟集 + 选出来的 UI 测试，
+# 再跑 Release / Beta 构建检查（release-check.sh）。push 到 main 和每晚（北京时间 03:00）跑全量。
+#
+# 每行一条规则，字段用空格分开，# 开头是注释：
+#   smoke <测试>                 冒烟集：PR 上不管改了什么都跑
+#   full  <路径模式>             改到这些路径 → PR 上直接跑全量（公共层、导航、数据模型、契约）
+#   ui    <路径模式> <测试>...   改到这些路径 → 加跑这些 UI 测试
+#   none  <路径模式>             改到这些路径不加跑 UI 测试（单元测试、截图脚本、CI 自己等，冒烟集照跑）
+# <测试> 写 UI 测试类名（S27UITests），或「类名/方法名」只跑一条。
+# <路径模式> 相对仓库根，shell 通配：* 可以跨目录（ios/App/Features/Expiry/* 包括下面所有文件）。
+#
+# 一个文件按下面的规则逐条匹配：
+#   1. 命中任何一条 full → 整个 PR 全量；
+#   2. 否则收集它命中的所有 ui 规则的测试（可以命中好几条）；
+#   3. 改了 ios/UITests/<类名>.swift 自己 → 自动加跑这个类（不用写规则）；文件名对不上类名（共用的辅助文件）→ 全量；
+#   4. 上面都没命中、也没命中 none → 算「没登记的路径」，整个 PR 全量（宁可多跑）。
+#      加了新的功能目录、新文件夹，在这里补一条 ui 规则，PR 才能只跑选测。
+# 不在 ios/、contracts/ 下的文件（server/、docs/ 等）不参与选测。
+
+# ---------- 冒烟集（单机约 7 分钟；遍历一条约 6 分钟） ----------
+smoke YuanhuiZhangbenUITests/S15UITests/testFamilyTraversalReachesEveryPage
+smoke YuanhuiZhangbenUITests/S15UITests/testCashierSettingsHasExactlyFiveItems
+smoke YuanhuiZhangbenUITests/S16UITests/testSellOneThingFromHomeInTwoTaps
+smoke YuanhuiZhangbenUITests/S16UITests/testThreeCodesCommitOneBatchOfThreeLines
+smoke YuanhuiZhangbenUITests/S20UITests/testUndoOneLine
+smoke YuanhuiZhangbenUITests/S21UITests/testLoginPageContents
+smoke YuanhuiZhangbenUITests/ICPFooterUITests
+
+# ---------- 全量：公共层、导航、数据模型、契约、工程配置 ----------
+full contracts/*
+full ios/project.yml
+full ios/Config/*
+full ios/App/AppModel.swift
+full ios/App/AppRoot.swift
+full ios/App/UIFixture.swift
+full ios/App/Design/*
+full ios/App/Features/Navigation/*
+full ios/App/Net/AppServices.swift
+full ios/App/Net/SyncCoordinator.swift
+full ios/App/Net/RecoveryRunner.swift
+full ios/App/Net/ForegroundRefresh.swift
+full ios/ShopCore/Package.swift
+full ios/ShopCore/Package.resolved
+full ios/ShopCore/scripts/*
+full ios/ShopCore/Sources/ShopCore/ShopCoreError.swift
+full ios/ShopCore/Sources/ShopCore/Models/*
+full ios/ShopCore/Sources/ShopCore/SyncClient/*
+full ios/ShopCore/Sources/ShopCore/LocalDB/*
+full ios/ShopCore/Sources/ShopCore/Ops/*
+full ios/ShopCore/Sources/ShopCore/Roles/*
+full ios/ShopCore/Sources/ShopCore/Money/*
+
+# ---------- 页面 → UI 测试 ----------
+ui ios/App/Features/Account/*      S23bUITests
+ui ios/App/Features/Discount/*     S17UITests
+ui ios/App/Features/Expiry/*       S27UITests
+# 首页是各页的入口：遍历在冒烟集里，这里加首页上的提醒条、大字号
+ui ios/App/Features/Home/*         PendingPanelUITests S27UITests S20UITests S15UITests/testHomeBigButtonsFitAtMaxAccessibilitySize S15UITests/testUnsyncedReminderAboveExpiring
+ui ios/App/Features/Login/*        S21UITests S23aHeldUITests S23bUITests
+ui ios/App/Features/ManualCode/*   S17UITests S16UITests
+ui ios/App/Features/NewProduct/*   S18UITests S22dUITests NameWrapUITests S19UITests
+ui ios/App/Features/Onboarding/*   S21UITests S15UITests/testCashierOnboardingHasNoNaming S15UITests/testFamilyOnboardingHasNaming S15UITests/testOnboardingDefaultsToLargeAndChoiceSurvivesRestart
+ui ios/App/Features/Pairing/*      S23aUITests S23aHeldUITests
+ui ios/App/Features/Pending/*      PendingPanelUITests
+ui ios/App/Features/Records/*      S20UITests
+ui ios/App/Features/Reports/*      S24UITests S20UITests
+ui ios/App/Features/Sell/*         S16UITests S17UITests S18UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests
+ui ios/App/Features/Settings/ScannerStatusView.swift  S14UITests
+ui ios/App/Features/Settings/*     ICPFooterUITests S23aHeldUITests S23bUITests S15UITests/testCashierSettingsHasExactlyFiveItems
+ui ios/App/Features/StockIn/*      S19UITests ScanLayoutUITests S22dUITests
+ui ios/App/Scanner/*               S14UITests S16UITests ScanLayoutUITests
+ui ios/App/Net/APIEnvironment.swift  S21UITests
+ui ios/App/Net/ProductImages.swift   S22cUITests S22dUITests
+ui ios/App/Net/ImageChanges.swift    S22cUITests S22dUITests
+
+# ---------- ShopCore 里不属于数据模型 / 同步的部分 ----------
+ui ios/ShopCore/Sources/ShopCore/Basket/*      S16UITests S17UITests S18UITests
+ui ios/ShopCore/Sources/ShopCore/Allocation/*  S17UITests
+ui ios/ShopCore/Sources/ShopCore/Expiry/*      S27UITests
+ui ios/ShopCore/Sources/ShopCore/Images/*      S22cUITests S22dUITests
+ui ios/ShopCore/Sources/ShopCore/StockIn/*     S19UITests
+
+# ---------- UI 测试里的共用桩（别的类也在用） ----------
+ui ios/UITests/S23aUITests.swift   S23aHeldUITests
+
+# ---------- 不加跑 UI 测试 ----------
+none ios/App/Gallery/*
+none ios/App/Resources/*
+none ios/AppTests/*
+none ios/ShopCore/Tests/*
+none ios/scripts/*
+none ios/Makefile
+none .github/workflows/ios.yml
+none scripts/ci/*

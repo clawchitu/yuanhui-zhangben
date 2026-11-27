@@ -311,3 +311,23 @@ unset A S K
    SQL
    ```
    这一步不推进 `rev`，手机上旧的 `image_ver` 要等商品下次变动才更新；开关关着时手机一律显示首字，不受影响。以后要重开开关，先提裁定处理手机端缓存。
+
+## iOS CI（2026-11-27 起：PR 选测，main 和夜间全量）
+
+跑在这台 Mac mini 上的两个自托管 runner（`~/actions-runner-yuanhui`、`~/actions-runner-yuanhui-2`，标签 `yuanhui`），工作流 `.github/workflows/ios.yml`，作业名 `ios-ci`。
+
+| 触发 | 跑什么 | 大约多久 |
+|---|---|---|
+| PR（改 `ios/**`、`contracts/**`、`scripts/ci/**`、`ios.yml`） | 编译 + 全部单元测试 + 冒烟集 + 按改动路径选的 UI 测试（2 路并行）+ Release / Beta 构建检查 | 10–15 分钟 |
+| PR 改到公共层 / 导航 / 数据模型 / 契约 / 没登记的路径 | 全量 | 约 60 分钟 |
+| push 到 main | 全量；main 上同一时间只跑一轮，新的取消旧的 | 约 60 分钟 |
+| 每晚北京时间 03:00（schedule） | 全量（和 main 的 push 共用一组排队） | 约 60 分钟 |
+| 手动 `gh workflow run ios.yml --ref <分支>` | 全量 | 约 60 分钟 |
+
+- **选测规则**：`scripts/ci/ios-test-map.txt`（冒烟集、全量路径、路径 → UI 测试，文件开头写了格式和匹配规则）。选测脚本 `scripts/ci/ios-select-tests.sh`；改完映射跑 `scripts/ci/ios-select-tests.sh --self-test`，想看某个分支会选什么：`git diff --name-only origin/main...<分支> | scripts/ci/ios-select-tests.sh --files -`。映射里的测试名找不到（改名、删了）时脚本直接失败，不会静默少跑。CI 还会核对选中的每个 UI 测试在日志里确实「passed」。
+- **加新页面 / 新目录**：在映射里补一条 `ui` 规则，否则这个目录的改动一律按全量跑。新写的 UI 测试类改动时自动跑自己，不用登记。
+- **main 红了**：`merge-pr.sh` 查 ios 工作流在 main 上最近一轮跑完的全量（push / schedule / workflow_dispatch，不算被取消的），不是 success 就拒绝合并所有 PR。先看那轮 run 哪条测试红：
+  - 修 main 的 PR：分支上手动触发全量 `gh workflow run ios.yml --ref <分支>`，通过后 `scripts/merge-pr.sh <PR号> --fix-main`；
+  - 偶发失败（重跑能过）：在 Actions 里对那轮 run 点 Re-run，或 `gh workflow run ios.yml --ref main`，绿了就解锁。
+- **锁的本地验证**：`scripts/ci/test-merge-pr-main-lock.sh`（假 gh，不连 GitHub）。
+- **并行测试的克隆**：选测时 xcodebuild 开 2 路并行，在 `~/Library/Developer/XCTestDevices` 下建「Clone N of yuanhui-ci-<run_id>-<attempt>」，跑完自己删；被取消时由工作流最后一步只删名字对得上本次的克隆。

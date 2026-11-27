@@ -14,7 +14,7 @@
 2. `scripts/merge-pr.sh <PR号> [--dry-run]` 在合并前检查：
    - PR 是 open、非草稿、无冲突、目标 main；
    - `server-ci` 在当前 head 上成功；
-   - `ios-ci`：PR 改了 `ios/**`、`contracts/**` 或 `.github/workflows/ios.yml` 时必须成功（`contracts/**` 自 S12 起加入）；没改、工作流没触发时视为不需要；只要出现过就必须成功；
+   - `ios-ci`：PR 改了 `ios/**`、`contracts/**`、`scripts/ci/**` 或 `.github/workflows/ios.yml` 时必须成功（`contracts/**` 自 S12 起加入，`scripts/ci/**` 自 11/27 CI 精简起加入）；没改、工作流没触发时视为不需要；只要出现过就必须成功；
    - PR 评论里有当前 head 推送之后的「Codex 审核：通过」开头的评论，以及「Opus 审核：通过」或「Fable 审核：通过」开头的评论之一（2026-11-24 起第二路是 Opus，Fable 只为兼容旧 PR），每方以最后一条「X 审核：」评论为准；Opus、Fable 当前 head 上任一方最后一条是「不通过」就拒绝。
    - 全过才 `gh pr merge --squash --match-head-commit <sha>`。
 3. 评审结论用 **PR 评论**而不是 `review/codex`、`review/fable` 状态（没有必需检查，状态也拦不住合并，评论更直观）。
@@ -61,3 +61,11 @@ PR #41 的 ios-ci 两次都在 45 分钟时被取消：`xcodebuild test` 本身�
 **现象**：PR #50、#51 和 main 上 #49 合并后的 ios-ci 都在 75 分钟时被取消，测试本身全过。三次 `xcodebuild test`（全量测试、Release 检查、Beta 检查）在打出 `** TEST SUCCEEDED **` 之后都不退出，挂着一个 `simctl diagnose -l -b --timeout=600 …`，每次卡满 600 秒才结束（PR #50 run 45727332462：Release 检查 19:23:36 测完、19:33:37 才退出；全量测试最后一条用例 03:11:34、步骤 03:21:46 结束）。三次共多出约 30 分钟，加上约 40 分钟测试和两次构建，超过 75 分钟。
 
 **改为**：`ios.yml` 的 `xcodebuild test` 和 `ios/scripts/release-check.sh` 加 `-collect-test-diagnostics never`。检查内容、时限不变。代价：用例失败时 xcresult 里不再附 sysdiagnose 级别的模拟器诊断（失败用例本身的日志、截图照样在）。
+
+## D-1127-1 iOS CI 精简：PR 选测，全量挪到 main 和夜间（2026-11-27，负责人同意 Fable 方案）
+
+PR 上的 ios-ci 原来每次跑全量，要 55–65 分钟（S15 遍历四条约 16 分钟、S22d 约 5 分钟），两台 runner 排队时常常再等 1 小时。
+
+**改为**：PR 上跑编译、全部单元测试、冒烟集（含家用全页面遍历）、按 `scripts/ci/ios-test-map.txt` 选出的 UI 测试、Release / Beta 构建检查；改到公共层、导航、数据模型、契约或没登记的路径时自动全量。全量在 push 到 main 后和每晚北京时间 03:00 跑，main 上同一时间只跑一轮，新的取消旧的。`merge-pr.sh` 加了一条：main 最近一轮跑完的 ios 全量不是 success 就拒绝合并（`--fix-main` 例外，要求本 PR head 上手动全量通过）。
+
+代价：PR 上没选中的 UI 测试出问题，要到合并后 main 上的全量才发现，那时 main 红、锁住合并，由合进去的人修。缓解：没登记的路径一律全量；公共层一律全量；夜间兜底。
