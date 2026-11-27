@@ -298,6 +298,8 @@ final class ReviewProductModel {
         let editName = n != (queuedName ?? product.name) ? n : nil
         let editPrice = p != (queuedPrice ?? product.priceFen.raw) ? p : nil
         let link = needsBarcode && !code.isEmpty ? code : nil
+        // 人是对着页面上这一版的账面数数的：排空后服务器版本变了（别的手机又卖了/进了），先让人重新确认，不拿新版本直接交
+        let seenVer = detail.private?.stockVer ?? 0
         let queued = await Task.detached { () -> Result<UUID?, Error> in
             do {
                 if editName != nil || editPrice != nil {
@@ -314,14 +316,14 @@ final class ReviewProductModel {
             if editPrice != nil { queuedPrice = p }
             if let op { linkOp = op; linkedCode = code; barcode = "" }
         }
-        await submit(counted: Int64(counted), costFen: c, baseVer: nil, at: now)
+        await submit(counted: Int64(counted), costFen: c, baseVer: nil, seenVer: seenVer, at: now)
     }
 
     /// stale 之后「对，就是 N 个」：带服务器给的新版本重交
     func confirmStale(at now: Date = Date()) async {
         guard case .stale(let q, let v) = phase, let c = cost.fen else { return }
         phase = .submitting
-        await submit(counted: Int64(counted), costFen: c, baseVer: (v, q), at: now)
+        await submit(counted: Int64(counted), costFen: c, baseVer: (v, q), seenVer: nil, at: now)
     }
 
     /// stale 之后「再数一下」：回到页面改数，改好再点「确认，存好」
@@ -334,10 +336,11 @@ final class ReviewProductModel {
 
     func cancelZero() { confirmZero = nil }
 
-    private func submit(counted: Int64, costFen: Int64, baseVer: (Int64, Int64)?, at now: Date) async {
+    /// `baseVer`：stale 后人确认过的服务器版本；`seenVer`：第一次交时页面上显示的账面版本（排空后变了就先回 stale 让人确认）
+    private func submit(counted: Int64, costFen: Int64, baseVer: (Int64, Int64)?, seenVer: Int64?, at now: Date) async {
         guard let backend else { phase = .editing; return }
         needsResume = false
-        await submitSteps(backend, counted: counted, costFen: costFen, baseVer: baseVer, at: now)
+        await submitSteps(backend, counted: counted, costFen: costFen, baseVer: baseVer, seenVer: seenVer, at: now)
         if needsResume { await backend.finish() }
     }
 
@@ -345,7 +348,8 @@ final class ReviewProductModel {
     /// 走到了 submit 就由 submit 自己接着跑（被踢了不能再起同步），这里不再重复
     private var needsResume = false
 
-    private func submitSteps(_ backend: ReviewBackend, counted: Int64, costFen: Int64, baseVer: (Int64, Int64)?, at now: Date) async {
+    private func submitSteps(_ backend: ReviewBackend, counted: Int64, costFen: Int64, baseVer: (Int64, Int64)?, seenVer: Int64?,
+                             at now: Date) async {
         let pid = product.id, db = db, track = trackExpiry
         do {
             // 2. 先把本机的账（含上面的修改）传完、拉到底；之后本机的基线就是服务器现在的
@@ -363,6 +367,11 @@ final class ReviewProductModel {
             // 已经不是待确认（上一次其实交上去了、或者别的手机先补全了）：不再交第二次
             guard d.product.needsReview else { phase = .done; return }
             let base = baseVer ?? (d.private?.stockVer ?? 0, d.stockQty ?? 0)
+            // 排空拉到了别的手机的新账（版本和人数货时看到的不一样）：不交，先问「账上现在是 N 个，你数的还对吗」
+            if baseVer == nil, let seenVer, base.0 != seenVer {
+                phase = .stale(stockQty: base.1, stockVer: base.0)
+                return
+            }
             var ver = base.0
             let qty = base.1
             #if DEBUG

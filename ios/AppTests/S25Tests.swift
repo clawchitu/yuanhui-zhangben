@@ -240,6 +240,27 @@ final class S25Tests: XCTestCase {
         XCTAssertEqual(m.phase, .done)
     }
 
+    /// Codex r1：数货后、交之前别的手机卖了 2 个（排空拉到版本 5、库存少 2）：不能拿新版本直接交，先让人重新确认
+    func testReviewDrainPullsNewVersionAsksAgain() async throws {
+        let db = try makeDB()
+        let id = try addReview(db, price: 450, stock: 10, ver: 4, code: "6920000000017")
+        let fake = FakeBackend()
+        let m = ReviewProductModel(db: db, detail: try XCTUnwrap(try db.productDetail(id)), backend: ReviewBackend(
+            drain: { fake.drains += 1; try Self.put(db, id, price: 450, stock: 8, ver: 5, code: "6920000000017", needsReview: true) },
+            submit: fake.backend.submit, finish: fake.backend.finish))
+        m.cost = YuanInput("3.2")
+        m.counted = 10
+        await m.confirm(offline: false)
+        XCTAssertEqual(m.phase, .stale(stockQty: 8, stockVer: 5))
+        XCTAssertTrue(fake.submitted.isEmpty, "没重新确认前不交")
+        XCTAssertEqual(fake.finishes, 1, "排空了没交：定时同步接着跑")
+        await m.confirmStale()
+        XCTAssertEqual(fake.submitted.first?.baseVer, 5)
+        XCTAssertEqual(fake.submitted.first?.baseQty, 8)
+        XCTAssertEqual(fake.submitted.first?.countedQty, 10)
+        XCTAssertEqual(m.phase, .done)
+    }
+
     /// §14 S05-9：自动建的（卖价 0、没条码）先让人填卖价；卖价和挂码排进 outbox（排空时先传），不发 product_upsert
     func testAutoCreatedReviewQueuesEditAndLinkFirst() async throws {
         let db = try makeDB()
