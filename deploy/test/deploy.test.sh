@@ -352,20 +352,48 @@ LC_ALL=C grep -nE '^[^#]*\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' "$HERE"/../*.sh > "$T/o
 check "没有这种写法（见上面的行）" [ ! -s "$T/out" ]
 
 t "11/26 事故防护：要上线的 Caddyfile 缺任一备案域名站点（或没有首页）就拒绝发布，连服务器之前就退出 2"
-for missing in api.yuanhuishop.cn yuanhuishop.cn www.yuanhuishop.cn site; do
+for missing in api.yuanhuishop.cn yuanhuishop.cn www.yuanhuishop.cn site privacy.html support.html review-barcodes.html; do
   setup
   cp -R "$HERE/.." "$T/dcopy"
   if [ "$missing" = site ]; then rm -rf "$T/dcopy/site"
+  elif [[ "$missing" = *.html ]]; then rm -f "$T/dcopy/site/$missing"
   else awk -v s="$missing" '$1 == s && $2 == "{" {skip=1} !skip {print} skip && /^}/ {skip=0}' "$HERE/../Caddyfile.ip" > "$T/dcopy/Caddyfile.ip"; fi
   DEPLOY="$T/dcopy/deploy.sh" deploy "$NEW" --execute
   check "缺 ${missing}：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ]
   check "缺 ${missing}：没连服务器（假 ssh / scp 没被调用）" [ ! -s "$FAKE_LOG" ]
   check "缺 ${missing}：报错说清楚" grep -q "拒绝发布" "$T/out"
 done
+t "S30：site 里任何页面还有「待填」占位就拒绝发布，连服务器之前就退出 2"
+for page in privacy.html support.html; do
+  setup
+  cp -R "$HERE/.." "$T/dcopy"
+  sed -i.bak 's|</main>|<p>电话：【待填】</p></main>|' "$T/dcopy/site/$page" && rm -f "$T/dcopy/site/$page.bak"
+  DEPLOY="$T/dcopy/deploy.sh" deploy "$NEW" --execute
+  check "${page} 有待填：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ]
+  check "${page} 有待填：没连服务器" [ ! -s "$FAKE_LOG" ]
+  check "${page} 有待填：报错点名这一页" grep -q "还有「待填」：.*${page}" "$T/out"
+done
+check "仓库里的 site 页面没有「待填」" no grep -q "待填" "$HERE"/../site/*.html
+
 t "仓库里的 Caddyfile.ip 三个域名站点都在（和线上一致），正常发布不受防护影响"
 for site in api.yuanhuishop.cn yuanhuishop.cn www.yuanhuishop.cn; do
   check "有 ${site}" grep -qE "^${site//./\\.}[[:space:]]*\\{" "$HERE/../Caddyfile.ip"
 done
+
+t "S30：根域名站点给出隐私政策、支持页、审核用条码页（带不带 .html 都行），四个页面文件都在"
+C="$HERE/../Caddyfile.ip"
+check "@page 放行三个 .html" grep -qE '^[[:space:]]*@page path .*/privacy\.html /support\.html /review-barcodes\.html' "$C"
+check "@pretty 放行不带 .html 的三个地址" grep -qE '^[[:space:]]*@pretty path /privacy /support /review-barcodes$' "$C"
+check "@pretty 改写成 {path}.html" grep -qE '^[[:space:]]*rewrite \* \{path\}\.html$' "$C"
+for page in index.html privacy.html support.html review-barcodes.html; do
+  f="$HERE/../site/$page"
+  check "${page} 存在" [ -f "$f" ]
+  check "${page} 没有 <script>、外链样式或图片（CSP 只放行内联 style 和同源图片）" no grep -qiE '<script|rel="stylesheet|src="https?:|url\(https?:' "$f"
+  check "${page} 底部有网站备案号并链到工信部" grep -q 'href="https://beian.miit.gov.cn/"[^>]*>苏ICP备2026094233号-1<' "$f"
+done
+check "审核用条码页没有烟、酒字样" no grep -qE '烟|酒' "$HERE/../site/review-barcodes.html"
+python3 -I "$HERE/../../scripts/gen-review-barcodes.py" > "$T/out" 2>&1
+check "审核用条码页和生成脚本的输出一致（改了种子要重新生成）" cmp -s "$T/out" "$HERE/../site/review-barcodes.html"
 
 echo "通过 ${pass}，失败 $fail"
 [ "$fail" = 0 ]

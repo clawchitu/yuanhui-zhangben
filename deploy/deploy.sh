@@ -37,7 +37,13 @@ fi
 for site in api.yuanhuishop.cn yuanhuishop.cn www.yuanhuishop.cn; do
   grep -qE "^${site//./\\.}[[:space:]]*\{" "$HERE/Caddyfile.ip" || die2 "Caddyfile.ip 里没有 $site 站点：备案的域名站点会被覆盖掉，拒绝发布"
 done
-[ -f "$HERE/site/index.html" ] || die2 "deploy/site/index.html 不存在：yuanhuishop.cn 首页会没有，拒绝发布"
+# S30：隐私政策、支持页（App Store Connect 填的 URL）和审核用条码页也必须在，缺了上架材料就是 404
+for page in index.html privacy.html support.html review-barcodes.html; do
+  [ -f "$HERE/site/$page" ] || die2 "deploy/site/$page 不存在：yuanhuishop.cn 上这一页会 404，拒绝发布"
+done
+# 页面上还有「待填」占位（比如隐私政策、支持页的联系方式没填）就不发：苹果审核要能联系到人
+left=$(grep -l "待填" "$HERE"/site/*.html 2>/dev/null || true)
+[ -z "$left" ] || die2 "这些页面还有「待填」：$(echo "$left" | xargs -n1 basename | tr '\n' ' ')拒绝发布"
 REG="${ACR:-<ACR>/yuanhui}"
 D=/opt/yuanhui
 remote mkdir -p "$D/incoming"

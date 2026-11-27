@@ -899,7 +899,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 **S29 TestFlight 完整包与真机验收**
 - 要读：§9.2。
 - 产出：完整功能的 Beta 包、`docs/device-checklist.md`、App 图标（不含烟酒元素）。
-- 验收：完整包通过 Beta 审核，家里人用外部测试公开链接装上；真机清单（iPhone 13 和 iPhone 17 各一遍）：相机连扫 20 个店里的条码一次过、静音开关打开时仍有提示音、蓝牙扫码枪 HID 模式（扫码层逐项按 §14 S14-4；扫码枪后缀必须设成回车、Tab 后缀不出码，写进 `docs/device-checklist.md` 和店里的扫码枪设置说明）、飞行模式下卖出再联网补传、连扫 50 次无漏无卡、强光和弱光各试、开通码两台真机互扫、给收银员开通再踢掉。服务器上放什么数据按 §9.2 的前置条件执行。
+- 验收：完整包通过 Beta 审核，家里人用外部测试公开链接装上；真机清单（iPhone 13 和 iPhone 17 各一遍）：相机连扫 20 个店里的条码一次过、静音开关打开时仍有提示音、蓝牙扫码枪 HID 模式（扫码层逐项按 §14 S14-4；扫码枪后缀必须设成回车、Tab 后缀不出码，写进 `docs/device-checklist.md` 和店里的扫码枪设置说明）、飞行模式下卖出再联网补传、连扫 50 次无漏无卡、强光和弱光各试、开通码两台真机互扫、给收银员开通再踢掉。IPv6-only（S31 转来，11/27）：Mac「系统设置 → 共享 → 互联网共享」按住 Option 勾「创建 NAT64 网络」，用 Wi‑Fi 共享给手机，手机关蜂窝连上后用连域名的包登录、卖一笔、看账（S31 只做了静态核对：包里没有 IP 字面量，只用 `URLSession` 连域名，见 `deploy/cutover-to-domain.md`）；用审核号登录演示小店，手机对着电脑屏幕上的 `https://yuanhuishop.cn/review-barcodes` 逐个扫（S31 只做了离线核对：`deploy/test/review-barcodes-scan.sh` 截图后用 Vision 认出全部 15 个码）。服务器上放什么数据按 §9.2 的前置条件执行。
 
 **S30 上架材料**
 - 要读：§10。
@@ -909,7 +909,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 
 **S31 备案后切换到域名**（备案下来才能做）
 - 按 `deploy/cutover-to-domain.md`（§9.3）执行。
-- 验收：`https://api.yuanhuishop.cn/healthz` 证书有效；Release 包连域名走通 S28 剧本的精简版；IPv6-only 网络下可用；旧的 Beta 包（连 IP）仍然可用；四个静态页可访问。
+- 验收：`https://api.yuanhuishop.cn/healthz` 证书有效；Release 包连域名走通 S28 剧本的精简版；IPv6-only 网络下可用；旧的 Beta 包（连 IP）仍然可用；四个静态页可访问。（11/27：IPv6-only 的真机验证转 S29 真机清单，主会话定；四个静态页随 S30 上线后验）
 
 **S32 提审与上线**
 - 产出：App Store Connect 填好全部信息（销售范围只选中国大陆）并提交；`docs/runbook.md` 定稿（续费日历：开发者会员、域名、ECS、OSS、快鸟额度、证书）。

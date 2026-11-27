@@ -67,7 +67,9 @@ api.yuanhuishop.cn {
 	import common
 }
 
-# 根域名：只有一张静态首页（deploy/site，发布时装到宿主 /opt/yuanhui/caddy/site，容器里 /etc/caddy/site）。
+# tools.yuanhuishop.cn（黄总的发票工具）不在本计划范围（§9.3 第 8 步），这里只预留位置：没有解析、没有站点。
+
+# 根域名：静态首页、隐私政策、支持页、审核用条码页（deploy/site，发布时装到宿主 /opt/yuanhui/caddy/site，容器里 /etc/caddy/site）。
 # 公安联网备案要求网站能打开；非交互，不反代 api，/v1 在这里是 404。www 301 到根域名。
 (site_headers) {
 	header {
@@ -88,9 +90,16 @@ yuanhuishop.cn {
 	}
 	import site_headers
 	encode zstd gzip
-	@page path / /index.html /favicon.svg
+	@page path / /index.html /favicon.svg /privacy.html /support.html /review-barcodes.html
 	handle @page {
 		root * /etc/caddy/site
+		file_server
+	}
+	# S30：隐私政策、支持页、审核用条码页也给不带 .html 的地址（App Store Connect 填的是 /privacy、/support）
+	@pretty path /privacy /support /review-barcodes
+	handle @pretty {
+		root * /etc/caddy/site
+		rewrite * {path}.html
 		file_server
 	}
 	handle {
