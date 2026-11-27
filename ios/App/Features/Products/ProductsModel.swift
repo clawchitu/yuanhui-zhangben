@@ -254,6 +254,7 @@ final class ReviewProductModel {
     init(db: LocalDB, detail: ProductDetail, backend: ReviewBackend?) {
         self.db = db; self.detail = detail; self.backend = backend
         let p = detail.product
+        autoCreated = p.priceFen == .zero && !detail.hasUnitBarcode
         name = p.name
         // 卖出时自动建的卖价是 0：框里留空，让人先填卖价（§14 S05-9）
         price = p.priceFen == .zero ? YuanInput() : YuanInput(Money.yuanString(Int(p.priceFen.raw)))
@@ -263,6 +264,8 @@ final class ReviewProductModel {
 
     var product: Product { detail.product }
     var unit: String { detail.product.baseUnit }
+    /// 打开页面时是不是卖出时服务器自动建的（卖价 0、没单件码，§14 S05-9）；补全过程中填了价、挂了码也不变
+    let autoCreated: Bool
     var needsBarcode: Bool { !detail.hasUnitBarcode && linkedCode == nil }
 
     static func sanitize(_ s: String) -> String {

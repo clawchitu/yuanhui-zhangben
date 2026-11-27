@@ -139,8 +139,10 @@ final class S25LiveUITests: XCTestCase {
         typeYuan(app, "review.cost", "3")
         let code = app.textFields["review.barcode"]; code.tap(); code.typeText("6970000250041")
         el(app, "review.keyboardDone").tap()
+        XCTAssertTrue(app.staticTexts["卖出时自动建的，补全后就不再提醒"].exists)
         el(app, "review.save").tap()
-        XCTAssertTrue(el(app, "page.products").waitForExistence(timeout: 20))
+        XCTAssertFalse(el(app, "confirm.sheet").waitForExistence(timeout: 3), "第二样没有被演 stale")
+        if el(app, "review.error").exists { log("22b 自动建的：\(el(app, "review.error").label)") }
         waitLabel(el(app, "products.chip.needsReview"), "待确认 0")
         log("22b：两样都补全了，待确认 0")
 

@@ -3,6 +3,9 @@ import SwiftUI
 
 /// 读好商品再出 22b（读库在后台线程）
 struct ReviewProductLoader: View {
+    #if DEBUG
+    @MainActor static var staleUsed = false
+    #endif
     @Environment(AppModel.self) private var model
     let id: UUID
     @State private var review: ReviewProductModel?
@@ -16,7 +19,8 @@ struct ReviewProductLoader: View {
             guard review == nil, let d = await EditProductModel.load(model.db, id) else { return }
             let r = ReviewProductModel(db: model.db, detail: d, backend: model.makeReviewBackend())
             #if DEBUG
-            r.debugStaleOnce = ProcessInfo.processInfo.arguments.contains("-uiReviewStaleOnce")
+            // 一次启动只演一次（第二样补全照常交）
+            if ProcessInfo.processInfo.arguments.contains("-uiReviewStaleOnce"), !Self.staleUsed { Self.staleUsed = true; r.debugStaleOnce = true }
             #endif
             review = r
         }
@@ -119,9 +123,7 @@ struct ReviewProductView: View {
     }
 
     /// 自动建的（卖价 0、没单件码，§14 S05-9）不是收银员登记的
-    private var source: String {
-        review.product.priceFen == .zero && !review.detail.hasUnitBarcode ? "卖出时自动" : "收银员"
-    }
+    private var source: String { review.autoCreated ? "卖出时自动" : "收银员" }
 
     private var bannerText: String {
         source == "收银员" ? "收银员登记的，补全后就不再提醒" : "卖出时自动建的，补全后就不再提醒"
