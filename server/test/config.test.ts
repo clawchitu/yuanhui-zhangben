@@ -11,6 +11,14 @@ describe("loadConfig", () => {
     expect(c).toMatchObject({ demoLoginEnabled: false, recoveryMode: false, minBuild: 0, port: 3000 });
   });
 
+  it("NO_SYNC_ALERT_STORES：默认空；逗号分隔的 uuid（去空格、转小写、去重）；不是 uuid 启动时报错", () => {
+    const a = "2510EDD4-d332-42f9-aeb6-cc4a9b7c6a05";
+    expect(loadConfig({ DATABASE_URL: "x" }).monitor.noSyncStores).toEqual([]);
+    expect(loadConfig({ DATABASE_URL: "x", NO_SYNC_ALERT_STORES: " " }).monitor.noSyncStores).toEqual([]);
+    expect(loadConfig({ DATABASE_URL: "x", NO_SYNC_ALERT_STORES: ` ${a}, ${a.toLowerCase()} ,774bccf8-8e2e-4fec-a772-b70a834dc53d` }).monitor.noSyncStores).toEqual([a.toLowerCase(), "774bccf8-8e2e-4fec-a772-b70a834dc53d"]);
+    for (const bad of ["元辉", "123", `${a},abc`, "2510edd4d33242f9aeb6cc4a9b7c6a05"]) expect(() => loadConfig({ DATABASE_URL: "x", NO_SYNC_ALERT_STORES: bad })).toThrow(ConfigError);
+  });
+
   it("缺 DATABASE_URL、非法数字、非法开关、非 http(s) 链接都在启动时报错", () => {
     expect(() => loadConfig({})).toThrow(ConfigError);
     expect(() => loadConfig({ DATABASE_URL: "x", MIN_BUILD: "-1" })).toThrow(ConfigError);

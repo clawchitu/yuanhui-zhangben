@@ -64,6 +64,7 @@ const scheduler = new Scheduler({
           startedAt,
           backupDir: config.monitor.backupDir,
           diskPath: config.monitor.diskPath,
+          noSyncStores: config.monitor.noSyncStores,
         })
       : null,
   }),
