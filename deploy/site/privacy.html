@@ -74,14 +74,15 @@
   <h2>七、保存多久、怎么删除</h2>
   <ul>
     <li>账号在用期间，经营数据一直保存，方便查历史账。</li>
-    <li>服务器每天定时做加密备份，<strong>每份备份保存 35 天后自动删除</strong>，不留更长的归档。</li>
+    <li>服务器每天定时做加密备份，<strong>每份备份保存约 35 天后自动删除</strong>（存储每天清理一次，最长不超过 38 天），不留更长的归档。</li>
     <li><strong>注销账号</strong>：在 App 里「更多 → 账号与密码 → 注销账号」，再输一次密码提交（收银员手机不是账号，没有这个入口）。</li>
   </ul>
   <div class="box">
-    <p>提交后 7 天内可以撤回（用账号密码登录后撤回）。7 天后删除线上数据（店里的账和商品图），备份在之后 35 天内清除，找不回来。</p>
-    <p>也就是：申请注销后 7 天内可撤回；到期删除在线数据和商品图；备份在此后 35 天内滚动清除。注销期间服务器不收账，手机上记的先留着、撤回后补传。</p>
+    <p>提交后 7 天内可以撤回（用账号密码登录后撤回）。7 天后删除线上数据（店里的账和商品图），备份在之后约 35 天内清除（最长 38 天），找不回来。</p>
+    <p>也就是：申请注销后 7 天内可撤回；到期删除在线数据和商品图；备份在此后约 35 天内滚动清除（最长 38 天）。注销期间服务器不收账，手机上记的先留着、撤回后补传。</p>
   </div>
-  <p>申请注销时，服务器会为这家店生成一份数据导出包，由我们交给店主留存；到期删除时，服务器上的导出包一并删除。</p>
+  <p>申请注销时，服务器会为这家店生成一份数据导出包，由我们交给店主留存；到期删除时，服务器上的导出包一并删除，最长保留 30 天。</p>
+  <p>删除完成后，服务器永久保留一条不含任何业务数据的删除记录（这家店的随机编号和删除时间），用来在恢复备份时确认这家店不会被恢复回来。</p>
 
   <h2>八、怎么保护</h2>
   <p>手机和服务器之间全部走 HTTPS；密码只存哈希，多次输错会锁定；备份加密保存；服务器只开必要的端口。手机丢了，可以在另一台家用手机的「已登录的手机」里让它退出，或在「账号与密码」里「让其他手机全部退出」。</p>
@@ -108,7 +109,7 @@
       <li><strong>Use</strong>: only to provide the app's functionality. No advertising, no profiling, no sale of data.</li>
       <li><strong>No tracking, no third-party SDKs</strong>. Our server sends only the barcode digits to a barcode lookup service on Alibaba Cloud Marketplace when a new product is registered.</li>
       <li><strong>Storage</strong>: Alibaba Cloud, Shanghai region, mainland China.</li>
-      <li><strong>Retention and deletion</strong>: data is kept while the account exists. Encrypted backups are deleted automatically after 35 days. Account deletion is available in the app (More → 账号与密码 → 注销账号). A deletion request can be withdrawn within 7 days by signing in; after 7 days the online data and product images are deleted, and backups are purged within the following 35 days.</li>
+      <li><strong>Retention and deletion</strong>: data is kept while the account exists. Encrypted backups are deleted automatically after about 35 days (at most 38 days). Account deletion is available in the app (More → 账号与密码 → 注销账号). A deletion request can be withdrawn within 7 days by signing in; after 7 days the online data and product images are deleted, and backups are purged within about 35 days (at most 38 days). The server export package is kept for at most 30 days. After deletion, a deletion record with no business data (the store’s random ID and the deletion time) is kept permanently so a restored backup cannot bring the store back.</li>
       <li><strong>Contact</strong>: phone <a href="tel:+8615951656032">+86 159 5165 6032</a>, e-mail <a href="mailto:haoqianglyu@gmail.com">haoqianglyu@gmail.com</a> (see also section 十 above).</li>
     </ul>
   </section>

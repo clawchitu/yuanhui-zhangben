@@ -167,6 +167,7 @@ unset A S K
 11/26 12:33 发布 #52 时，`deploy.sh` 用了 main 上只有 IP 站点的 `Caddyfile.ip`，把手工装上的 api.yuanhuishop.cn / yuanhuishop.cn 覆盖掉，两个域名 TLS 握手失败约 1.5 小时（从 `prev/caddy_Caddyfile` 恢复）。现在：
 - 线上站点配置只以仓库里的 `deploy/Caddyfile.ip` 为准，**不要再在 ECS 上手改 Caddyfile**；要改就提 PR 再发布。
 - `deploy.sh` 在连服务器之前检查：`Caddyfile.ip` 里必须有 `api.yuanhuishop.cn`、`yuanhuishop.cn`、`www.yuanhuishop.cn` 三个站点，`deploy/site/` 下 `index.html`、`privacy.html`、`support.html`、`review-barcodes.html` 必须都在（S30 加了后三个），否则退出 2、什么都不动（`deploy/test/deploy.test.sh` 有用例）。
+- 改了 `Caddyfile.ip` 或 `deploy/site/` 的，发布前在部署机上跑 `deploy/test/site-routes.test.sh`（用仓库的 Caddyfile 起本机 Caddy，真打根域名各页面、api 路径 404、www 301、http 308；要 `brew install caddy`）；改了条码页跑 `deploy/test/review-barcodes-scan.sh`（Chrome 截图 + Vision 认码）。
 - 发布后验 4 个地址：`https://yuanhuishop.cn`（200）、`https://www.yuanhuishop.cn`（301）、`https://api.yuanhuishop.cn/healthz`（200）、`http://yuanhuishop.cn`（308 到 https）。
 
 ## 证书策略（§14 S10a-3，PR #22 Fable 裁定 ①）
