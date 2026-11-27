@@ -311,14 +311,18 @@ final class ProductsTests: XCTestCase, @unchecked Sendable {
         let engine = SyncEngine(db: db, appBuild: 1, transport: srv.transport)
         srv.reply = { _ in (503, Data()) }
         XCTAssertThrowsError(try engine.drainForOnline())
+        var sentBefore = srv.bodies.count
         XCTAssertThrowsError(try engine.submitOnline(try review(beer, counted: 1, cost: 0, baseVer: 1))) {
             XCTAssertEqual($0 as? OnlineSubmitError, .outboxNotDrained(1), "没传完不交，一个请求都不发")
         }
+        XCTAssertEqual(srv.bodies.count, sentBefore, "没传完：一个请求都不发")
         srv.reply = { _ in try (200, self.response(results: [], deletePending: "2026-11-27T00:00:00.000Z")) }
         XCTAssertThrowsError(try engine.drainForOnline()) { XCTAssertEqual($0 as? OnlineSubmitError, .deletePending) }
+        sentBefore = srv.bodies.count
         XCTAssertThrowsError(try engine.submitOnline(try review(beer, counted: 1, cost: 0, baseVer: 1))) {
             XCTAssertEqual($0 as? OnlineSubmitError, .deletePending)
         }
+        XCTAssertEqual(srv.bodies.count, sentBefore, "注销中：提交前就挡住，一个请求都不发（不是发出去再看响应）")
         let cashier = try makeDB(role: .cashier)
         XCTAssertInvalid(try SyncEngine(db: cashier, appBuild: 1, transport: srv.transport).submitOnline(try review(beer, counted: 1, cost: 0, baseVer: 1)))
     }
