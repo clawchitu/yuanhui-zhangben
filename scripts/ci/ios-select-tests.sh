@@ -61,7 +61,7 @@ matches() { local f="$1" pat="$2"; [[ "$f" == $pat ]]; }
 
 # 主逻辑：标准输入是改动的文件列表
 select_tests() {
-  local files f kind rest pat t matched full=0 picked="" cls
+  local files f kind rest pat t matched is_none full=0 picked="" cls
   files=$(grep -v '^[[:space:]]*$' || true)
   local all_rules
   all_rules=$(rules)
@@ -69,6 +69,7 @@ select_tests() {
     [ -z "$f" ] && continue
     case "$f" in ios/*|contracts/*|scripts/ci/*|.github/workflows/ios.yml) ;; *) continue ;; esac
     matched=0
+    is_none=0
     while read -r kind pat rest; do
       case "$kind" in
         full)
@@ -80,11 +81,12 @@ select_tests() {
             say "$f → $rest"
           fi ;;
         none)
-          if matches "$f" "$pat"; then matched=1; fi ;;
+          if matches "$f" "$pat"; then matched=1; is_none=1; fi ;;
       esac
     done <<<"$all_rules"
     # 改了 UI 测试文件本身：文件名就是类名的，跑这个类；共用的辅助文件 → 全量
-    case "$f" in
+    # 命中 none 的测试文件（联调、Release 检查：CI 里本来就跳过）不自动选
+    [ $is_none -eq 1 ] || case "$f" in
       "$UITESTS"/*.swift)
         cls=$(basename "$f" .swift)
         if [ ! -f "$f" ]; then
@@ -156,7 +158,19 @@ self_test() {
   check "只改单元测试 → 不全量" NOTFULL ios/AppTests/S27Tests.swift
   check "只改服务端 → 不全量" NOTFULL server/src/app.ts
   check "改 CI 自己 → 不全量" NOTFULL .github/workflows/ios.yml scripts/ci/ios-test-map.txt
+  check "改联调测试 → 不选它（CI 里本来就跳过）" "-$UI_TARGET/S27LiveUITests" ios/UITests/S27LiveUITests.swift
+  check "改 ReleaseBuildUITests → 不在 Debug 里选它" "-$UI_TARGET/ReleaseBuildUITests" ios/UITests/ReleaseBuildUITests.swift
+  check "中文路径在 Navigation 下 → 全量" FULL "ios/App/Features/Navigation/路由.swift"
   check "改首页 → 整类 S15 没选上，只选两条" "-$UI_TARGET/S15UITests" ios/App/Features/Home/HomeView.swift
+  # 改名：Route.swift 挪到 Expiry 下，旧路径也要算（真的 git 仓库里做一次）
+  local g; g=$(mktemp -d -t ios-select-rename)
+  ( cd "$g" && git init -q && mkdir -p ios/App/Features/Navigation ios/App/Features/Expiry \
+    && echo a > ios/App/Features/Navigation/Route.swift && git add -A && git -c user.name=t -c user.email=t@t commit -qm a \
+    && git mv ios/App/Features/Navigation/Route.swift ios/App/Features/Expiry/Route.swift \
+    && git -c user.name=t -c user.email=t@t commit -qm b ) >/dev/null
+  got=$(git -C "$g" -c core.quotepath=off diff --name-only --no-renames HEAD~1...HEAD | select_tests 2>/dev/null)
+  rm -rf "$g"
+  [ "$got" = FULL ] && echo "  [对] 把 Route.swift 挪出 Navigation → 全量" || { echo "  [错] 把 Route.swift 挪出 Navigation：得到 $(tr '\n' ' ' <<<"$got")"; fail=1; }
   [ $fail -eq 0 ] && echo "自检通过" || { echo "自检有错"; exit 1; }
 }
 
@@ -164,7 +178,8 @@ case "${1:-}" in
   --base)
     base="${2:?}"; [ "${3:-}" = --head ] || { echo "用法见文件开头" >&2; exit 2; }; head="${4:?}"
     validate_map
-    git diff --name-only "$base...$head" | select_tests ;;
+    # --no-renames：改名 / 移动时旧路径作为删除出现（从 Navigation 挪走也算改了 Navigation）；quotepath=off：中文路径原样输出
+    git -c core.quotepath=off diff --name-only --no-renames "$base...$head" | select_tests ;;
   --files)
     validate_map
     if [ "${2:?}" = - ]; then select_tests; else select_tests <"$2"; fi ;;

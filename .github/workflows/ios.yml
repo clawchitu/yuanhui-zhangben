@@ -4,7 +4,7 @@ name: ios
 #       改到公共层、导航、数据模型、契约，或改了映射里没登记的路径 → 这个 PR 自动跑全量。
 #       规则在 scripts/ci/ios-test-map.txt，选测脚本 scripts/ci/ios-select-tests.sh。
 #   push 到 main、每晚北京时间 03:00（schedule）、手动触发（workflow_dispatch）：全量。
-#       main 上同一时间只跑一轮，新的一轮取消旧的。main 最新一轮完成的全量是红的，scripts/merge-pr.sh 拒绝合并。
+#       main 上同一时间只跑一轮，正在跑的跑完，排队的只留最新一个。main 最新一轮完成的全量是红的，scripts/merge-pr.sh 拒绝合并。
 # 只在 ios/、contracts/（ShopCore 的测试读契约和向量）、选测规则或本工作流改动时触发（偏差说明见 docs/process-deviations.md）。
 # PR 上没触发时 scripts/merge-pr.sh 把它当作「不需要」，不会卡合并。
 on:
@@ -27,9 +27,11 @@ on:
 permissions:
   contents: read
 concurrency:
-  # PR 按分支各排各的；main 上的全量（push / 夜间）共用一组：同一时间只跑一轮，新的取消旧的
+  # PR 按分支各排各的，新推送取消旧的。
+  # main 上的全量（push / 夜间）共用一组：同一时间只跑一轮；正在跑的那轮跑完，排队的只留最新一个（更早排队的被取消）。
+  # 不取消正在跑的：合并频繁时每轮都被下一轮砍掉，就永远没有跑完的全量，merge-pr.sh 的红锁会一直看着旧的绿（PR #73 自审）
   group: ios-${{ github.event_name == 'pull_request' && github.ref || format('full-{0}', github.ref) }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   ios-ci:
     name: ios-ci

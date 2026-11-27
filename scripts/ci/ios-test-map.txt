@@ -15,10 +15,11 @@
 # 一个文件按下面的规则逐条匹配：
 #   1. 命中任何一条 full → 整个 PR 全量；
 #   2. 否则收集它命中的所有 ui 规则的测试（可以命中好几条）；
-#   3. 改了 ios/UITests/<类名>.swift 自己 → 自动加跑这个类（不用写规则）；文件名对不上类名（共用的辅助文件）→ 全量；
+#   3. 改了 ios/UITests/<类名>.swift 自己（且没命中 none）→ 自动加跑这个类（不用写规则）；文件名对不上类名（共用的辅助文件）→ 全量；
 #   4. 上面都没命中、也没命中 none → 算「没登记的路径」，整个 PR 全量（宁可多跑）。
 #      加了新的功能目录、新文件夹，在这里补一条 ui 规则，PR 才能只跑选测。
-# 不在 ios/、contracts/ 下的文件（server/、docs/ 等）不参与选测。
+# 不在 ios/、contracts/、scripts/ci/ 下、也不是 .github/workflows/ios.yml 的文件（server/、docs/ 等）不参与选测。
+# 改名 / 移动的文件新旧两个路径都算。
 
 # ---------- 冒烟集（单机约 7 分钟；遍历一条约 6 分钟） ----------
 smoke YuanhuiZhangbenUITests/S15UITests/testFamilyTraversalReachesEveryPage
@@ -87,6 +88,9 @@ ui ios/ShopCore/Sources/ShopCore/StockIn/*     S19UITests
 ui ios/UITests/S23aUITests.swift   S23aHeldUITests
 
 # ---------- 不加跑 UI 测试 ----------
+# 联调测试（没有 YH_LIVE_BASE 就跳过）、Release 检查测试（只在 release-check.sh 里跑）：Debug 选测里选了也是跳过
+none ios/UITests/*LiveUITests.swift
+none ios/UITests/ReleaseBuildUITests.swift
 none ios/App/Gallery/*
 none ios/App/Resources/*
 none ios/AppTests/*
