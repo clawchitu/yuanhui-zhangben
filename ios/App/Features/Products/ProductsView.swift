@@ -253,7 +253,22 @@ struct EditProductView: View {
                         if edit.trackExpiry {
                             stepperRow("提前几天提醒", value: $edit.warnDays, range: 0...Int(Limits.maxExpiryWarnDays), id: "edit.warnDays")
                             divider
-                            stepperRow("保质期几个月", value: $edit.shelfMonths, range: 1...Int(Limits.maxShelfLifeMonths), id: "edit.shelfMonths")
+                            if let m = edit.shelfMonths {
+                                stepperRow("保质期几个月", value: Binding(get: { m }, set: { edit.shelfMonths = $0 }),
+                                           range: 1...Int(Limits.maxShelfLifeMonths), id: "edit.shelfMonths")
+                            } else {
+                                // 没填过：写「没填」，点了才从 12 个月起（没动过不替人填，自审建议 2）
+                                Button { focus = nil; edit.shelfMonths = EditProductModel.defaultShelfMonths } label: {
+                                    HStack {
+                                        Text("保质期几个月").font(TypeScale.body.weight(.bold)).foregroundStyle(Tokens.Palette.ink)
+                                        Spacer(minLength: 8)
+                                        Text("没填，点这里填").font(TypeScale.body).foregroundStyle(Tokens.Palette.ink2)
+                                    }
+                                    .frame(minHeight: 56).contentShape(Rectangle())
+                                }
+                                .buttonStyle(PressDimStyle())
+                                .accessibilityIdentifier("edit.shelfMonths.unset")
+                            }
                             divider
                         }
                     }

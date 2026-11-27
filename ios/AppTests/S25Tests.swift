@@ -142,6 +142,11 @@ final class S25Tests: XCTestCase {
         m.name = "青岛啤酒 经典"
         do { let ok = await m.save(); XCTAssertTrue(ok) }
         XCTAssertEqual(Set(try XCTUnwrap(try payloads(db, .productEdit).last).keys), ["product_id", "name"])
+        XCTAssertNil(m.shelfMonths, "界面写「没填」")
+        // 点了「没填，点这里填」：从 12 个月起，存好才发
+        m.shelfMonths = EditProductModel.defaultShelfMonths
+        do { let ok = await m.save(); XCTAssertTrue(ok) }
+        XCTAssertEqual(try XCTUnwrap(try payloads(db, .productEdit).last)["shelf_life_months"] as? Int, 12)
     }
 
     /// 没设提醒线：显示店里的默认；没改就不发 low_at
@@ -196,6 +201,21 @@ final class S25Tests: XCTestCase {
         await m.confirm(offline: false)
         XCTAssertEqual(fake.submitted.first?.unitCostFen, Fen(0), "明确为 0 照交")
         XCTAssertEqual(m.phase, .done)
+        XCTAssertEqual(fake.finishes, 0, "交了：由 submit 自己让同步接着跑（被踢了不能再起），不重复")
+    }
+
+    /// 排空失败：由 drain 自己处理（被踢走 25b），不再调 finish
+    func testReviewDrainFailureDoesNotFinish() async throws {
+        let db = try makeDB()
+        let id = try addReview(db, price: 450, stock: 3, ver: 4, code: "6920000000017")
+        let fake = FakeBackend()
+        fake.drainError = URLError(.notConnectedToInternet)
+        let m = ReviewProductModel(db: db, detail: try XCTUnwrap(try db.productDetail(id)), backend: fake.backend)
+        m.cost = YuanInput("3.2")
+        await m.confirm(offline: false)
+        XCTAssertEqual(m.phase, .editing)
+        XCTAssertTrue(fake.submitted.isEmpty)
+        XCTAssertEqual(fake.finishes, 0)
     }
 
     /// stale：提示账面数变了，确认后带服务器的新版本重交；排空在读基线之前
