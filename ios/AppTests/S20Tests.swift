@@ -107,8 +107,6 @@ final class S20Tests: XCTestCase {
             XCTAssertEqual(RouteView.content(for: .records, capabilities: Capabilities(role: role)), .records)
             XCTAssertEqual(RouteView.content(for: .undoLast, capabilities: Capabilities(role: role)), .records)
         }
-        XCTAssertNil(Route.records.plannedIn)
-        XCTAssertNil(Route.undoLast.plannedIn)
     }
 
     // MARK: T30：到期日早于今天、生产日期晚于今天，记之前再问一句

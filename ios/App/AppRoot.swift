@@ -444,6 +444,8 @@ struct AppRoot: View {
         if args.contains("-uiFirstSync") { model.firstSyncFixture = (194, 312) }  // 29 稿子上的数
         if UIFixture.value(for: "-uiAPI", in: args) != nil {
             model.services = UIFixture.fixtureServices(session: session, args: args)   // S23a：开通、设备打桩
+            // 设置页「隐私政策」：带 -uiConfig 时先从桩取一次配置（服务器下发的隐私政策地址）
+            if args.contains("-uiConfig"), let services = model.services { Task { await services.refreshConfig() } }
         }
         if let images = try UIFixture.fixtureImages(db: db, session: session, args: args) {
             model.services = UIFixture.fixtureServices(session: session, args: args)   // S22d：查码打桩

@@ -92,8 +92,37 @@ final class NavigationTests: XCTestCase {
                        "夹具给了稿子上的值就用它")
     }
 
+    /// 隐私政策不是 App 内路由（设置页直接开浏览器）；占位页的兜底分支已删，`RouteView.content` 穷举由编译器保证
+    func testPrivacyIsNotARoute() {
+        XCTAssertNil(Route(rawValue: "privacy"), "隐私政策不走 App 内路由")
+        XCTAssertEqual(UIFixture.injectedRoutes(from: ["-uiRoute", "privacy"]), [])
+    }
+
+    /// 设置页「隐私政策」的地址：没有服务（夹具）、取配置失败 → 默认地址；服务器下发了 → 用下发的（和登录页同一来源）
+    func testSettingsPrivacyURLFollowsServerConfig() async throws {
+        let suite = "privacy-url-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); S22cStub.reset() }
+        let m = try model(.cashier, defaults: defaults)
+        XCTAssertEqual(m.privacyURL.absoluteString, "https://yuanhuishop.cn/privacy", "没有服务：默认地址")
+
+        let conf = URLSessionConfiguration.ephemeral
+        conf.protocolClasses = [S22cStub.self]
+        let bases = try XCTUnwrap(APIBaseStore(defaultBase: "http://localhost:1", policy: APIEnvironment.policy, defaults: defaults))
+        let services = AppServices(api: APIClient(bases: bases, session: APIClient.makeSession(conf)), tokens: MemoryTokenStore(),
+                                   defaults: defaults)
+        m.services = services
+        S22cStub.config = nil
+        await services.refreshConfig()
+        XCTAssertEqual(m.privacyURL.absoluteString, "https://yuanhuishop.cn/privacy", "取配置失败：默认地址")
+
+        S22cStub.config = #"{"min_build":1,"demo_login_enabled":false,"privacy_url":"https://yuanhuishop.cn/privacy-v2","support_url":"s"}"#
+        await services.refreshConfig()
+        XCTAssertEqual(m.privacyURL.absoluteString, "https://yuanhuishop.cn/privacy-v2", "用服务器下发的")
+        XCTAssertEqual(m.privacyURL, services.privacyURL, "和登录页同一来源")
+    }
+
     func testScannerRouteIsARealPage() {
-        XCTAssertNil(Route.scanner.plannedIn)
         for role in [Role.family, .cashier, .review] {
             XCTAssertEqual(RouteView.content(for: .scanner, capabilities: Capabilities(role: role)), .scanner)
         }

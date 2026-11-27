@@ -2,7 +2,8 @@ import ShopCore
 import SwiftUI
 
 /// 首页能去的每一个地方（§6.2）。入口按角色的能力表决定有没有；`RouteView` 再挡一次（直接塞路由也进不去）。
-/// 还没做的页面先放占位页，`plannedIn` 写着哪一段做。
+/// 每条路由都有真页面（`RouteView.content` 不留兜底分支，加了路由不接页面就编译不过）。
+/// 隐私政策不是路由：设置页和登录页一样，直接用系统浏览器打开 `AppServices.privacyURL`。
 enum Route: String, Hashable, CaseIterable, Sendable {
     case sell            // 03 系列
     case manualCode      // 15 / 15b 手输条码（从卖出页进）
@@ -22,7 +23,6 @@ enum Route: String, Hashable, CaseIterable, Sendable {
     case scanner         // 扫码枪
     case account         // 账号与密码（21a 下级页，S23b）
     case deleteAccount   // 23 注销账号（从「账号与密码」进）
-    case privacy         // 隐私政策
     case logout          // 退出登录
     case pending         // 待传的账（首页顶栏的同步状态、25a 提醒条点进来）
 
@@ -41,7 +41,7 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .held: .heldOps
         case .deviceName: .renameDevice
         case .account, .deleteAccount: .account
-        case .settings, .records, .scanner, .privacy, .logout, .pending: nil
+        case .settings, .records, .scanner, .logout, .pending: nil
         }
     }
 
@@ -72,18 +72,8 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         case .scanner: "扫码枪"
         case .account: "账号与密码"
         case .deleteAccount: "注销账号"
-        case .privacy: "隐私政策"
         case .logout: "退出登录"
         case .pending: "待传的账"
-        }
-    }
-
-    /// 还没做的页面在哪一段做（占位页上显示）
-    var plannedIn: String? {
-        switch self {
-        case .privacy: "S21"
-        case .logout, .pending, .pairing, .devices, .held, .account, .deleteAccount, .reports, .expiry, .products, .count: nil
-        case .sell, .manualCode, .discount, .stockIn, .settings, .deviceName, .scanner, .records, .undoLast: nil
         }
     }
 
@@ -105,7 +95,7 @@ struct RouteView: View {
     /// 这条路由在这些能力下出哪种页面（纯函数，单元测试逐个路由 × 身份测）
     enum Content: Equatable {
         case denied, sell, manualCode, discountEntry, stockIn, settings, deviceName, scanner, records, logout, pending, pairing, devices, held
-        case account, deleteAccount, reports, expiry, products, count, placeholder
+        case account, deleteAccount, reports, expiry, products, count
     }
 
     static func content(for route: Route, capabilities: Capabilities) -> Content {
@@ -130,7 +120,6 @@ struct RouteView: View {
         case .expiry: return .expiry
         case .products: return .products
         case .count: return .count
-        default: return .placeholder
         }
     }
 
@@ -165,14 +154,13 @@ struct RouteView: View {
             // 盘点（S26）：12a 扫码数 / 12b 还有几种没数；必须联网
             case .count: CountView(db: model.db, backend: model.makeCountBackend(), clock: { [model] in model.now },
                                    fixture: model.sellFixture)
-            case .placeholder: PlaceholderPage(route: route, layout: model.layout)
             }
         }
         .toolbar(.hidden, for: .navigationBar)
     }
 }
 
-/// 还没做的页面：标题 + 「这一页在 Sxx 做」。
+/// 说明页：标题 + 一句话（现在只有直接塞进来的「抹零 / 改总价」用它）。
 struct PlaceholderPage: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppModel.self) private var model
@@ -192,9 +180,6 @@ struct PlaceholderPage: View {
                     Text(message)
                         .font(TypeScale.title)
                         .foregroundStyle(Tokens.Palette.ink)
-                    if let s = route.plannedIn {
-                        Text("开发计划 \(s) 段").font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
-                    }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.top, 80)

@@ -245,7 +245,6 @@ final class PendingPanelTests: XCTestCase {
         XCTAssertEqual(Route.pending.title(.family), "待传的账")
         XCTAssertEqual(Route.pending.title(.cashier), "待传的账")
         XCTAssertNil(Route.pending.requiredCapability)
-        XCTAssertNil(Route.pending.plannedIn)
         for role in Role.allCases {
             XCTAssertEqual(RouteView.content(for: .pending, capabilities: Capabilities(role: role)), .pending)
         }

@@ -288,6 +288,9 @@ final class AppModel {
 
     /// 网络服务（正常启动才有；夹具为 nil，改名只改本机）
     var services: AppServices?
+
+    /// 设置页「隐私政策」打开的地址：和登录页同一来源（服务器下发优先，没有服务或没取到配置用默认地址）
+    var privacyURL: URL { services?.privacyURL ?? AppServices.defaultPrivacyURL }
     /// S22c：商品图（正常启动才有；夹具带 Debug 的 `-uiImages` 才有）
     var images: ProductImages?
 

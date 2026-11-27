@@ -26,7 +26,7 @@ final class S15UITests: XCTestCase {
 
     /// 收银员该到的页（遍历确实走到了，不是空跑）
     static let cashierReachable: Set<String> = ["page.home", "page.sell", "page.settings", "page.records", "page.undoLast",
-                                                "page.scanner", "page.privacy", "page.logout", "page.pending"]
+                                                "page.scanner", "page.logout", "page.pending"]
 
     private func assertCashierWalk(_ fixture: String, file: StaticString = #filePath, line: UInt = #line) {
         let walker = Walker(args: ["-uiFixture", fixture, "-uiRole", "cashier", "-uiLargeText", "off"])
@@ -69,7 +69,7 @@ final class S15UITests: XCTestCase {
                       "家用到不了：\(familyReachable.subtracting(visited))", file: file, line: line)
         // S20（§14 S15-6）：家用首页没有提醒条时「刚记的」整条可点进记的账，必达集合加回 page.records
         XCTAssertTrue(visited.isSuperset(of: ["page.home", "page.sell", "page.settings", "page.records", "page.undoLast",
-                                              "page.scanner", "page.privacy", "page.logout"]), "\(visited)", file: file, line: line)
+                                              "page.scanner", "page.logout"]), "\(visited)", file: file, line: line)
         XCTAssertFalse(visited.contains("?"), "遍历走到了没有 page.* 标识的页面或弹层：\(walker.records.filter { $0.outcome == "?" })", file: file, line: line)
         XCTAssertFalse(visited.contains("page.denied"), file: file, line: line)
         assertSellEmptyGreyed(walker, file: file, line: line)
@@ -355,7 +355,8 @@ final class Walker {
     static let navigationOnly: Set<String> = ["返回"]
     /// 点了就离开当前会话、回不来的入口（S22b 退出登录的确认）：遍历不点，它的排空流程由 S22bTests / S22bLiveUITests 测
     /// 设置页底的备案号是外链，点了 Safari 到前台、App 进后台，遍历也不点；点了打开 Safari 由 ICPFooterUITests 测
-    static let terminal: Set<String> = ["logout.confirm", "settings.icp"]
+    /// 设置页的「隐私政策」也是外链（和登录页一样开系统浏览器），由 PrivacyLinkUITests 测
+    static let terminal: Set<String> = ["logout.confirm", "settings.icp", "settings.item.privacy"]
     /// 允许置灰的入口（页面 · 标识）：卖出页空篮时的「收好钱了，记账」和「抹零 / 改总价」（S16 验收：空篮置灰）
     /// 空篮时记账、改价灰；手输条码页没选中候选时「加进去」灰（§5.5，S17）
     /// 「待传的账」点了「再传一次」后变灰至少 1 秒（PR #45 Fable 裁定 6）

@@ -77,10 +77,13 @@ final class AppServices {
     /// 「看看演示」入口：服务器开关打开才显示（默认关；没取到配置也不显示）
     var demoLoginEnabled: Bool { config?.demoLoginEnabled ?? false }
 
-    /// 登录页「隐私政策」链接：服务器给的；没取到配置时用和服务器默认值一样的地址
+    /// 「隐私政策」链接（登录页、设置页）：服务器给的；没取到配置时用和服务器默认值一样的地址
     var privacyURL: URL {
-        config.flatMap { URL(string: $0.privacyURL) } ?? URL(string: "https://yuanhuishop.cn/privacy")!
+        config.flatMap { URL(string: $0.privacyURL) } ?? Self.defaultPrivacyURL
     }
+
+    /// 没有服务（夹具）或没取到配置时的隐私政策地址，和服务器默认值一样
+    static let defaultPrivacyURL = URL(string: "https://yuanhuishop.cn/privacy")!
 
     private static let logger = Logger(subsystem: "cn.yuanhuishop.zhangben", category: "config")
 

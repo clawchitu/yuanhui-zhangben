@@ -33,6 +33,7 @@ import ShopCore
 ///   -uiImages 地址 / -uiImagesOff / -uiImagesPrefetch / -uiFrameProbe   S22c 商品图和卡顿探针，见 `fixtureImages`
 ///   -uiConfirmUpsert 秒                          S22d：登记放够这么多秒当作服务器已确认（见 `confirmUpserts`）
 ///   -uiAPI 地址                                  S23a：开通页、已登录的手机连这个桩（令牌 fixture-token）；S23b 账号与密码、注销同样；S24 看账同样
+///   -uiConfig                                    和 -uiAPI 一起用：开好后从桩取一次 `/v1/config`（设置页隐私政策用服务器下发的地址）
 ///   -uiReportGoods                               S24：多登记稿子 09「快没货了」的红牛（罐）、双汇王中王（根）
 ///   -uiExpiry                                    S27：装上稿子 19 的四批（光明已过期、桃李 / 伊利快过期、达利园过几天再提醒），
 ///                                                演示数据自带的三批清零；首页黄条的样数从库里算（收银员不装）
