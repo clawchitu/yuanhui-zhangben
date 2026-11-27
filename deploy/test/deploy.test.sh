@@ -363,6 +363,18 @@ for missing in api.yuanhuishop.cn yuanhuishop.cn www.yuanhuishop.cn site privacy
   check "缺 ${missing}：没连服务器（假 ssh / scp 没被调用）" [ ! -s "$FAKE_LOG" ]
   check "缺 ${missing}：报错说清楚" grep -q "拒绝发布" "$T/out"
 done
+t "S30：site 里任何页面还有「待填」占位就拒绝发布，连服务器之前就退出 2"
+for page in privacy.html support.html; do
+  setup
+  cp -R "$HERE/.." "$T/dcopy"
+  sed -i.bak 's|</main>|<p>电话：【待填】</p></main>|' "$T/dcopy/site/$page" && rm -f "$T/dcopy/site/$page.bak"
+  DEPLOY="$T/dcopy/deploy.sh" deploy "$NEW" --execute
+  check "${page} 有待填：退出码 2（实际 $(rc)）" [ "$(rc)" = 2 ]
+  check "${page} 有待填：没连服务器" [ ! -s "$FAKE_LOG" ]
+  check "${page} 有待填：报错点名这一页" grep -q "还有「待填」：.*${page}" "$T/out"
+done
+check "仓库里的 site 页面没有「待填」" no grep -q "待填" "$HERE"/../site/*.html
+
 t "仓库里的 Caddyfile.ip 三个域名站点都在（和线上一致），正常发布不受防护影响"
 for site in api.yuanhuishop.cn yuanhuishop.cn www.yuanhuishop.cn; do
   check "有 ${site}" grep -qE "^${site//./\\.}[[:space:]]*\\{" "$HERE/../Caddyfile.ip"

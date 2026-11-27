@@ -41,6 +41,9 @@ done
 for page in index.html privacy.html support.html review-barcodes.html; do
   [ -f "$HERE/site/$page" ] || die2 "deploy/site/$page 不存在：yuanhuishop.cn 上这一页会 404，拒绝发布"
 done
+# 页面上还有「待填」占位（比如隐私政策、支持页的联系方式没填）就不发：苹果审核要能联系到人
+left=$(grep -l "待填" "$HERE"/site/*.html 2>/dev/null || true)
+[ -z "$left" ] || die2 "这些页面还有「待填」：$(echo "$left" | xargs -n1 basename | tr '\n' ' ')拒绝发布"
 REG="${ACR:-<ACR>/yuanhui}"
 D=/opt/yuanhui
 remote mkdir -p "$D/incoming"
