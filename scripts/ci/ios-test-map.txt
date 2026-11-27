@@ -89,6 +89,8 @@ ui ios/App/Net/ImageChanges.swift    S16UITests S17UITests S18UITests S19UITests
 # 购物篮、整件换算、分摊、进货预览：卖出和进货那一组页面都在用
 ui ios/ShopCore/Sources/ShopCore/Basket/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
 ui ios/ShopCore/Sources/ShopCore/Allocation/*  S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
+# 盘点的本地层：S26-1 还没有页面用它（单元测试在 ShopCoreTests 里照跑）；S26-2 接上页面时改成 ui … S26UITests
+none ios/ShopCore/Sources/ShopCore/Count/*
 ui ios/ShopCore/Sources/ShopCore/Expiry/*      S27UITests
 # 商品图缓存和下载：网络层 ProductImages / ImageChanges 在用 → 带上它们那一组，加快过期页（缩略图）
 ui ios/ShopCore/Sources/ShopCore/Images/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S27UITests
