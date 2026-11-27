@@ -222,3 +222,5 @@ struct DeniedPage: View {
         .accessibilityIdentifier("page.denied")
     }
 }
+
+// CI 选测验证用（临时分支，验完删掉）
