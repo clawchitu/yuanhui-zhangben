@@ -8,12 +8,18 @@ import XCTest
 /// 测试进程自己以另一台设备登录同一个域名核对服务器：进货、卖出、冲销各恰好一条，库存变化对，月报对账成立、
 /// 月报期末货值等于各商品货值之和，看账页上的「卖了」和服务器月报逐分一致。
 ///   TEST_RUNNER_YH_S31_USER / TEST_RUNNER_YH_S31_PASSWORD   线上测试店的账号和密码（运行时从钥匙串读，不写文件）
-///   TEST_RUNNER_YH_S31_BASE                                 核对用的服务器地址，默认 https://api.yuanhuishop.cn
+///   TEST_RUNNER_YH_S31_BASE                                 核对用的服务器地址，默认 https://api.yuanhuishop.cn（旧 Beta 模式默认 IP）
+///   TEST_RUNNER_YH_S31_OLD_BETA=1                           旧 Beta 包模式（`scripts/s31-release-live.sh --old-beta`）：被测 App 换成
+///     f6dc700（#54）之前的 Beta 构建，包内默认 https://47.117.184.253（TestFlight 上家里人装的就是这种），核对也走 IP。
+///     那时看账还是占位页（S24 才做），第 7 步改成核对占位页出得来；其余断言不变。
+/// 最后在界面上退出登录（设置 → 退出登录），并在服务器上核对 App 那台设备的会话已注销，不在测试店留有效会话。
 /// 店里要有至少两样不管保质期、有卖价的商品（线上「联调测试店甲」现成就有）。只写假数据，不测锁定。
 @MainActor
 final class S31ReleaseLiveUITests: XCTestCase {
     private var env: [String: String] { ProcessInfo.processInfo.environment }
-    private var base: String { env["YH_S31_BASE"] ?? "https://api.yuanhuishop.cn" }
+    private var oldBeta: Bool { env["YH_S31_OLD_BETA"] == "1" }
+    private static let domainBase = "https://api.yuanhuishop.cn", ipBase = "https://47.117.184.253"
+    private var base: String { env["YH_S31_BASE"] ?? (oldBeta ? Self.ipBase : Self.domainBase) }
 
     override func setUpWithError() throws {
         try XCTSkipIf(env["YH_S31_USER"] == nil, "只在 scripts/s31-release-live.sh 里跑（设 TEST_RUNNER_YH_S31_USER）")
@@ -105,6 +111,12 @@ final class S31ReleaseLiveUITests: XCTestCase {
 
         func get(_ path: String) throws -> [String: Any] { try Self.call(base, "GET", path, token: token) }
 
+        /// 测试店里登录着的设备，去掉核对用的这台
+        func otherDevices() throws -> Set<String> {
+            let ds = try get("/v1/devices")["devices"] as? [[String: Any]] ?? []
+            return Set(ds.filter { $0["is_me"] as? Bool != true }.compactMap { $0["id"] as? String })
+        }
+
         func logout() { _ = try? Self.call(base, "POST", "/v1/auth/logout", [:], token: token) }
 
         /// 从头拉到底：商品、条码、流水
@@ -140,7 +152,12 @@ final class S31ReleaseLiveUITests: XCTestCase {
 
     func testReleaseBuildRunsLiteScriptOverDomain() throws {
         let user = try XCTUnwrap(env["YH_S31_USER"]), password = try XCTUnwrap(env["YH_S31_PASSWORD"])
-        XCTAssertTrue(base.hasPrefix("https://api.yuanhuishop.cn"), "核对也走域名：\(base)")
+        if oldBeta {
+            XCTAssertTrue(base.hasPrefix(Self.ipBase), "旧 Beta 模式：核对和旧包一样走 IP：\(base)")
+        } else {
+            XCTAssertTrue(base.hasPrefix(Self.domainBase), "核对也走域名：\(base)")
+        }
+        print("S31 模式：\(oldBeta ? "旧 Beta 包（连 IP）" : "Release 包（连域名）")，核对走 \(base)")
         let server = try Server.login(base: base, user: user, password: password)
         defer { server.logout() }
 
@@ -158,6 +175,7 @@ final class S31ReleaseLiveUITests: XCTestCase {
         let (a, b) = (items[0], items[1])
         let month0 = try server.get("/v1/reports/month")
         let entries0 = Set(before.entries.compactMap { $0["id"] as? String })
+        let devices0 = try server.otherDevices()
         print("S31 商品 A=\(a.name) \(a.barcode) ¥\(a.priceFen)  B=\(b.name) \(b.barcode) ¥\(b.priceFen)  月报卖了 \(Self.int(month0["sold_fen"]))")
 
         // 1. 全新安装（脚本先卸载）→ 登录页 → 账号密码登录 → 首次同步 → 起名 → 首页
@@ -173,6 +191,8 @@ final class S31ReleaseLiveUITests: XCTestCase {
         tapWhenReady(app.buttons["onboarding.done"], "起好了")
         XCTAssertTrue(el(app, "page.home").waitForExistence(timeout: 20))
         waitSynced(app, "登录后")
+        let appDevices = try server.otherDevices().subtracting(devices0)
+        XCTAssertEqual(appDevices.count, 1, "App 登录后服务器上多出一台设备")
 
         // 2. 进货：A 进 2 个，每个 ¥3.21
         tapWhenReady(el(app, "home.stockIn"), "首页「进货」")
@@ -229,18 +249,48 @@ final class S31ReleaseLiveUITests: XCTestCase {
         // 6. 月报：卖了只多 B 的价；对账成立；期末货值 = 各商品货值之和
         let month1 = try server.get("/v1/reports/month")
         XCTAssertEqual(Self.int(month1["sold_fen"]) - Self.int(month0["sold_fen"]), b.priceFen, "月报卖了只多 B")
-        let recon = try XCTUnwrap(month1["reconciliation"] as? [String: Any])
-        let rows = (recon["rows"] as? [[String: Any]] ?? []).reduce(0) { $0 + Self.int($1["amount_fen"]) }
-        XCTAssertEqual(Self.int(recon["stock_value_start_fen"]) + rows, Self.int(recon["stock_value_end_fen"]), "月报对账成立：\(recon)")
+        // 货值按流水核对（不用月报自己的对账行，那个按定义恒成立）：A 货值变化 = 进货 2 × ¥3.21 − 卖出成本 + 撤回成本，
+        // B 货值变化 = −卖出成本；月报期末货值的变化 = 两样之和
+        let cogs = { (e: [String: Any]) in abs(Self.int(e["cogs_fen"])) }
+        let saleA = fresh.filter { $0["type"] as? String == "sale" && $0["reverses_entry_id"] is NSNull && $0["product_id"] as? String == a.id }
+        let saleB = fresh.filter { $0["type"] as? String == "sale" && $0["reverses_entry_id"] is NSNull && $0["product_id"] as? String == b.id }
+        let revA = fresh.filter { !($0["reverses_entry_id"] is NSNull) && $0["reverses_entry_id"] != nil && $0["product_id"] as? String == a.id }
+        XCTAssertEqual(saleA.count, 1); XCTAssertEqual(saleB.count, 1); XCTAssertEqual(revA.count, 1, "冲销的是 A 那一行")
+        XCTAssertEqual(revA[0]["reverses_entry_id"] as? String, saleA[0]["id"] as? String, "冲销指向 A 的卖出")
+        XCTAssertEqual(cogs(revA[0]), cogs(saleA[0]), "撤回按原成本回库")
+        XCTAssertEqual(a1.value - a0.value, 642 - cogs(saleA[0]) + cogs(revA[0]), "A 货值变化 = 进货 642 − 卖出成本 + 撤回成本")
+        XCTAssertEqual(b1.value - b0.value, -cogs(saleB[0]), "B 货值变化 = −卖出成本")
+        XCTAssertEqual(Self.int(month1["stock_value_end_fen"]) - Self.int(month0["stock_value_end_fen"]),
+                       (a1.value - a0.value) + (b1.value - b0.value), "月报期末货值的变化 = A、B 货值变化之和")
+        print("S31 货值变化：A \(a1.value - a0.value) 分（卖出成本 \(cogs(saleA[0]))，撤回 \(cogs(revA[0]))）  B \(b1.value - b0.value) 分")
         let total = after.products.reduce(0) { $0 + stock(after.products, $1["id"] as! String).value }
         XCTAssertEqual(Self.int(month1["stock_value_end_fen"]), total, "月报期末货值 = 各商品货值之和")
 
         // 7. 手机上的看账（本月）和服务器逐分一致
         tapWhenReady(el(app, "home.reports"), "首页「看账」")
-        tapWhenReady(el(app, "reports.tab.month"), "本月")
         let sold = Self.int(month1["sold_fen"])
-        let soldEl = el(app, "reports.sold")
-        wait("看账「卖了」是 \(sold) 分（现在「\(soldEl.label)」\(String(describing: soldEl.value))）") { soldEl.exists && soldEl.value as? String == String(sold) }
-        print("S31 看账本月卖了：\(soldEl.label)；服务器 \(sold) 分")
+        if oldBeta {
+            // 旧 Beta 包（6382c15）的看账还是占位页「这一页还在做 / 开发计划 S24 段」，没有数字可核对
+            XCTAssertTrue(el(app, "page.reports").waitForExistence(timeout: 15), "旧包的看账占位页")
+            XCTAssertTrue(app.staticTexts["这一页还在做"].exists, "旧包看账是占位页")
+            print("S31 看账（旧包是占位页「这一页还在做」，不出数字）；服务器月报卖了 \(sold) 分")
+        } else {
+            tapWhenReady(el(app, "reports.tab.month"), "本月")
+            let soldEl = el(app, "reports.sold")
+            wait("看账「卖了」是 \(sold) 分（现在「\(soldEl.label)」\(String(describing: soldEl.value))）") { soldEl.exists && soldEl.value as? String == String(sold) }
+            print("S31 看账本月卖了：\(soldEl.label)；服务器 \(sold) 分")
+        }
+        backHome(app)
+
+        // 8. 界面上退出登录（更多 → 退出登录 → 确认），服务器上 App 那台设备的会话已注销
+        tapWhenReady(el(app, "home.more"), "首页「更多」")
+        let logoutItem = el(app, "settings.item.logout")
+        XCTAssertTrue(logoutItem.waitForExistence(timeout: 15), "设置里的退出登录")
+        for _ in 0..<4 where !logoutItem.isHittable { app.swipeUp() }   // 在设置页底部，可能要往下翻
+        tapWhenReady(logoutItem, "退出登录")
+        tapWhenReady(el(app, "logout.confirm"), "确认退出登录")
+        XCTAssertTrue(el(app, "page.login").waitForExistence(timeout: 30), "退出后回登录页")
+        wait("服务器上 App 那台设备已注销") { (try? server.otherDevices().isDisjoint(with: appDevices)) == true }
+        print("S31 界面退出登录：回到登录页，服务器上 App 设备已注销")
     }
 }

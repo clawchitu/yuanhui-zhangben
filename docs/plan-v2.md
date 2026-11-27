@@ -908,7 +908,7 @@ S09 + S23b + S29 → S30 → S31（等备案）→ S32
 
 **S31 备案后切换到域名**（备案下来才能做）
 - 按 `deploy/cutover-to-domain.md`（§9.3）执行。
-- 验收：`https://api.yuanhuishop.cn/healthz` 证书有效；Release 包连域名走通 S28 剧本的精简版；IPv6-only 网络下可用；旧的 Beta 包（连 IP）仍然可用；四个静态页可访问。
+- 验收：`https://api.yuanhuishop.cn/healthz` 证书有效；Release 包连域名走通 S28 剧本的精简版；IPv6-only 网络下可用；旧的 Beta 包（连 IP）仍然可用；四个静态页可访问。（11/27：IPv6-only 的真机验证转 S29 真机清单，主会话定；四个静态页随 S30 上线后验）
 
 **S32 提审与上线**
 - 产出：App Store Connect 填好全部信息（销售范围只选中国大陆）并提交；`docs/runbook.md` 定稿（续费日历：开发者会员、域名、ECS、OSS、快鸟额度、证书）。
