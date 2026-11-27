@@ -163,20 +163,28 @@ final class ExpiryTests: XCTestCase {
         XCTAssertEqual(try db.expiryBoard(today: try CalendarDate("2026-11-22")).remindKinds, 3)
     }
 
-    /// 再提醒还没传上去、过了几天这批又回到清单时再处理：带的版本要算上没传的那条（服务器先应用再提醒，handle_ver + 1）
-    func testHandleAfterPendingSnoozeCarriesNextVersion() throws {
+    /// 再提醒还没传上去、过了几天这批又回到清单：传上去之前不能再处理（不猜版本号，Codex 第 2 轮）；
+    /// 传上去、拉下新版本以后照常处理，带的是服务器的新版本
+    func testNoSecondHandleWhileSnoozePending() throws {
         let db = try db()
         let item = try XCTUnwrap(try db.expiryBoard(today: Self.today).soon.first { $0.lotId == Self.beerLot })
-        XCTAssertEqual(item.handleVer, 0)
-        try db.handleExpiry(item, choice: .snooze, actualQty: 10, at: try XCTUnwrap(LocalDB.parseTimestamp("2026-11-19T10:00:00.000+08:00")))
+        XCTAssertFalse(item.awaitingUpload)
+        let snooze = try db.handleExpiry(item, choice: .snooze, actualQty: 10,
+                                         at: try XCTUnwrap(LocalDB.parseTimestamp("2026-11-19T10:00:00.000+08:00")))
         let later = try XCTUnwrap(try db.expiryBoard(today: try CalendarDate("2026-11-22")).soon.first { $0.lotId == Self.beerLot })
-        XCTAssertEqual(later.handleVer, 1)
-        XCTAssertEqual(later.qtyLeft, 10)
-        try db.handleExpiry(later, choice: .discard, actualQty: 10)
-        let vers = try db.pendingOps().map { o -> Int64? in
-            int64(((try JSONSerialization.jsonObject(with: o.opJSON) as? [String: Any])?["payload"] as? [String: Any])?["handle_ver"])
-        }
-        XCTAssertEqual(vers, [0, 1])
+        XCTAssertTrue(later.awaitingUpload)
+        XCTAssertEqual(later.handleVer, 0)
+        XCTAssertInvalid(try db.handleExpiry(later, choice: .discard, actualQty: 10))
+        XCTAssertInvalid(try db.handleExpiry(later, choice: .snooze, actualQty: 0))
+        XCTAssertEqual(try db.pendingOps().count, 1)
+        // 传上去了：服务器版本 1、恢复提醒日 11/22（拉下来的），可以再处理
+        try db.recordResults([try OpResult(id: snooze, status: .applied)], storeId: DemoSeed.storeId)
+        try db.applyBaseline(CatalogBaseline(lots: [try LocalLot(id: Self.beerLot, productId: Self.beer, expiryDate: try CalendarDate("2026-11-25"),
+                                                                 qtyIn: 48, qtyLeft: 10, snoozedUntil: try CalendarDate("2026-11-22"), handleVer: 1)]))
+        let fresh = try XCTUnwrap(try db.expiryBoard(today: try CalendarDate("2026-11-22")).soon.first { $0.lotId == Self.beerLot })
+        XCTAssertFalse(fresh.awaitingUpload)
+        XCTAssertEqual(fresh.handleVer, 1)
+        try db.handleExpiry(fresh, choice: .discard, actualQty: 10)
     }
 
     /// 另一台手机已经处理过同一批：服务器拒 stale → 本机的处理作废，批次回到清单（拉下来的是服务器的最新状态）

@@ -63,9 +63,20 @@ public struct ExpiryItem: Hashable, Sendable, Identifiable {
     public let handleVer: Int64
     /// 在「过几天再提醒」期内时是哪天恢复提醒；不在期内为 nil
     public let snoozedUntil: CalendarDate?
+    /// 本机对这批的「再提醒」还没传上去：传上去（拿到结果、拉下新版本）之前不能再处理。
+    /// 不能猜版本号：猜「服务器版本 + 没传的条数」时，前一条被拒 stale 后后一条可能碰上另一台手机写出的版本，把别人的结果盖掉；
+    /// 不猜（照带旧版本）则前一条成功后后一条必被拒。等传完再处理两边都不会错（§5.4 防两台手机各处理一次）
+    public let awaitingUpload: Bool
     /// 到期日 − 今天：负数 = 过了几天，0 = 今天到期
     public let daysLeft: Int
     public var id: UUID { lotId }
+
+    public init(lotId: UUID, productId: UUID, name: String, unit: String, imageVer: Int, expiryDate: CalendarDate, qtyLeft: Int64,
+                handleVer: Int64, snoozedUntil: CalendarDate?, awaitingUpload: Bool = false, daysLeft: Int) {
+        self.lotId = lotId; self.productId = productId; self.name = name; self.unit = unit; self.imageVer = imageVer
+        self.expiryDate = expiryDate; self.qtyLeft = qtyLeft; self.handleVer = handleVer; self.snoozedUntil = snoozedUntil
+        self.awaitingUpload = awaitingUpload; self.daysLeft = daysLeft
+    }
     /// 已过期：到期日早于今天（今天到期的还算「快过期」，还能卖到今天）
     public var expired: Bool { daysLeft < 0 }
 }
@@ -131,8 +142,8 @@ extension LocalDB {
             // 本机还没传上去的处理 / 再提醒（同一家店，含恢复队列里的），按 outbox 顺序，后面的盖前面的
             var disposed = Set<UUID>()
             var snoozes: [UUID: (qty: Int64, until: CalendarDate)] = [:]
-            // 本机没传的「再提醒」条数：服务器每应用一条 handle_ver + 1，之后再处理同一批要带加上去的版本，否则被拒 stale
-            var pendingHandles: [UUID: Int64] = [:]
+            // 本机有没传的「再提醒」的批次：传上去之前不让再处理（见 `ExpiryItem.awaitingUpload`）
+            var pendingHandles = Set<UUID>()
             let pending = try Row.fetchAll(db, sql: """
                 SELECT type, op_json, occurred_at FROM outbox WHERE store_id = ? AND status = 'pending' AND type IN ('expiry_dispose', 'lot_snooze')
                 ORDER BY seq
@@ -148,7 +159,7 @@ extension LocalDB {
                     disposed.insert(lot)
                     continue
                 }
-                pendingHandles[lot, default: 0] += 1
+                pendingHandles.insert(lot)
                 if let days = p.days, let at = Self.parseTimestamp(r["occurred_at"] as String),
                           let until = try? Self.shanghaiDay(at).adding(days: days) {
                     let qty = p.actual_qty
@@ -172,8 +183,8 @@ extension LocalDB {
                 if let o = snoozes[lotId] { qty = o.qty; until = o.until }
                 let warn: Int64 = r["warn"]
                 let item = ExpiryItem(lotId: lotId, productId: try parseUUID(r["product_id"]), name: r["name"], unit: r["base_unit"],
-                                      imageVer: r["image_ver"], expiryDate: expiry, qtyLeft: qty, handleVer: (r["handle_ver"] as Int64) + pendingHandles[lotId, default: 0],
-                                      snoozedUntil: until.flatMap { today < $0 ? $0 : nil }, daysLeft: today.days(until: expiry))
+                                      imageVer: r["image_ver"], expiryDate: expiry, qtyLeft: qty, handleVer: r["handle_ver"],
+                                      snoozedUntil: until.flatMap { today < $0 ? $0 : nil }, awaitingUpload: pendingHandles.contains(lotId), daysLeft: today.days(until: expiry))
                 if ExpiryRule.shouldRemind(today: today, expiry: expiry, warnDays: warn, qtyLeft: qty, closed: false, snoozedUntil: until) {
                     if item.expired { expired.append(item) } else { soon.append(item) }
                 } else if item.snoozedUntil != nil, qty > 0 {
@@ -196,6 +207,7 @@ extension LocalDB {
     public func handleExpiry(_ item: ExpiryItem, choice: ExpiryChoice, actualQty: Int64, opId: UUID = UUID(),
                              entryId: UUID = UUID(), at now: Date = Date()) throws -> UUID {
         guard choice.enabled(actualQty: actualQty) else { throw invalid("实际数为 0 时不能扔掉或退货") }
+        guard !item.awaitingUpload else { throw invalid("这批上次的处理还没传上去，传完再处理") }
         let payload: any OpPayload
         var effects: [StockEffect] = []
         switch choice {
