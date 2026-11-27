@@ -425,6 +425,9 @@ struct AppRoot: View {
         // S27：-uiExpiry 时首页黄条的样数从库里算（其余夹具仍用稿子上的 3）
         model.liveExpiry = args.contains("-uiExpiry")
         model.refreshExpiring()
+        // S26：-uiCountGoods 时设置页「11月 数了 N 种」从库里算（其余夹具仍用稿子上的 86 种）
+        model.liveCount = args.contains("-uiCountGoods")
+        model.refreshCountSummary()
         model.sellFixture = SellFixture.from(args)
         // S23b：账号名、注销申请中
         let username = UIFixture.value(for: "-uiUsername", in: args) ?? (role == .cashier ? "none" : "yuanhui")

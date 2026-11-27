@@ -36,6 +36,10 @@ import ShopCore
 ///   -uiReportGoods                               S24：多登记稿子 09「快没货了」的红牛（罐）、双汇王中王（根）
 ///   -uiExpiry                                    S27：装上稿子 19 的四批（光明已过期、桃李 / 伊利快过期、达利园过几天再提醒），
 ///                                                演示数据自带的三批清零；首页黄条的样数从库里算（收银员不装）
+///   -uiCountGoods                                S26：装上稿子 12a / 12b 的货（红牛 2 罐、桃李、维达、旺仔、双汇；二锅头账上 9 瓶），
+///                                                演示数据的另外五样当作本月数过了；设置页「11月 数了 N 种」从库里算（收银员不装）
+///   -uiCountOutcome applied|stale|offline|lost   S26：盘点交账的假通道（不连服务器；offline = 排空就失败；
+///                                                lost = 第一次记上了但回包丢了，同一 op 重交才拿回结果）
 ///   -uiReportDate YYYY-MM-DD / -uiReportMonth YYYY-MM / -uiReportTab month   S24：看账看某一天 / 某个月、一进来就看本月
 ///   -uiUsername 名字                             S23b：这台手机登录用的账号名（家用 / 审核默认 yuanhui；none = 本机没记着，等 `/v1/me` 给）
 ///   -uiDeletePending ISO 时间                    S23b：账号在注销申请中（当作服务器给了 delete_pending_until）
@@ -400,6 +404,9 @@ extension UIFixture {
             }
             try db.applyBaseline(CatalogBaseline(products: products, barcodes: codes))
         }
+        if args.contains("-uiCountGoods"), (try db.currentSession())?.holdsPrivateData == true {
+            try installCountGoods(into: db)
+        }
         if args.contains("-uiMoreGoods") {
             // S17：同厂商另一个面（前缀 69025143 命中两个商品，prefix.json 同款）、按名称找的几样牛奶、一个零价商品
             let items: [(Int, String, String, Int64, String)] = [
@@ -431,3 +438,56 @@ extension UIFixture {
 }
 #endif
 
+
+#if DEBUG
+extension UIFixture {
+    static let countRedBullBarcode = "6920202888883"
+
+    /// S26：稿子 12a / 12b 的货。红牛账上 2 罐（12a），12b 列桃李、维达、二锅头（账上 9 瓶）、旺仔、双汇；
+    /// 演示数据的青岛、康师傅、可乐、中华、农夫山泉当作本月已经数过（各一条本月的盘点流水）
+    static func installCountGoods(into db: LocalDB) throws {
+        let items: [(Int, String, String, Int64, String, Int64)] = [
+            (0x2F1, "红牛 250ml", "罐", 600, countRedBullBarcode, 2),
+            (0x2F2, "双汇王中王 60g", "根", 250, "6902890218000", 3),
+            (0x2F3, "桃李 醇熟切片面包", "袋", 800, "6940188800013", 4),
+            (0x2F4, "维达抽纸 3 包装", "提", 1290, "6901236300015", 15),
+            (0x2F5, "旺仔牛奶 245ml", "罐", 500, "6902083800023", 11),
+        ]
+        var base = CatalogBaseline()
+        for (n, name, unit, price, code, stock) in items {
+            let p = try Product(id: UUID(uuidString: String(format: "5EED0000-0000-4000-8000-%012X", n))!, name: name,
+                                baseUnit: unit, priceFen: Fen(price))
+            base.products.append(p)
+            base.barcodes.append(try BarcodeRecord(barcode: code, productId: p.id, packQty: 1, unitName: unit, packPriceFen: nil))
+            base.privates.append(try ProductPrivate(productId: p.id, stockQty: stock, stockValueFen: Fen(stock * 300),
+                                                    lastCostFen: Fen(300), costKnown: true, stockVer: 3))
+        }
+        // 二锅头账上 9 瓶（稿子 12b）
+        let liquor = try demoProduct(db, "6901234500011")
+        base.products.append(liquor)
+        base.privates.append(try ProductPrivate(productId: liquor.id, stockQty: 9, stockValueFen: Fen(9 * 1800),
+                                                lastCostFen: Fen(1800), costKnown: true, stockVer: 2))
+        try db.applyBaseline(base)
+        let at = Op.formatTimestamp(designNow.addingTimeInterval(-86_400))
+        let counted = try ["6901035600016", "6902514300011", "6925303770013", "6901028075862", "6921168509256"].map { try demoProduct(db, $0).id }
+        let entries: [[String: Any]] = counted.enumerated().map { i, pid in
+            ["id": UUID().uuidString.lowercased(), "seq": 9000 + i, "op_id": UUID().uuidString.lowercased(), "batch_id": NSNull(),
+             "type": "count", "reverses_entry_id": NSNull(), "product_id": pid.uuidString.lowercased(),
+             "name_snapshot": "盘点", "qty_delta": 0, "amount_fen": 0, "list_amount_fen": 0, "cogs_fen": 0, "value_delta_fen": 0,
+             "device_id": UUID().uuidString.lowercased(), "occurred_at": at, "voided_at": NSNull(), "rev": 9000 + i]
+        }
+        let obj: [String: Any] = [
+            "results": [], "changes": ["products": [], "barcodes": [], "removed": [], "entries": entries, "batches": [], "lots": []],
+            "cursors": ["catalog": 0, "ledger": 0], "has_more": ["catalog": false, "ledger": false], "total_products": 0,
+            "server_time": Op.formatTimestamp(designNow), "epoch": (try db.meta(.serverEpoch)) ?? UUID().uuidString, "min_build": 0,
+            "device": ["role": "family", "label": "柜台手机", "revoked": false], "store": ["name": "元辉烟酒店"]]
+        try db.applySyncResponse(try SyncResponse.decode(try JSONSerialization.data(withJSONObject: obj)), sent: nil)
+    }
+
+    /// 演示数据里条码是这个的商品
+    private static func demoProduct(_ db: LocalDB, _ barcode: String) throws -> Product {
+        guard let c = try db.lookup(barcode: barcode) else { throw URLError(.fileDoesNotExist) }
+        return c.product
+    }
+}
+#endif
