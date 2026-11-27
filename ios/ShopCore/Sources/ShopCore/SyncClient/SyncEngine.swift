@@ -652,6 +652,10 @@ extension SyncEngine {
         guard op.type.onlineOnly else { throw invalid("\(op.type.rawValue) 不是只能联网的 op，走 outbox") }
         guard let s = try db.currentSession() else { throw invalid("没有登录") }
         guard Capabilities(role: s.role).canSend(op.type) else { throw invalid("这台手机不能记 \(op.type.rawValue)") }
+        // 本机还有没传的账就不交（交了版本也对不上）：调用方先 `drainForOnline`（PR #68 Opus 建议 1）
+        let st = try db.syncStatus()
+        if st.deletePendingUntil != nil { throw OnlineSubmitError.deletePending }
+        if st.pendingCount > 0 { throw OnlineSubmitError.outboxNotDrained(st.pendingCount) }
         let body = try db.syncRequestBody(opsJSON: [op.encoded()], appBuild: appBuild)
         let (code, data) = try transport(body)
         if code == 409, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any], obj["epoch"] is String {
