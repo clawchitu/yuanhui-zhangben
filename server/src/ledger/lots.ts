@@ -3,6 +3,7 @@
 // 以及 expiry_dispose / lot_snooze 两种 op。调用方都已在店铺锁内（StoreTx）。
 // 每改一行批次取一个新号（rev）。handle_ver 只在「处理」和「过几天再提醒」时 +1，普通卖出扣批次不改它。
 import { derivedId } from "./ids.ts";
+import { sql } from "kysely";
 import type { Selectable } from "kysely";
 import type { Database } from "../db.ts";
 import type { StoreTx } from "../sync/lock.ts";
@@ -86,6 +87,24 @@ export function planDeduct<I>(lots: DeductLot<I>[], qty: number): { moves: Array
   return { moves, unassigned: Math.max(left, 0) };
 }
 
+/**
+ * 批次比货架少时补到哪个批次（§14 T6）：到期日最早的未关闭批次（空日期最后，同日先建的在前，和扣批次同一个顺序）。
+ * qty_left = 0 的未关闭批次也算（卖完了不等于关闭）。没有未关闭批次 → null，不补。
+ */
+export function pickAddTarget<I>(lots: DeductLot<I>[]): I | null {
+  const order = lots
+    .filter((l) => !l.closed)
+    .sort((a, b) => {
+      if (a.expiry_date !== b.expiry_date) {
+        if (a.expiry_date === null) return 1;
+        if (b.expiry_date === null) return -1;
+        return a.expiry_date < b.expiry_date ? -1 : 1;
+      }
+      return a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0;
+    });
+  return order[0]?.id ?? null;
+}
+
 /** 防两台手机各处理一次（§5.4）：批次已关闭或版本不一致 → stale；否则接受，handle_ver + 1 */
 export function checkHandle(lot: { handle_ver: number; closed: boolean }, opVer: number): { result: "ok"; new_handle_ver: number } | { result: "stale" } {
   if (lot.closed || lot.handle_ver !== opVer) return { result: "stale" };
@@ -147,8 +166,53 @@ export async function deductLots(tx: StoreTx, productId: string, entryId: string
 }
 
 /**
+ * 库存增加却没有 lot_moves 可以依据时（§14 T6）：① 盘盈；② 撤销被补偿的迟到卖出（它没扣过批次，§14 S06-10），
+ * 把增加的数加到到期日最早的未关闭批次上（pickAddTarget），记一条负数的 lot_moves（entryId = 盘点流水 / 卖出的冲销行）。
+ * 没有未关闭批次时不加。加给批次的数不随撤销减回：撤销盘盈后批次比货架多，多提醒是安全的方向（§14 S06-3）。
+ * 加完超出 integer 的只加到上限（批次只管提醒，不为它拒掉盘点或撤销）。
+ */
+export async function addToEarliestLot(tx: StoreTx, productId: string, entryId: string, qty: number) {
+  if (qty <= 0) return;
+  const open = await tx.trx
+    .selectFrom("stock_lots as l")
+    .innerJoin("entries as e", (j) => j.onRef("e.store_id", "=", "l.store_id").onRef("e.id", "=", "l.source_entry_id"))
+    .select(["l.id", "l.expiry_date", "l.qty_left", "e.seq"])
+    .where("l.store_id", "=", tx.storeId)
+    .where("l.product_id", "=", productId)
+    .where("l.closed_at", "is", null)
+    .execute();
+  const id = pickAddTarget(open.map((l) => ({ id: l.id, expiry_date: l.expiry_date as string | null, qty_left: l.qty_left, closed: false, seq: BigInt(l.seq) })));
+  if (id === null) return;
+  const lot = open.find((l) => l.id === id)!;
+  const add = Number(BigInt(qty) < INT32.max - BigInt(lot.qty_left) ? BigInt(qty) : INT32.max - BigInt(lot.qty_left));
+  if (add <= 0) return;
+  await tx.trx.insertInto("lot_moves").values({ store_id: tx.storeId, entry_id: entryId.toLowerCase(), lot_id: id, qty: -add }).execute();
+  await tx.trx
+    .updateTable("stock_lots")
+    .set((eb) => ({ qty_left: eb("qty_left", "+", add) }))
+    .set({ rev: await tx.nextRev() } as never)
+    .where("store_id", "=", tx.storeId)
+    .where("id", "=", id)
+    .execute();
+}
+
+/** 卖出 e 是不是被补偿的迟到卖出（同一个 op、同一个商品有 late_before_count 的补偿行，§5.6 第 4 条） */
+export async function wasLateCompensated(tx: StoreTx, e: EntryRow): Promise<boolean> {
+  const r = await tx.trx
+    .selectFrom("entries")
+    .select("id")
+    .where("store_id", "=", tx.storeId)
+    .where("op_id", "=", e.op_id)
+    .where("product_id", "=", e.product_id)
+    .where("reverses_entry_id", "is", null)
+    .where(sql<boolean>`(flags->>'late_before_count') = 'true'`)
+    .executeTakeFirst();
+  return r !== undefined;
+}
+
+/**
  * 撤销一行流水时的批次动作（§5.4 生命周期表）：
- * - 卖出 / 盘亏：按 lot_moves 原样加回；对应批次已关闭的这部分不加回、也不重开。
+ * - 卖出 / 盘亏：按 lot_moves 原样加回；对应批次已关闭的这部分不加回、也不重开。盘盈记的负数 lot_moves 不减回（T6）。
  * - 来源进货 / 期初（不论流水类型，按 source_entry_id 找）：这次生成的批次关闭，closed_reason = voided；已扣过的 lot_moves 保留不动。
  * - 扔掉 / 退货：批次重新打开，qty_left 恢复为处理前的值（存在流水 flags 里）。来源流水在处理之后已被撤销的，
  *   不重开，closed_reason 改为 voided（等于来源撤销时它还开着的结果）。
@@ -157,6 +221,7 @@ export async function onVoid(tx: StoreTx, ctx: LedgerContext, e: EntryRow) {
   if (e.type === "sale" || e.type === "count") {
     const moves = await tx.trx.selectFrom("lot_moves").select(["lot_id", "qty"]).where("store_id", "=", tx.storeId).where("entry_id", "=", e.id).execute();
     for (const m of moves) {
+      if (m.qty < 0) continue;
       const lot = await lotsOf(tx).select(["closed_at", "qty_left"]).where("id", "=", m.lot_id).executeTakeFirstOrThrow();
       if (lot.closed_at !== null) continue;
       // 写库前预检查（§14 S05-4 第二层）：加回后超出 integer 的拒 invalid，guarded 回滚整个 op 并留档，不让 UPDATE 报 22003 变成 500

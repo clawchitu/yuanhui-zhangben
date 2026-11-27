@@ -10,7 +10,7 @@ import type { StoreTx } from "../sync/lock.ts";
 import { Remap } from "../sync/aliases.ts";
 import type { Outcome } from "../sync/catalog.ts";
 import { raw, VOIDABLE, type Draft, type EntryType } from "./cost.ts";
-import { onVoid } from "./lots.ts";
+import { addToEarliestLot, onVoid, wasLateCompensated } from "./lots.ts";
 import { bad, guarded, loadProduct, stateOf, writeStep, type LedgerContext } from "./apply.ts";
 
 type EntryRow = Selectable<Database["entries"]>;
@@ -69,7 +69,7 @@ async function voidOne(tx: StoreTx, ctx: LedgerContext, e: EntryRow) {
   }
   const step = raw.voidEntry(stateOf(prod), draftOf(e), fixedBy);
   // 冲销行照抄原行的展示字段；件数是数量，跟 qty_delta 一起取反（§3.3「所有数量和金额取反」）
-  await writeStep(tx, ctx, prod, {
+  const { late, mainId } = await writeStep(tx, ctx, prod, {
     batchId: e.batch_id ?? undefined,
     nameSnapshot: e.name_snapshot,
     barcode: e.barcode,
@@ -85,6 +85,9 @@ async function voidOne(tx: StoreTx, ctx: LedgerContext, e: EntryRow) {
     .where("id", "=", e.id)
     .execute();
   await onVoid(tx, ctx, e);
+  // 撤销被补偿的迟到卖出（§14 T6 ②）：它没扣过批次，库存加回而批次不加，就加到到期日最早的未关闭批次上。
+  // 撤销本身也迟到（被补偿、库存不变）时不加
+  if (e.type === "sale" && !late && (await wasLateCompensated(tx, e))) await addToEarliestLot(tx, e.product_id, mainId, -e.qty_delta);
 }
 
 export async function applyVoid(tx: StoreTx, ctx: LedgerContext, p: VoidPayload): Promise<Outcome> {

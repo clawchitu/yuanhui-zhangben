@@ -484,11 +484,13 @@ async function assertLate(storeId: string) {
  * 批次一致性（§5.4 生命周期表、§3.3 stock_lots / lot_moves）。批次不参与成本，这里断言的是它自己的账：
  * L1 qty_left ≥ 0、qty_in ≥ 0。
  * L2 来源流水存在、同一商品、不是冲销行，类型是进货 / 期初（没填进价的期初可能记成 count）。
- * L3 lot_moves：数量 > 0；流水存在、同一商品、是原始的卖出或盘亏（count 且 qty_delta < 0）；一条流水扣的批次合计 ≤ 它的数量。
+ * L3 lot_moves：流水存在、同一商品。数量 > 0 的（扣批次）是原始的卖出或盘亏（count 且 qty_delta < 0），一条流水扣的合计 ≤ 它的数量；
+ *    数量 < 0 的（加批次，§14 T6）是原始的盘盈（count 且 qty_delta > 0）或卖出的冲销行，一条流水只加一个批次、加的数 ≤ 它的数量。
  * L4 handle_ver = 对这个批次 applied 的 expiry_dispose + lot_snooze 个数（普通卖出、撤销重开都不改它）。
  * L5 关闭原因：voided ⇔ 来源流水已撤销且关闭时还没被处理；disposed ⇒ 最近一次处理（payload.handle_ver 最大的那个 applied expiry_dispose）
  *    是「卖完了」，或它的扔掉 / 退货流水还没撤销；未关闭 ⇒ 来源没撤销，且每一次处理都是扔掉 / 退货并且都已撤销（撤销 → 重开）。
- * L6 从没处理过、也没关过的批次：qty_left = qty_in − Σ 未撤销流水的 lot_moves（撤销卖出 / 盘亏原样加回）。
+ * L6 从没处理过、也没关过的批次：qty_left = qty_in − Σ 未撤销流水的扣减 + Σ 全部加批次（撤销卖出 / 盘亏原样加回；
+ *    加给批次的数不随撤销减回，T6）。
  */
 async function assertLots(storeId: string) {
   const k = tdb.kysely;
@@ -500,13 +502,24 @@ async function assertLots(storeId: string) {
   ]);
   const entry = new Map(entries.map((e) => [e.id, e]));
   const movedBy = new Map<string, number>();
+  const addedBy = new Set<string>();
   for (const m of moves) {
     const e = entry.get(m.entry_id);
     const l = lots.find((x) => x.id === m.lot_id);
-    expect(m.qty, "L3：lot_moves 数量 > 0").toBeGreaterThan(0);
+    expect(m.qty, "L3：lot_moves 数量 ≠ 0").not.toBe(0);
     expect(e && l && e.product_id === l.product_id, `L3：lot_move ${m.entry_id} → ${m.lot_id} 的流水或批次不对`).toBe(true);
-    expect(e!.reverses_entry_id === null && (e!.type === "sale" || (e!.type === "count" && e!.qty_delta < 0)), `L3：扣批次的不是原始卖出 / 盘亏（${e!.type}）`).toBe(true);
-    movedBy.set(m.entry_id, (movedBy.get(m.entry_id) ?? 0) + m.qty);
+    if (m.qty > 0) {
+      expect(e!.reverses_entry_id === null && (e!.type === "sale" || (e!.type === "count" && e!.qty_delta < 0)), `L3：扣批次的不是原始卖出 / 盘亏（${e!.type}）`).toBe(true);
+      movedBy.set(m.entry_id, (movedBy.get(m.entry_id) ?? 0) + m.qty);
+    } else {
+      const gain = e!.reverses_entry_id === null && e!.type === "count" && e!.qty_delta > 0;
+      const unvoid = e!.reverses_entry_id !== null && e!.type === "sale";
+      expect(gain || unvoid, `L3：加批次的不是原始盘盈 / 卖出的冲销行（${e!.type}）`).toBe(true);
+      expect(-m.qty, `L3：流水 ${m.entry_id} 加的批次超过它的数量`).toBeLessThanOrEqual(e!.qty_delta);
+      expect(addedBy.has(m.entry_id), `L3：流水 ${m.entry_id} 加了不止一个批次`).toBe(false);
+      addedBy.add(m.entry_id);
+      coverage.set(gain ? "盘盈加批次" : "撤销迟到卖出加批次", (coverage.get(gain ? "盘盈加批次" : "撤销迟到卖出加批次") ?? 0) + 1);
+    }
   }
   for (const [eid, q] of movedBy) expect(q, `L3：流水 ${eid} 扣的批次合计超过它的数量`).toBeLessThanOrEqual(-entry.get(eid)!.qty_delta);
   type P = { lot_id: string; handle_ver: number; action?: string; entry_id?: string };
@@ -532,8 +545,8 @@ async function assertLots(storeId: string) {
       expect(last !== undefined && !undone(last), `L5：${ctx} 是 disposed，但最近一次处理（${last?.p.action}）的流水已撤销——撤销扔掉 / 退货应当重开批次`).toBe(true);
     }
     if (handled.length === 0 && l.closed_at === null) {
-      const out = moves.filter((m) => m.lot_id === l.id && entry.get(m.entry_id)!.voided_at === null).reduce((x, m) => x + m.qty, 0);
-      expect(l.qty_left, `L6：${ctx} qty_left ≠ qty_in − 未撤销的扣减`).toBe(l.qty_in - out);
+      const out = moves.filter((m) => m.lot_id === l.id && (m.qty < 0 || entry.get(m.entry_id)!.voided_at === null)).reduce((x, m) => x + m.qty, 0);
+      expect(l.qty_left, `L6：${ctx} qty_left ≠ qty_in − 未撤销的扣减 + 加批次`).toBe(l.qty_in - out);
     }
   }
 }
@@ -640,6 +653,24 @@ const LATE_EXAMPLE: Scenario = {
   page: 1,
 };
 
+/**
+ * 固定带上的第三组：批次比货架少的两种情况（§14 T6）。商品 1：进货 10 个（批次 10）→ 盘点到 8 → 盘点前卖的 2 个才到（被补偿，批次仍 8）
+ * → 撤销这笔卖出（库存 10，批次加回到 10）→ 盘点到 12（盘盈 2，批次 12）。
+ */
+const T6_EXAMPLE: Scenario = {
+  gens: [
+    { kind: "stock_in", dev: 0, p: 1, packQty: 1, count: 10, unit: 100, expiry: "2026-12-01", atH: 30 },
+    { kind: "count", dev: 0, p: 1, counted: 8, base: "current", atH: 10 },
+    { kind: "sale", dev: 2, lines: [{ p: 1, packQty: 1, count: 2, price: 300 }], discount: 0, atH: 20 },
+    { kind: "void", dev: 0, target: 2, line: null, recent: false, atH: 5 },
+    { kind: "count", dev: 0, p: 1, counted: 12, base: "current", atH: 3 },
+  ],
+  delays: [0, 0, 0, 0, 0],
+  replays: [],
+  chunk: 1,
+  page: 1,
+};
+
 describe("数据库层性质测试（I1–I8，§3.3）", () => {
   it(`随机多设备 op 序列 ${RUNS} 组，乱序到达、中途与最后重发：I1–I8 成立`, { timeout: 1_200_000 }, async () => {
     let applied = 0;
@@ -654,10 +685,10 @@ describe("数据库层性质测试（I1–I8，§3.3）", () => {
           else rejected += 1;
         }
       }),
-      { numRuns: RUNS, examples: [[LOT_EXAMPLE], [LATE_EXAMPLE]] },
+      { numRuns: RUNS, examples: [[LOT_EXAMPLE], [LATE_EXAMPLE], [T6_EXAMPLE]] },
     );
     console.log(`性质测试：${runs} 组，op 第一次结果 applied ${applied} / 其余 ${rejected}；流水 ${JSON.stringify(Object.fromEntries(coverage))}`);
-    const must = ["sale冲销", "stock_in冲销", "opening冲销", "cost_fix", "cost_fix冲销", "cost_adjust", "count", "count冲销", "expire_loss", "expire_loss冲销", "supplier_return", "supplier_return冲销", "被补记的卖出", "时钟校正", "迟到补偿", "批次", "批次disposed", "批次voided", "批次处理后重开或推迟", "lot_moves", "迟到进货补进价", "迟到进货补进价且库存为正", "迟到卖出", "迟到卖出（管保质期）", "count:applied", "count:stale", "product_review_complete:applied", "product_review_complete:stale", "expiry_dispose:applied", "expiry_dispose:stale", "lot_snooze:applied", "lot_snooze:stale"];
+    const must = ["sale冲销", "stock_in冲销", "opening冲销", "cost_fix", "cost_fix冲销", "cost_adjust", "count", "count冲销", "expire_loss", "expire_loss冲销", "supplier_return", "supplier_return冲销", "被补记的卖出", "时钟校正", "迟到补偿", "批次", "批次disposed", "批次voided", "批次处理后重开或推迟", "lot_moves", "盘盈加批次", "撤销迟到卖出加批次", "迟到进货补进价", "迟到进货补进价且库存为正", "迟到卖出", "迟到卖出（管保质期）", "count:applied", "count:stale", "product_review_complete:applied", "product_review_complete:stale", "expiry_dispose:applied", "expiry_dispose:stale", "lot_snooze:applied", "lot_snooze:stale"];
     for (const k of must) expect(coverage.get(k) ?? 0, `生成器没有覆盖到 ${k}`).toBeGreaterThan(0);
     expect(runs).toBeGreaterThanOrEqual(RUNS);
     // 序列不能退化成全被拒：大部分 op 真的写进了库

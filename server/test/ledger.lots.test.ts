@@ -118,7 +118,7 @@ describe("批次的生成与扣减（§5.4）", () => {
     await app.close();
   });
 
-  it("盘亏也按到期日扣批次；盘盈不动批次", async () => {
+  it("盘亏也按到期日扣批次；盘盈加到到期日最早的未关闭批次（T6 ①，qty_left = 0 的也算）、撤销盘盈不减回", async () => {
     const { shop, app, send, newProduct } = await setup();
     const db = S(shop.storeId);
     const pid = await newProduct();
@@ -130,9 +130,46 @@ describe("批次的生成与扣减（§5.4）", () => {
     expect((await db.moves()).map((m) => [m.entry_id, m.qty]).sort()).toEqual([[c.payload.entry_id, 1], [c.payload.entry_id, 3]].sort());
     const c2 = op("count", { entry_id: randomUUID(), product_id: pid, counted_qty: 9, base_qty: 2, base_ver: v + 1 }, { at: AT });
     await send(c2);
-    expect((await db.lots(pid)).map((l) => l.qty_left)).toEqual([2, 0]);
+    // 盘盈 7：到期日最早的是 11-25 那批（已经扣到 0，但没关闭），记一条 −7 的 lot_moves
+    expect((await db.lots(pid)).map((l) => l.qty_left)).toEqual([2, 7]);
+    expect((await db.moves()).filter((m) => m.entry_id === c2.payload.entry_id).map((m) => m.qty)).toEqual([-7]);
     await send(voidEntry(c.payload.entry_id as string));
-    expect((await db.lots(pid)).map((l) => l.qty_left)).toEqual([3, 3]);
+    expect((await db.lots(pid)).map((l) => l.qty_left)).toEqual([3, 10]);
+    // 撤销盘盈：库存减 7，批次不减回（批次比货架多，多提醒是安全的方向）
+    await send(voidEntry(c2.payload.entry_id as string));
+    expect((await db.lots(pid)).map((l) => l.qty_left)).toEqual([3, 10]);
+    await assertDbLedger(tdb.kysely, shop.storeId, pid);
+    await app.close();
+  });
+
+  it("盘盈时没有未关闭的批次 → 不加（T6 ①）；不管保质期的商品没有批次", async () => {
+    const { shop, app, send, newProduct } = await setup();
+    const db = S(shop.storeId);
+    const pid = await newProduct();
+    const si = stockIn(pid, 3, 100, "2026-12-01");
+    await send(si);
+    const l = (await db.lots(pid))[0]!;
+    await send(dispose(l.id, 0, "sold_out", 3));
+    const v = Number((await db.product(pid)).stock_ver);
+    await send(op("count", { entry_id: randomUUID(), product_id: pid, counted_qty: 5, base_qty: 3, base_ver: v }, { at: AT }));
+    expect((await db.lots(pid)).map((x) => [x.qty_left, x.closed_reason])).toEqual([[3, "disposed"]]);
+    expect(await db.moves()).toEqual([]);
+    const other = await newProduct(false);
+    await send(stockIn(other, 2, 100));
+    const v2 = Number((await db.product(other)).stock_ver);
+    await send(op("count", { entry_id: randomUUID(), product_id: other, counted_qty: 6, base_qty: 2, base_ver: v2 }, { at: AT }));
+    expect(await db.lots(other)).toEqual([]);
+    await app.close();
+  });
+
+  it("盘盈加批次：空到期日的排最后，到期日相同先加先建的", async () => {
+    const { shop, app, send, newProduct } = await setup();
+    const db = S(shop.storeId);
+    const pid = await newProduct();
+    await send(stockIn(pid, 1, 100), stockIn(pid, 1, 100, "2026-12-05"), stockIn(pid, 1, 100, "2026-12-05"));
+    const v = Number((await db.product(pid)).stock_ver);
+    await send(op("count", { entry_id: randomUUID(), product_id: pid, counted_qty: 5, base_qty: 3, base_ver: v }, { at: AT }));
+    expect((await db.lots(pid)).map((l) => l.qty_left)).toEqual([1, 3, 1]);
     await app.close();
   });
 

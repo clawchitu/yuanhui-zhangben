@@ -122,18 +122,20 @@ function isLate(ctx: LedgerContext, prod: ProductRow, counted: boolean): boolean
  * 把 cost.ts 的一步写进 entries（第一条是主流水），再改商品投影。rawStep 可以是未做范围检查的（cost.ts 的 raw），这里统一检查。
  * 迟到的流水（isLate）在这里统一追加补偿行（cost.ts 的 settle → lateCompensateRaw），所以卖出、进货、撤销、扔掉 / 退货都走同一处；
  * 补偿行和主流水同一个 op、seq 相邻、occurred_at 相同，flags 多一个 late_before_count。
- * 返回这一步是否按迟到补偿了（卖出据此不扣批次，§14 S06-10）。
+ * 返回这一步是否按迟到补偿了（卖出据此不扣批次，§14 S06-10），和主流水的 id（冲销行是派生 id，T6 记 lot_moves 用）。
  */
-export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRow, main: MainRow, rawStep: Step<string>, o: { counted?: boolean } = {}): Promise<{ late: boolean }> {
+export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRow, main: MainRow, rawStep: Step<string>, o: { counted?: boolean } = {}): Promise<{ late: boolean; mainId: string }> {
   const late = isLate(ctx, prod, o.counted === true);
   // 范围检查在组合补偿之后（cost.ts 的 settle）：检查的是补偿后的最终状态和全部流水；越界抛 CostError → guarded 回滚并拒 invalid
   const step = settle(stateOf(prod), rawStep, late);
   let seq = await nextSeq(tx);
+  let mainId = "";
   for (const [i, d] of step.entries.entries()) {
     const derived = !(i === 0 && main.id !== undefined);
     const id = derived ? derivedId(tx.storeId, "entry", ctx.opId.toLowerCase(), String(seq)) : main.id!.toLowerCase();
     // 派生 id 可以事先算出来（同一台手机、或以后确认入账的被踢设备选的 op id）：撞上已有流水和主流水一样 rejected invalid，不让主键冲突变成 500
     if (derived) await entryFree(tx, id);
+    if (i === 0) mainId = id;
     await tx.trx
       .insertInto("entries")
       .values({
@@ -193,7 +195,7 @@ export async function writeStep(tx: StoreTx, ctx: LedgerContext, prod: ProductRo
     .where("store_id", "=", tx.storeId)
     .where("id", "=", prod.id)
     .execute();
-  return { late };
+  return { late, mainId };
 }
 
 async function unitNameOf(tx: StoreTx, prod: ProductRow, barcode: string): Promise<string> {

@@ -103,6 +103,50 @@ describe("迟到流水补偿（§5.6 第 4 条）", () => {
     await app.close();
   });
 
+  it("T6 ②：批次 10 → 盘点到 8 → 迟到卖 2 → 撤销这笔卖出 → 库存 10、批次 10（加回到期日最早的未关闭批次）；再盘点到 12 → 批次 12", async () => {
+    const { shop, app, send } = await setup();
+    const u = upsertFull({ price: 300, extra: { track_expiry: true, expiry_warn_days: 7 } });
+    await send(u);
+    const pid = u.payload.product_id as string;
+    await send(op("stock_in", { entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", pack_qty: 1, pack_count: 10, unit_cost_fen: 100, expiry_date: "2026-12-01" }, { at: T_LATE }));
+    await send(count(pid, 8, await ver(shop.storeId, pid)));
+    const s = sale(pid, 2, T_LATE);
+    await send(s);
+    const lots = () => tdb.kysely.selectFrom("stock_lots").selectAll().where("store_id", "=", shop.storeId).where("product_id", "=", pid).execute();
+    expect((await lots()).map((l) => l.qty_left)).toEqual([8]);
+    const saleId = ((s.payload.lines as Array<{ entry_id: string }>)[0]!).entry_id;
+    await send(op("void", { target: { entry_id: saleId } }, { at: T_AFTER }));
+    expect((await product(shop.storeId, pid)).stock_qty).toBe(10);
+    expect((await lots()).map((l) => l.qty_left)).toEqual([10]);
+    // 加回记在冲销行上，是一条负数 lot_moves
+    const rev = (await entriesOf(shop.storeId, pid)).find((e) => e.reverses_entry_id === saleId)!;
+    const moves = await tdb.kysely.selectFrom("lot_moves").select(["entry_id", "qty"]).where("store_id", "=", shop.storeId).where("entry_id", "=", rev.id).execute();
+    expect(moves).toEqual([{ entry_id: rev.id, qty: -2 }]);
+    await send(count(pid, 12, await ver(shop.storeId, pid), "2026-11-20T01:50:00Z"));
+    expect((await product(shop.storeId, pid)).stock_qty).toBe(12);
+    expect((await lots()).map((l) => l.qty_left)).toEqual([12]);
+    await assertDbLedger(tdb.kysely, shop.storeId, pid);
+    await app.close();
+  });
+
+  it("T6 ②：撤销本身也迟到（发生在盘点之前、被补偿，库存不变）→ 批次不加", async () => {
+    const { shop, app, send } = await setup();
+    const u = upsertFull({ price: 300, extra: { track_expiry: true, expiry_warn_days: 7 } });
+    await send(u);
+    const pid = u.payload.product_id as string;
+    await send(op("stock_in", { entry_id: randomUUID(), product_id: pid, barcode: "6900000000001", pack_qty: 1, pack_count: 10, unit_cost_fen: 100, expiry_date: "2026-12-01" }, { at: T_LATE }));
+    await send(count(pid, 8, await ver(shop.storeId, pid)));
+    const s = sale(pid, 2, T_LATE);
+    await send(s);
+    const saleId = ((s.payload.lines as Array<{ entry_id: string }>)[0]!).entry_id;
+    await send(op("void", { target: { entry_id: saleId } }, { at: "2026-11-20T01:10:00Z" }));
+    expect((await product(shop.storeId, pid)).stock_qty).toBe(8);
+    const lots = await tdb.kysely.selectFrom("stock_lots").selectAll().where("store_id", "=", shop.storeId).where("product_id", "=", pid).execute();
+    expect(lots.map((l) => l.qty_left)).toEqual([8]);
+    await assertDbLedger(tdb.kysely, shop.storeId, pid);
+    await app.close();
+  });
+
   it("盘点之后发生的（occurred_at 不早于 last_count_at）不补偿；同一时刻也不补偿", async () => {
     const { shop, app, send, newProduct } = await setup();
     const pid = await newProduct();
