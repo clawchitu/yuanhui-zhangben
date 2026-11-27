@@ -1,6 +1,6 @@
 name: ios
 # 三种跑法（11/27 负责人同意的 CI 精简方案）：
-#   PR：编译 + 全部单元测试 + 冒烟集 + 按改动路径选出来的 UI 测试 + Release / Beta 构建检查，目标 10–15 分钟。
+#   PR：编译 + 全部单元测试 + 冒烟集 + 按改动路径选出来的 UI 测试 + Release / Beta 构建检查，目标 10–15 分钟（只改一个页面时）。
 #       改到公共层、导航、数据模型、契约，或改了映射里没登记的路径 → 这个 PR 自动跑全量。
 #       规则在 scripts/ci/ios-test-map.txt，选测脚本 scripts/ci/ios-select-tests.sh。
 #   push 到 main、每晚北京时间 03:00（schedule）、手动触发（workflow_dispatch）：全量。
@@ -74,10 +74,8 @@ jobs:
       - name: 建本次专用模拟器
         id: sim
         run: |
-          name="yuanhui-ci-${{ github.run_id }}-${{ github.run_attempt }}"
-          udid=$(scripts/sim-create.sh "$name")
+          udid=$(scripts/sim-create.sh "yuanhui-ci-${{ github.run_id }}-${{ github.run_attempt }}")
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
-          echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "DERIVED=$RUNNER_TEMP/yuanhui-dd-${{ github.run_id }}" >> "$GITHUB_ENV"
       - name: 先启动模拟器（UI 测试和 Release 检查都在同一台上跑，启动好了再开始）
         run: |
@@ -88,16 +86,17 @@ jobs:
         # S21 登录后令牌进钥匙串，S21UITests 要靠它（§8 S21）
         # -collect-test-diagnostics never：测试全过后 xcodebuild 仍会跑 `simctl diagnose`，在这台 Mac 上每次卡满 600 秒超时，
         # 三次 xcodebuild 共多出约 30 分钟，把 75 分钟时限撑爆（D-1126-1）
-        # 选测时开 2 路并行（xcodebuild 按测试类分到本模拟器的两台克隆上）：遍历一条就约 6 分钟，其余的放另一路跑
+        # 不开并行测试（-parallel-testing-enabled）：PR #73 第一次试 2 路并行，两台克隆首次启动的系统进程把这台共用的 Mac
+        # 压到 load 100+，UI 测试 35 分钟没跑完（克隆停在 Safari 返回后的白屏），改回单台串行
+        # NSUnbufferedIO：xcodebuild 输出接管道时按块缓冲，日志里几十分钟看不到进度
         run: |
           set -o pipefail
           list="${{ steps.pick.outputs.list }}"
           args=()
           if [ "${{ steps.pick.outputs.mode }}" = select ]; then
             while IFS= read -r t; do [ -n "$t" ] && args+=("-only-testing:$t"); done < "$list"
-            args+=(-parallel-testing-enabled YES -parallel-testing-worker-count 2)
           fi
-          xcodebuild test \
+          NSUnbufferedIO=YES xcodebuild test \
             -project YuanhuiZhangben.xcodeproj \
             -scheme YuanhuiZhangben \
             -destination "id=${{ steps.sim.outputs.udid }}" \
@@ -136,16 +135,5 @@ jobs:
         if: always()
         run: |
           scripts/sim-destroy.sh "${{ steps.sim.outputs.udid }}"
-          # 并行测试的克隆（「Clone N of <本次模拟器名>」）正常由 xcodebuild 删；被取消时可能留下，只删名字对得上本次的
-          set_dir="$HOME/Library/Developer/XCTestDevices"
-          if [ -n "${{ steps.sim.outputs.name }}" ] && [ -d "$set_dir" ]; then
-            xcrun simctl --set "$set_dir" list devices -j 2>/dev/null \
-              | jq -r --arg n "${{ steps.sim.outputs.name }}" '.devices[][] | select(.name | endswith(" of " + $n)) | .udid' \
-              | while read -r c; do
-                  xcrun simctl --set "$set_dir" shutdown "$c" 2>/dev/null || true
-                  xcrun simctl --set "$set_dir" delete "$c" 2>/dev/null || true
-                  echo "已清理克隆 $c"
-                done
-          fi
           [ -n "${DERIVED:-}" ] && rm -rf "$DERIVED" || true
           rm -rf "$RUNNER_TEMP/yuanhui-dd-rel-${{ github.run_id }}" "$RUNNER_TEMP/yuanhui-dd-beta-${{ github.run_id }}"
