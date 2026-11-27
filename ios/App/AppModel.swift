@@ -454,7 +454,8 @@ final class AppModel {
                     await self?.afterOnline(nil)
                     return r
                 } catch { await self?.afterOnline(error); throw error }
-            })
+            },
+            finish: { [weak self] in await self?.afterOnline(nil) })
     }
 
     private func pauseSync() async {

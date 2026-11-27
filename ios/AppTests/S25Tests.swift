@@ -129,6 +129,21 @@ final class S25Tests: XCTestCase {
         XCTAssertEqual(try payloads(db, .productEdit).last?["archived"] as? Bool, true)
     }
 
+    /// 管保质期、保质期月数没填：什么都不动不发；只改名称不捎上 shelf_life_months（自审建议 2）
+    func testUntouchedShelfLifeNotSent() async throws {
+        let db = try makeDB()
+        let beerPayload = try ProductEditPayload(productId: beer, shelfLifeMonths: .set(nil))
+        try db.editProduct(beerPayload)
+        let m = EditProductModel(db: db, detail: try XCTUnwrap(try db.productDetail(beer)), storeLowDefault: 3)
+        XCTAssertTrue(m.trackExpiry)
+        let before = try db.pendingOps().count
+        do { let ok = await m.save(); XCTAssertTrue(ok) }
+        XCTAssertEqual(try db.pendingOps().count, before, "什么都没改：不发")
+        m.name = "青岛啤酒 经典"
+        do { let ok = await m.save(); XCTAssertTrue(ok) }
+        XCTAssertEqual(Set(try XCTUnwrap(try payloads(db, .productEdit).last).keys), ["product_id", "name"])
+    }
+
     /// 没设提醒线：显示店里的默认；没改就不发 low_at
     func testLowAtDefaultsToStoreDefault() async throws {
         let db = try makeDB()
@@ -144,6 +159,7 @@ final class S25Tests: XCTestCase {
 
     final class FakeBackend: @unchecked Sendable {
         var drains = 0
+        var finishes = 0
         var submitted: [ProductReviewCompletePayload] = []
         var outcomes: [OnlineOutcome] = []
         var drainError: Error?
@@ -152,7 +168,8 @@ final class S25Tests: XCTestCase {
                           submit: { [self] op in
                               submitted.append(op.payload as! ProductReviewCompletePayload)
                               return outcomes.isEmpty ? .applied : outcomes.removeFirst()
-                          })
+                          },
+                          finish: { [self] in finishes += 1 })
         }
     }
 
@@ -233,11 +250,12 @@ final class S25Tests: XCTestCase {
         let fake = FakeBackend()
         let m = ReviewProductModel(db: db, detail: try XCTUnwrap(try db.productDetail(id)), backend: ReviewBackend(
             drain: { fake.drains += 1; try Self.clearReview(db, id) },
-            submit: fake.backend.submit))
+            submit: fake.backend.submit, finish: fake.backend.finish))
         m.cost = YuanInput("3.2")
         await m.confirm(offline: false)
         XCTAssertEqual(m.phase, .done)
         XCTAssertTrue(fake.submitted.isEmpty)
+        XCTAssertEqual(fake.finishes, 1, "排空成功但没交：定时同步也要接着跑（自审建议 1）")
     }
 
     nonisolated static func clearReview(_ db: LocalDB, _ id: UUID) throws {

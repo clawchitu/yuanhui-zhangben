@@ -88,6 +88,8 @@ final class EditProductModel {
     var shelfMonths: Int
     private let initialLowAt: Int
     private let initialShelfMonths: Int?
+    /// 保质期没填时步进器从这里起；没动过就不发（不替人填成 12 个月）
+    static let defaultShelfMonths = 12
 
     private(set) var error: String?
     private(set) var confirmZeroPrice = false
@@ -107,7 +109,7 @@ final class EditProductModel {
         trackExpiry = p.trackExpiry
         warnDays = Int(v?.expiryWarnDays ?? 7)
         initialShelfMonths = v?.shelfLifeMonths.map(Int.init)
-        shelfMonths = initialShelfMonths ?? 12
+        shelfMonths = initialShelfMonths ?? Self.defaultShelfMonths
     }
 
     var product: Product { detail.product }
@@ -143,7 +145,7 @@ final class EditProductModel {
             lowAt: lowAt != initialLowAt ? .set(Int64(lowAt)) : .unchanged,
             trackExpiry: trackChanged ? .set(trackExpiry) : .unchanged,
             expiryWarnDays: trackExpiry && Int64(warnDays) != (v?.expiryWarnDays ?? 7) ? .set(Int64(warnDays)) : .unchanged,
-            shelfLifeMonths: trackExpiry && shelfMonths != initialShelfMonths ? .set(Int64(shelfMonths)) : .unchanged)
+            shelfLifeMonths: trackExpiry && shelfMonths != (initialShelfMonths ?? Self.defaultShelfMonths) ? .set(Int64(shelfMonths)) : .unchanged)
         return e
     }
 
@@ -165,7 +167,7 @@ final class EditProductModel {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !n.isEmpty, let f = price.fen, f <= Limits.maxFen else { return false }
         return n == p.name && f == p.priceFen.raw && lowAt == initialLowAt && trackExpiry == p.trackExpiry
-            && (!trackExpiry || (Int64(warnDays) == (detail.private?.expiryWarnDays ?? 7) && shelfMonths == initialShelfMonths))
+            && (!trackExpiry || (Int64(warnDays) == (detail.private?.expiryWarnDays ?? 7) && shelfMonths == (initialShelfMonths ?? Self.defaultShelfMonths)))
     }
 
     func cancelZeroPrice() { confirmZeroPrice = false }
@@ -208,6 +210,8 @@ final class EditProductModel {
 struct ReviewBackend: Sendable {
     var drain: @Sendable () async throws -> Void
     var submit: @Sendable (Op) async throws -> OnlineOutcome
+    /// 排空成功后不管交没交（挂码被拒、已经不是待确认……）都调一次：真机上让停掉的定时同步接着跑
+    var finish: @Sendable () async -> Void = {}
 }
 
 /// 22b 待确认补全：名称、卖价（收银员填的，不对可以改）、进价（必填，可以填 0）、货架上现在有几个、要管保质期。
@@ -331,10 +335,20 @@ final class ReviewProductModel {
 
     private func submit(counted: Int64, costFen: Int64, baseVer: (Int64, Int64)?, at now: Date) async {
         guard let backend else { phase = .editing; return }
+        drained = false
+        await submitSteps(backend, counted: counted, costFen: costFen, baseVer: baseVer, at: now)
+        if drained { await backend.finish() }
+    }
+
+    /// 这一趟排空成功了没有（成功了，结束时要让定时同步接着跑）
+    private var drained = false
+
+    private func submitSteps(_ backend: ReviewBackend, counted: Int64, costFen: Int64, baseVer: (Int64, Int64)?, at now: Date) async {
         let pid = product.id, db = db, track = trackExpiry
         do {
             // 2. 先把本机的账（含上面的修改）传完、拉到底；之后本机的基线就是服务器现在的
             try await backend.drain()
+            drained = true
             if let op = linkOp, let st = await Task.detached(operation: { try? db.outboxStatus(op) }).value, st.status == .rejected {
                 linkOp = nil; linkedCode = nil
                 if let d = await EditProductModel.load(db, pid) { detail = d }
