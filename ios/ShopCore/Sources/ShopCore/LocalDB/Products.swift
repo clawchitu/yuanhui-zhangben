@@ -72,17 +72,6 @@ public struct ProductDetail: Hashable, Sendable {
     public var hasUnitBarcode: Bool { barcodes.contains { !$0.isPack } }
 }
 
-extension CalendarDate {
-    /// 加减天数（上海日历日，没有时刻）
-    public func adding(days: Int) -> CalendarDate {
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(identifier: "UTC")!
-        let d = cal.date(from: DateComponents(year: year, month: month, day: day))!
-        let r = cal.dateComponents([.year, .month, .day], from: cal.date(byAdding: .day, value: days, to: d)!)
-        return (try? CalendarDate(year: r.year!, month: r.month!, day: r.day!)) ?? self
-    }
-}
-
 extension LocalDB {
     /// 店里默认的快没货提醒线（服务器 `stores.low_stock_default`，同步响应 `store.low_stock_default` 带来）。
     /// 还没从新版服务器拉到过时按建店默认值 3（`0001_init.sql`）
@@ -96,9 +85,8 @@ extension LocalDB {
     /// 「过几天再提醒」没到日子不提醒；到期日减提前天数 ≤ 今天就提醒
     public static func shouldRemind(today: CalendarDate, expiry: CalendarDate?, qtyLeft: Int64, snoozedUntil: CalendarDate?,
                                     warnDays: Int64) -> Bool {
-        guard let expiry, qtyLeft > 0 else { return false }
-        if let s = snoozedUntil, today < s { return false }
-        return today >= expiry.adding(days: -Int(warnDays))
+        // 和 S27 的快过期清单（20）同一条规则；这里只传没关的批次
+        ExpiryRule.shouldRemind(today: today, expiry: expiry, warnDays: warnDays, qtyLeft: qtyLeft, closed: false, snoozedUntil: snoozedUntil)
     }
 
     /// 快没货（§14 S07-6，与 `reports/today.ts` 同一条件）：没停用、不是待确认、库存动过（`stock_ver > 0`）、
