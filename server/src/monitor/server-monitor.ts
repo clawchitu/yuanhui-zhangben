@@ -36,6 +36,8 @@ export interface ServerMonitorDeps {
   backupDir: string;
   /** 看用量的磁盘（挂在 /data 上的目录）；空 = 不查 */
   diskPath: string;
+  /** 「营业时间没有同步」只监控这些店（NO_SYNC_ALERT_STORES）；空 = 一家都不监控，已亮的告警按「不在监控范围」清掉 */
+  noSyncStores: string[];
   statfs?: (path: string) => Promise<{ blocks: number; bfree: number; bavail: number }>;
   /** 只给测试用：把 ops 表的阈值调小（造 512 MB 的表太慢） */
   limits?: { opsTableBytes?: number; opsGrowthBytesPerDay?: number };
@@ -120,11 +122,13 @@ export class ServerMonitor {
   private async dbChecks(now: Date): Promise<void> {
     const db = this.d.db;
     // 营业时间没有同步：非演示、不在注销中、至少有一台没退出的设备的店
-    const stores = await db
+    const allow = this.d.noSyncStores;
+    const stores = allow.length === 0 ? [] : await db
       .selectFrom("stores as s")
       .innerJoin("accounts as a", "a.store_id", "s.id")
       .select("s.id")
       .where("s.is_demo", "=", false)
+      .where("s.id", "in", allow)
       .where("a.delete_requested_at", "is", null)
       .where((eb) => eb.exists(eb.selectFrom("devices as d").select("d.id").whereRef("d.store_id", "=", "s.id").where("d.revoked_at", "is", null)))
       .execute();
@@ -144,7 +148,7 @@ export class ServerMonitor {
       await this.d.alerter.condition(v.active, { key, title: "营业时间内超过 3 小时没有任何设备同步成功（店里断网或 App 出问题）", severity: "warning", details: { store_id: s.id, ...v.details } });
     }
     for (const k of Object.keys(this.d.alerter.state.conditions)) {
-      if (k.startsWith("no_sync:") && !live.has(k)) await this.d.alerter.condition(false, { key: k, title: "", severity: "warning", details: { reason: "店已不在监控范围（注销中或没有在用的设备）" } });
+      if (k.startsWith("no_sync:") && !live.has(k)) await this.d.alerter.condition(false, { key: k, title: "", severity: "warning", details: { reason: "店已不在监控范围（不在白名单、注销中或没有在用的设备）" } });
     }
 
     // 被退出的手机暂存待确认的账超过 24 小时

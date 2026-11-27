@@ -366,7 +366,7 @@ describe("通道", () => {
       ["https://user:review-dummy-secret@notify.invalid/hook/PATHSECRET", "TOKSECRET"],
       ["https://notify.invalid/hook/PATHSECRET", "TOK\nSECRET"],
     ] as const) {
-      const sink = sinkFromConfig({ dir, backupDir: "", diskPath: "", webhookUrl, webhookToken }, log)!;
+      const sink = sinkFromConfig({ dir, backupDir: "", diskPath: "", webhookUrl, webhookToken, noSyncStores: [] }, log)!;
       await sink.send(m());
     }
     expect(logged).toHaveLength(2);
@@ -406,7 +406,7 @@ describe("通道", () => {
 describe("配置", () => {
   const base = { DATABASE_URL: "postgres://x@localhost/x" };
   it("ALERT_WEBHOOK_URL 只许 https；只配令牌不配地址拒绝；默认不监控", () => {
-    expect(loadConfig(base).monitor).toEqual({ dir: "", backupDir: "", diskPath: "", webhookUrl: "", webhookToken: "" });
+    expect(loadConfig(base).monitor).toEqual({ dir: "", backupDir: "", diskPath: "", webhookUrl: "", webhookToken: "", noSyncStores: [] });
     expect(() => loadConfig({ ...base, ALERT_WEBHOOK_URL: "http://hook.example" })).toThrow(ConfigError);
     expect(() => loadConfig({ ...base, ALERT_WEBHOOK_TOKEN: "x" })).toThrow(ConfigError);
     expect(loadConfig({ ...base, ALERT_WEBHOOK_URL: "https://hook.example", MONITOR_DIR: "/data/monitor" }).monitor.webhookUrl).toBe("https://hook.example");

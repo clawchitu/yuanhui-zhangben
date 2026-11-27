@@ -60,6 +60,8 @@ export interface Config {
     /** 可选：立刻推一份的 webhook（https）。令牌只从环境变量来，不进日志 */
     webhookUrl: string;
     webhookToken: string;
+    /** 「营业时间没有同步」只监控这些店（store_id 白名单）；空 = 一家都不监控 */
+    noSyncStores: string[];
   };
 }
 
@@ -203,11 +205,19 @@ function monitor(env: Env): Config["monitor"] {
     if (bad) throw new ConfigError(`ALERT_WEBHOOK_URL / ALERT_WEBHOOK_TOKEN ${bad}`);
   }
   if (env.ALERT_WEBHOOK_TOKEN && !webhookUrl) throw new ConfigError("配了 ALERT_WEBHOOK_TOKEN 却没配 ALERT_WEBHOOK_URL");
+  const noSyncStores = (env.NO_SYNC_ALERT_STORES ?? "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  for (const id of noSyncStores) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new ConfigError(`NO_SYNC_ALERT_STORES 里有不是 uuid 的值：${id}`);
+  }
   return {
     dir: env.MONITOR_DIR ?? "",
     backupDir: env.MONITOR_BACKUP_DIR ?? "",
     diskPath: env.MONITOR_DISK_PATH ?? "",
     webhookUrl,
     webhookToken: env.ALERT_WEBHOOK_TOKEN ?? "",
+    noSyncStores: [...new Set(noSyncStores.map((x) => x.toLowerCase()))],
   };
 }

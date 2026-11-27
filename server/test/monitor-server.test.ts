@@ -42,6 +42,7 @@ describe("服务器监控", () => {
       startedAt: clock.now(),
       backupDir: "",
       diskPath: "",
+      noSyncStores: [],
       ...o,
     });
     return { clock, sink, alerter, tap, syncSeen, mon, setUsage: (u: typeof usage) => (usage = u), run: () => mon.run(clock.now()) };
@@ -128,7 +129,7 @@ describe("服务器监控", () => {
     const shop = await makeLoginShop(tdb, { name: "无同步测试店" });
     await makeLoginShop(tdb, { demo: true });
     const clock = new TestClock(sh("2026-11-20T08:00:00"));
-    const r = rig({ clock });
+    const r = rig({ clock, noSyncStores: [shop.storeId] });
     const app = buildApp({ config: testConfig(), db: tdb, logger: false, clock: clock.now });
     app.syncSeen.ok = (id, at) => r.syncSeen.ok(id, at); // 让 app 的同步记录进这个监控
     const boss = await login(app, shop.username);
@@ -149,10 +150,33 @@ describe("服务器监控", () => {
     await app.close();
   });
 
+  it("营业时间无同步：只监控白名单里的店；白名单为空一家都不报；亮着的告警在店被移出白名单后清掉", async () => {
+    const shop = await makeLoginShop(tdb, { name: "白名单测试店" });
+    const other = await makeLoginShop(tdb, { name: "白名单之外的店" });
+    const clock = new TestClock(sh("2026-11-20T08:00:00"));
+    const app = buildApp({ config: testConfig(), db: tdb, logger: false, clock: clock.now });
+    await login(app, shop.username);
+    await login(app, other.username);
+    await app.close();
+    const keyIn = `no_sync:${shop.storeId}`;
+    const keyOut = `no_sync:${other.storeId}`;
+    const sink = new FakeSink();
+    const alerter = new Alerter({ sink, clock: clock.now });
+    const mk = (stores: string[]) => new ServerMonitor({ db: tdb.kysely, alerter, tap: new LogTap(clock.now), syncSeen: new SyncSeen(), quotaUsage: () => [], startedAt: new Date(sh("2026-11-20T08:00:00")), backupDir: "", diskPath: "", noSyncStores: stores });
+    clock.advance(3 * H + 60_000);
+    await mk([]).run(clock.now());
+    expect(sink.kinds().filter((k) => k.includes("no_sync"))).toEqual([]);
+    await mk([shop.storeId]).run(clock.now());
+    expect(sink.kinds().filter((k) => k.includes("no_sync"))).toEqual([`fire:${keyIn}`]);
+    expect(sink.kinds().join()).not.toContain(keyOut);
+    await mk([]).run(clock.now());
+    expect(sink.kinds()).toContain(`resolved:${keyIn}`);
+  });
+
   it("营业时间无同步：21:00 打烊、次日 8:00–11:00 不算恢复，没真的同步过就一直在告警；同步一次才发「已恢复」（PR #25 Fable 建议 7）", async () => {
     const shop = await makeLoginShop(tdb, { name: "无同步打烊测试店" });
     const clock = new TestClock(sh("2026-11-20T08:00:00"));
-    const r = rig({ clock });
+    const r = rig({ clock, noSyncStores: [shop.storeId] });
     const app = buildApp({ config: testConfig(), db: tdb, logger: false, clock: clock.now });
     await login(app, shop.username); // 有在用的设备才在监控范围
     await app.close();
@@ -187,7 +211,7 @@ describe("服务器监控", () => {
     const boot = () => {
       const alerter = new Alerter({ sink, clock: clock.now, statePath });
       const syncSeen = new SyncSeen();
-      const mon = new ServerMonitor({ db: tdb.kysely, alerter, tap: new LogTap(clock.now), syncSeen, quotaUsage: () => [], startedAt: clock.now(), backupDir: "", diskPath: "" });
+      const mon = new ServerMonitor({ db: tdb.kysely, alerter, tap: new LogTap(clock.now), syncSeen, quotaUsage: () => [], startedAt: clock.now(), backupDir: "", diskPath: "", noSyncStores: [shop.storeId] });
       return { alerter, syncSeen, run: () => mon.run(clock.now()) };
     };
     let r = boot();
