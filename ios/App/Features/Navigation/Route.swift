@@ -82,10 +82,9 @@ enum Route: String, Hashable, CaseIterable, Sendable {
     var plannedIn: String? {
         switch self {
         case .products: "S25"
-        case .expiry: "S27"
         case .count: "S26"
         case .privacy: "S21"
-        case .logout, .pending, .pairing, .devices, .held, .account, .deleteAccount, .reports: nil
+        case .logout, .pending, .pairing, .devices, .held, .account, .deleteAccount, .reports, .expiry: nil
         case .sell, .manualCode, .discount, .stockIn, .settings, .deviceName, .scanner, .records, .undoLast: nil
         }
     }
@@ -108,7 +107,7 @@ struct RouteView: View {
     /// 这条路由在这些能力下出哪种页面（纯函数，单元测试逐个路由 × 身份测）
     enum Content: Equatable {
         case denied, sell, manualCode, discountEntry, stockIn, settings, deviceName, scanner, records, logout, pending, pairing, devices, held
-        case account, deleteAccount, reports, placeholder
+        case account, deleteAccount, reports, expiry, placeholder
     }
 
     static func content(for route: Route, capabilities: Capabilities) -> Content {
@@ -130,6 +129,7 @@ struct RouteView: View {
         case .account: return .account
         case .deleteAccount: return .deleteAccount
         case .reports: return .reports
+        case .expiry: return .expiry
         default: return .placeholder
         }
     }
@@ -158,6 +158,8 @@ struct RouteView: View {
             case .deleteAccount: DeleteAccountView()
             // 看账（S24）：「记了 N 笔」卡和没网时的「记的账」都进 07a（家用首页没有提醒条时从这里进，§14 S15-6）
             case .reports: ReportsView()
+            // 快过期的（S27）：19 清单 + 20 / 20b 处理面板
+            case .expiry: ExpiryView()
             case .placeholder: PlaceholderPage(route: route, layout: model.layout)
             }
         }

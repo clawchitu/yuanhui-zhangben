@@ -126,6 +126,8 @@ final class AppModel {
     let fixedNow: Date?
     /// 「刚记的」从本地库取（正常启动，和带 `-uiRecords` 的夹具）；false = 夹具用稿子上的数
     var liveRecent = true
+    /// 首页黄条的快过期样数从本地库取（正常启动，和带 `-uiExpiry` 的夹具）；false = 夹具用稿子上的数（S27，§14 S15-1）
+    var liveExpiry = true
     /// 「现在」。收银员按服务器的钟算（S22a：收银员的「今天」——07b 列哪天、能不能撤——以服务器为准，
     /// 手机时钟不准时不和服务器的判断打架）；家用仍用手机时钟（记账时间由服务器按 §4.4 校正）
     var now: Date {
@@ -208,6 +210,13 @@ final class AppModel {
         guard liveRecent else { return }
         figures.lastRecord = HomeFigures.LastRecord.today((try? db.lastRecord()) ?? nil, now: now)
         refreshPending()
+        refreshExpiring()
+    }
+
+    /// 首页黄条「有 N 样快过期了」：本机批次 + 本机没传的处理，按商品合并（§5.4、S27）。只给能处理快过期的手机算（收银员没有黄条）
+    func refreshExpiring() {
+        guard liveExpiry else { return }
+        figures.expiringCount = capabilities.has(.expiry) ? ((try? db.expiryBoard(today: LocalDB.shanghaiDay(now)).remindKinds) ?? 0) : 0
     }
 
     /// 写入之后（卖出、进货、撤销……）：待传笔数从本地库重取，正常启动时顺带踢一趟同步
@@ -263,6 +272,7 @@ final class AppModel {
             guard let self else { return }
             self.applySyncStatus()
             self.figures.lastRecord = HomeFigures.LastRecord.today((try? self.db.lastRecord()) ?? nil, now: self.now)
+            self.refreshExpiring()
         }
         // 没网了：顶栏正在等的待传马上显示（不等 4 秒）
         sync.onOfflineChange = { [weak self] in
