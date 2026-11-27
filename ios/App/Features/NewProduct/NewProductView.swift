@@ -98,6 +98,14 @@ struct NewProductView: View {
         } message: {
             Text("顾客扫到这一样会按 ¥0.00 收钱")
         }
+        // 04b 进价填了 0（不是没填）：和进货页一样再问一句（§14 T33）
+        .alert("进价是 0 元，确定吗？", isPresented: Binding(get: { model.confirmZeroCost },
+                                                       set: { if !$0 { model.cancelZeroCost() } })) {
+            Button("确定，是 0 元") { saveMore(confirmedZero: true, confirmedZeroCost: true) }
+            Button("再改改", role: .cancel) { model.cancelZeroCost() }
+        } message: {
+            Text("货架上这些按 0 元进价记账；不知道进价就空着别填")
+        }
         .task {
             let (r, candidates) = await lookup.lookupWithImages(model.barcode)
             model.applyLookup(r)
@@ -491,9 +499,11 @@ struct NewProductView: View {
         if let conv = model.saveBasic(confirmedZero: confirmedZero) { finish(.registered(conv, quick: model.quick)) }
     }
 
-    private func saveMore(confirmedZero: Bool = false) {
+    private func saveMore(confirmedZero: Bool = false, confirmedZeroCost: Bool = false) {
         moreFocus = nil
-        if let conv = model.saveMore(confirmedZero: confirmedZero) { finish(.registered(conv, quick: false)) }
+        if let conv = model.saveMore(confirmedZero: confirmedZero, confirmedZeroCost: confirmedZeroCost) {
+            finish(.registered(conv, quick: false))
+        }
     }
 
     // MARK: 04b

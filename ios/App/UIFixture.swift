@@ -22,6 +22,9 @@ import ShopCore
 ///   -uiLongName                                  多登记一个名字很长、单价很高的商品（码 6900000000017）
 ///   -uiRecords | -uiRecords none                S20：装上稿子 07a / 07b / 07c 的账（none = 一笔都没有，但「刚记的」走真数据）
 ///   -uiRecordsTab yesterday|earlier、-uiRecordsDay N   记的账页一打开就切到这一栏 / 点开 07c 第 N 天
+///   -uiReviewGoods                               S25：两样待确认商品（白象有单件码；另一样卖价 0、没条码）
+///   -uiReviewOutcome applied|stale               S25：22b 交补全的假通道（不连服务器）
+///   -uiProductsFilter <标签> / -uiProductsQuery <字>  S25：11 进来先选好的标签、搜索框里的字
 ///   -uiMoreGoods                                 S17：多登记同前缀的面、几样牛奶、一个零价购物袋（见 `installSellExtras`）
 ///   -uiFixture scanner | scanner-login           扫码测试页（27a / 27b 的样子，S14）
 ///   -uiCamera denied|authorized|notDetermined    把相机权限当成这个值（S14；卖出页同样认）
@@ -352,6 +355,8 @@ extension UIFixture {
     }
 
     /// 卖出页要用的额外夹具：长名商品、事先记好的几笔卖出
+    static let reviewBarcode = "6920000000017"
+
     static func installSellExtras(into db: LocalDB, args: [String]) throws {
         if args.contains("-uiLongName") {
             let p = try Product(id: UUID(uuidString: "5EED0000-0000-4000-8000-0000000002FF")!, name: longName, baseUnit: "瓶",
@@ -364,6 +369,21 @@ extension UIFixture {
                                 priceFen: Fen(200))
             try db.applyBaseline(CatalogBaseline(products: [p], barcodes: [
                 try BarcodeRecord(barcode: wrapNameBarcode, productId: p.id, packQty: 1, unitName: "瓶", packPriceFen: nil)]))
+        }
+        if args.contains("-uiReviewGoods") {
+            // S25：稿子 11 / 22b 的待确认商品（收银员登记的白象，有单件码）和一个卖出时自动建的（卖价 0、没条码，§14 S05-9）
+            let holds = (try db.currentSession())?.holdsPrivateData ?? false
+            let a = try Product(id: UUID(uuidString: "5EED0000-0000-4000-8000-0000000003A1")!, name: "白象 老母鸡汤面", baseUnit: "袋",
+                                priceFen: Fen(450), needsReview: true)
+            let b = try Product(id: UUID(uuidString: "5EED0000-0000-4000-8000-0000000003A2")!, name: "没写名称 …0017", baseUnit: "个",
+                                priceFen: .zero, needsReview: true)
+            var base = CatalogBaseline(products: [a, b], barcodes: [
+                try BarcodeRecord(barcode: reviewBarcode, productId: a.id, packQty: 1, unitName: "袋", packPriceFen: nil)])
+            if holds {
+                base.privates = [try ProductPrivate(productId: a.id, stockQty: 0, stockVer: 1),
+                                 try ProductPrivate(productId: b.id, stockQty: -2, stockVer: 1)]
+            }
+            try db.applyBaseline(base)
         }
         if args.contains("-uiReportGoods") {
             // S24：稿子 09「快没货了」的两样（单位「罐」「根」从本机商品表查）
