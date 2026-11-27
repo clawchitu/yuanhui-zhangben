@@ -82,15 +82,16 @@ ui ios/App/Features/Settings/ScannerStatusView.swift  S14UITests
 ui ios/App/Features/Settings/*     ICPFooterUITests S23aHeldUITests S23bUITests S15UITests/testCashierSettingsHasExactlyFiveItems
 ui ios/App/Features/StockIn/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
 ui ios/App/Net/APIEnvironment.swift  S21UITests
-ui ios/App/Net/ProductImages.swift   S22cUITests S22dUITests
-ui ios/App/Net/ImageChanges.swift    S22cUITests S22dUITests
+ui ios/App/Net/ProductImages.swift   S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
+ui ios/App/Net/ImageChanges.swift    S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
 
 # ---------- ShopCore 里不属于数据模型 / 同步的部分 ----------
-ui ios/ShopCore/Sources/ShopCore/Basket/*      S16UITests S17UITests S18UITests
-ui ios/ShopCore/Sources/ShopCore/Allocation/*  S17UITests
+# 购物篮、整件换算、分摊、进货预览：卖出和进货那一组页面都在用
+ui ios/ShopCore/Sources/ShopCore/Basket/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
+ui ios/ShopCore/Sources/ShopCore/Allocation/*  S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
 ui ios/ShopCore/Sources/ShopCore/Expiry/*      S27UITests
-ui ios/ShopCore/Sources/ShopCore/Images/*      S22cUITests S22dUITests
-ui ios/ShopCore/Sources/ShopCore/StockIn/*     S19UITests
+ui ios/ShopCore/Sources/ShopCore/Images/*      S22cUITests S22dUITests S27UITests
+ui ios/ShopCore/Sources/ShopCore/StockIn/*     S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
 
 # ---------- UI 测试里的共用桩（别的类也在用） ----------
 ui ios/UITests/S23aUITests.swift   S23aHeldUITests

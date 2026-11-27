@@ -125,33 +125,49 @@ select_tests() {
   printf '%s' "$out"
 }
 
-# 跨目录引用核对：A 目录里定义的（非 private）顶层类型被 B 目录用到，改 A 时选出的测试必须包含改 B 时选出的测试
+# 跨目录引用核对：文件 A 里定义的（非 private）顶层类型被 B 目录用到，改 A 时选出的测试必须包含改 B 时选出的测试
+# （A、B 取 ios/App/Features/*、App/Scanner、App/Net、ShopCore/Sources/ShopCore/*；按类型名 grep，注释里同名也算，宁可多报）
 # （A 是全量的不用核；B 是全量的也不核，见下）。漏了就是「改了 A，用它的 B 页面坏了，PR 上测不出来」。
+# dir_of 文件 目录...：输出文件所在的那个目录（列表里第一个是它前缀的）
+dir_of() {
+  local f="$1" x; shift
+  for x in "$@"; do
+    case "$f" in
+      "$x"/*) echo "$x"; return 0 ;;
+    esac
+  done
+}
+
 cross_dir_check() {
-  local root ios dirs d t u bad=0 ta tb x
-  root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); ios="$root/ios/App"
-  [ -d "$ios/Features" ] || { echo "  [跳过] 跨目录引用核对：找不到 ios/App/Features"; return 0; }
+  local root base dirs files f d t u bad=0 ta tb x
+  root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); base="$root/ios"
+  [ -d "$base/App/Features" ] || { echo "  [跳过] 跨目录引用核对：找不到 ios/App/Features"; return 0; }
   echo "跨目录引用核对："
-  # 本脚本关了通配（set -f），目录用 find 列
-  dirs=$(cd "$ios" && { find Features -mindepth 1 -maxdepth 1 -type d; find Scanner Net -maxdepth 0 -type d; } 2>/dev/null | sort)
-  [ "$(grep -c '^Features/' <<<"$dirs")" -ge 5 ] || { echo "  [错] 跨目录引用核对：没列出 Features 下的目录"; return 1; }
-  for d in $dirs; do
-    ta=$(printf 'ios/App/%s/__probe.swift\n' "$d" | select_tests 2>/dev/null)
+  # 本脚本关了通配（set -f），目录用 find 列：App 下的页面、扫码层、网络层，ShopCore 的各个模块
+  dirs=$(cd "$base" && { find App/Features ShopCore/Sources/ShopCore -mindepth 1 -maxdepth 1 -type d; find App/Scanner App/Net -maxdepth 0 -type d; } 2>/dev/null | sort)
+  [ "$(grep -c '^App/Features/' <<<"$dirs")" -ge 5 ] && [ "$(grep -c '^ShopCore/' <<<"$dirs")" -ge 5 ] \
+    || { echo "  [错] 跨目录引用核对：没列出 App/Features 或 ShopCore 下的目录"; return 1; }
+  # 按文件核（Net 这类目录只有按文件写的规则）：改这个文件选出的测试，必须包含用到它里面顶层类型的其他目录选出的测试
+  files=$(cd "$base" && find $dirs -name '*.swift' -type f | sort)
+  for f in $files; do
+    d=$(dir_of "$f" $dirs)
+    ta=$(printf 'ios/%s\n' "$f" | select_tests 2>/dev/null)
     [ "$ta" = FULL ] && continue
-    for t in $(grep -rhoE '^(@MainActor )?((public|final|internal) )*(struct|class|enum|protocol|actor) [A-Z][A-Za-z0-9]+' "$ios/$d" --include='*.swift' | awk '{print $NF}' | sort -u); do
-      for u in $(cd "$ios" && grep -rlw --include='*.swift' "$t" $dirs | grep -v "^$d/" | xargs -n1 dirname | sort -u); do
-        tb=$(printf 'ios/App/%s/__probe.swift\n' "$u" | select_tests 2>/dev/null)
+    for t in $(grep -hoE '^(@MainActor )?((public|final|internal) )*(struct|class|enum|protocol|actor) [A-Z][A-Za-z0-9]+' "$base/$f" | awk '{print $NF}' | sort -u); do
+      for u in $(cd "$base" && grep -rlw --include='*.swift' "$t" $dirs | grep -v "^$d/" \
+                 | while IFS= read -r g; do dir_of "$g" $dirs; done | sort -u); do
+        tb=$(printf 'ios/%s/__probe.swift\n' "$u" | select_tests 2>/dev/null)
         # 用它的是全量目录（Navigation 引用每个页面）：页面接到导航上由冒烟集的遍历兜着，不要求页面全量
         [ "$tb" = FULL ] && continue
         # 缺的：B 的测试里不在 A 里的（A 选了整个类，就算包含这个类的单条方法）
         x=$(while IFS= read -r y; do
               grep -qxF "$y" <<<"$ta" || grep -qxF "${y%/*}" <<<"$ta" || echo "$y"
             done <<<"$tb")
-        [ -z "$x" ] || { echo "  [错] $u 用了 $d 的 $t，改 $d 时缺 $(tr '\n' ' ' <<<"$x")"; bad=1; }
+        [ -z "$x" ] || { echo "  [错] $u 用了 $f 的 $t，改它时缺 $(tr '\n' ' ' <<<"$x")"; bad=1; }
       done
     done
   done
-  [ $bad -eq 0 ] && echo "  [对] 各目录的规则包含了引用它的目录的测试"
+  [ $bad -eq 0 ] && echo "  [对] 各文件的规则包含了引用它的目录的测试（App 页面、扫码层、网络层、ShopCore 模块）"
   return $bad
 }
 
@@ -197,6 +213,7 @@ self_test() {
   check "改打折面板（进货、新商品也用）→ 跑 S19UITests" "$UI_TARGET/S19UITests" ios/App/Features/Discount/DiscountPanel.swift
   check "改 PendingModel（配对页也用）→ 跑 S23aHeldUITests" "$UI_TARGET/S23aHeldUITests" ios/App/Features/Pending/PendingModel.swift
   check "任何页面 → 带收银员遍历" "$UI_TARGET/S15UITests/testCashierTraversalNeverReachesFamilyPages" ios/App/Features/Expiry/ExpiryView.swift
+  check "改整件换算 PackConversion（进货也用）→ 跑 S19UITests" "$UI_TARGET/S19UITests" ios/ShopCore/Sources/ShopCore/Basket/PackConversion.swift
   cross_dir_check || fail=1
   # 改名：Route.swift 挪到 Expiry 下，旧路径也要算（真的 git 仓库里做一次）
   local g; g=$(mktemp -d -t ios-select-rename)

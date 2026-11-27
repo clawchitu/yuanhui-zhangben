@@ -325,7 +325,7 @@ unset A S K
 | 手动 `gh workflow run ios.yml --ref <分支>` | 全量 | 约 60 分钟 |
 
 - **选测规则**：`scripts/ci/ios-test-map.txt`（冒烟集、全量路径、路径 → UI 测试，文件开头写了格式和匹配规则）。选测脚本 `scripts/ci/ios-select-tests.sh`；改完映射跑 `scripts/ci/ios-select-tests.sh --self-test`，想看某个分支会选什么：`git diff --name-only origin/main...<分支> | scripts/ci/ios-select-tests.sh --files -`。映射里的测试名找不到（改名、删了）时脚本直接失败，不会静默少跑。CI 还会核对选中的每个 UI 测试在日志里确实「passed」。
-- **加新页面 / 新目录**：在映射里补一条 `ui` 规则，否则这个目录的改动一律按全量跑。新写的 UI 测试类改动时自动跑自己，不用登记。一个目录里的类型被别的目录用到（比如进货页用卖出目录的 `SellFixture`、`CameraStrip`），它的规则要包含用它的目录的测试；`--self-test` 的「跨目录引用核对」会按顶层类型名 grep 检查，缺了就报错。扫码层 `ios/App/Scanner/` 大家都用，一律全量。
+- **加新页面 / 新目录**：在映射里补一条 `ui` 规则，否则这个目录的改动一律按全量跑。新写的 UI 测试类改动时自动跑自己，不用登记。一个目录里的类型被别的目录用到（比如进货页用卖出目录的 `SellFixture`、`CameraStrip`），它的规则要包含用它的目录的测试；`--self-test` 的「跨目录引用核对」会按顶层类型名 grep 检查（App 的页面、扫码层、网络层，ShopCore 的各模块），缺了就报错。扫码层 `ios/App/Scanner/` 大家都用，一律全量。
 - **main 红了**：`merge-pr.sh` 查 ios 工作流在 main 上最近一轮跑完的全量（push / schedule / workflow_dispatch，不算被取消的），不是 success 就拒绝合并所有 PR（改名 / 移动的文件新旧路径都算进选测和 `ios_needed`）。先看那轮 run 哪条测试红：
   - 修 main 的 PR：分支上手动触发全量 `gh workflow run ios.yml --ref <分支>`，通过后 `scripts/merge-pr.sh <PR号> --fix-main`；
   - 偶发失败（重跑能过）：在 Actions 里对那轮 run 点 Re-run（重跑没完之前仍按红算），或 `gh workflow run ios.yml --ref main`，绿了就解锁。
