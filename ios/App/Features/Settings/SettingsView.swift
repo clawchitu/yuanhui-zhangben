@@ -80,7 +80,7 @@ struct SettingsView: View {
                 SettingsLink(.account, title: "账号与密码", value: "改密码、注销")
                 RowDivider()
             }
-            SettingsLink(.privacy, title: "隐私政策")
+            privacyRow
         }
         SettingsCard {
             SettingsLink(.logout, title: "退出登录")
@@ -119,7 +119,7 @@ struct SettingsView: View {
             RowDivider()
             scannerRow
             RowDivider()
-            SettingsLink(.privacy, title: "隐私政策")
+            privacyRow
         }
         SettingsCard {
             SettingsLink(.logout, title: "退出登录")
@@ -176,6 +176,12 @@ struct SettingsView: View {
         .padding(.vertical, 12)
         .frame(minHeight: Tokens.Size.minHitTarget)
         .accessibilityIdentifier("settings.item.largeText")
+    }
+
+    /// 隐私政策：和登录页一样，用系统浏览器打开服务器下发的地址（没取到配置用默认地址），不进 App 里的页面
+    private var privacyRow: some View {
+        SettingsExternalLink(id: "privacy", title: "隐私政策",
+                             destination: model.services?.privacyURL ?? AppServices.defaultPrivacyURL)
     }
 
     private var scannerRow: some View {
@@ -259,6 +265,33 @@ struct SettingsLink<Accessory: View>: View {
                 Text(value).font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
             }
         }
+    }
+}
+
+/// 一行外链：样子和 `SettingsLink` 一样，点了用系统浏览器打开（`Link` 走环境里的 openURL）
+struct SettingsExternalLink: View {
+    let id: String
+    let title: String
+    let destination: URL
+
+    var body: some View {
+        Link(destination: destination) {
+            HStack(spacing: 10) {
+                Text(title).font(TypeScale.body).multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(Tokens.Palette.ink2)
+            }
+            .foregroundStyle(Tokens.Palette.ink)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: Tokens.Size.minHitTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressDimStyle())
+        .accessibilityIdentifier("settings.item.\(id)")
     }
 }
 

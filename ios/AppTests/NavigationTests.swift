@@ -92,6 +92,13 @@ final class NavigationTests: XCTestCase {
                        "夹具给了稿子上的值就用它")
     }
 
+    /// 没有还没做的页：每条路由都不出「这一页还在做 / 开发计划 Sxx 段」占位页；隐私政策不是路由（设置页直接开浏览器）
+    func testNoRouteIsPlannedPlaceholder() {
+        for r in Route.allCases { XCTAssertNil(r.plannedIn, "\(r)") }
+        XCTAssertNil(Route(rawValue: "privacy"), "隐私政策不走 App 内路由")
+        XCTAssertEqual(UIFixture.injectedRoutes(from: ["-uiRoute", "privacy"]), [])
+    }
+
     func testScannerRouteIsARealPage() {
         XCTAssertNil(Route.scanner.plannedIn)
         for role in [Role.family, .cashier, .review] {

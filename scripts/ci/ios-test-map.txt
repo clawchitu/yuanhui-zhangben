@@ -71,7 +71,7 @@ ui ios/App/Features/Login/*        S21UITests S23aHeldUITests S23bUITests
 ui ios/App/Features/ManualCode/*   S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests S26UITests
 ui ios/App/Features/NewProduct/*   S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests S26UITests
 # DeviceNamePicker 设置页也在用 → 带上设置页的测试；FlowLayout 商品页在用 → S25
-ui ios/App/Features/Onboarding/*   S21UITests S15UITests/testCashierOnboardingHasNoNaming S15UITests/testFamilyOnboardingHasNaming S15UITests/testOnboardingDefaultsToLargeAndChoiceSurvivesRestart ICPFooterUITests S23aHeldUITests S23bUITests S15UITests/testCashierSettingsHasExactlyFiveItems S25UITests
+ui ios/App/Features/Onboarding/*   S21UITests S15UITests/testCashierOnboardingHasNoNaming S15UITests/testFamilyOnboardingHasNaming S15UITests/testOnboardingDefaultsToLargeAndChoiceSurvivesRestart ICPFooterUITests PrivacyLinkUITests S23aHeldUITests S23bUITests S15UITests/testCashierSettingsHasExactlyFiveItems S25UITests
 # DeviceBackend / OfflineNote 账号页、看账页也在用
 ui ios/App/Features/Pairing/*      S23aUITests S23aHeldUITests S23bUITests S24UITests S20UITests
 # PendingModel 配对页（等着的那几笔）也在用
@@ -81,7 +81,7 @@ ui ios/App/Features/Records/*      S20UITests
 ui ios/App/Features/Reports/*      S24UITests S20UITests
 ui ios/App/Features/Sell/*         S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests S26UITests
 ui ios/App/Features/Settings/ScannerStatusView.swift  S14UITests
-ui ios/App/Features/Settings/*     ICPFooterUITests S23aHeldUITests S23bUITests S15UITests/testCashierSettingsHasExactlyFiveItems
+ui ios/App/Features/Settings/*     ICPFooterUITests PrivacyLinkUITests S23aHeldUITests S23bUITests S15UITests/testCashierSettingsHasExactlyFiveItems
 ui ios/App/Features/StockIn/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests S26UITests
 ui ios/App/Net/APIEnvironment.swift  S21UITests
 ui ios/App/Net/ProductImages.swift   S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests S26UITests

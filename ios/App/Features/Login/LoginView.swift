@@ -65,7 +65,7 @@ struct LoginView: View {
                     .padding(.top, 6)
                     .accessibilityIdentifier("login.demo")
                 }
-                Link(destination: model.services?.privacyURL ?? URL(string: "https://yuanhuishop.cn/privacy")!) {
+                Link(destination: model.services?.privacyURL ?? AppServices.defaultPrivacyURL) {
                     Text("隐私政策")
                         .font(TypeScale.body)
                         .underline()
