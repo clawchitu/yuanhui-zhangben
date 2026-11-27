@@ -220,7 +220,12 @@ LLM 评审最常见的两个毛病：把小事当大事提；凭函数名或想�
 
 ## 12. 项目专项（元辉账本）
 
-原生 iOS（SwiftUI，ShopCore 包）+ Node 服务端（Fastify、Postgres），记账和管库存，用户是老人。CI：`server-ci`（每个 PR）、`ios-ci`（改 `ios/**`、`contracts/**`、`.github/workflows/ios.yml` 时触发）。合并只用 `scripts/merge-pr.sh`。
+原生 iOS（SwiftUI，ShopCore 包）+ Node 服务端（Fastify、Postgres），记账和管库存，用户是老人。CI：`server-ci`（每个 PR）、`ios-ci`（改 `ios/**`、`contracts/**`、`scripts/ci/**`、`.github/workflows/ios.yml` 时触发）。合并只用 `scripts/merge-pr.sh`。
+
+`ios-ci` 分两种跑法（11/27 起，详见 `docs/runbook.md`「iOS CI」）：
+- **PR 上**：干净编译 + 全部单元测试 + 冒烟集（含全页面遍历）+ 按改动路径选出的 UI 测试 + Release / Beta 构建检查，约 10–15 分钟。路径到测试的映射和冒烟集在 `scripts/ci/ios-test-map.txt`；改到公共层、导航、数据模型、契约，或改了映射里没登记的路径，这个 PR 自动跑全量。CI 日志的「选测」一步写着选了什么、为什么。
+- **main 上**：每次 push 和每晚北京时间 03:00 跑全量，同一时间只跑一轮（正在跑的跑完，排队的只留最新一个）。main 最近一轮跑完的全量是红的，`merge-pr.sh` 拒绝合并任何 PR，直到 main 修绿；修 main 的 PR 先在分支上手动触发一轮全量（`gh workflow run ios.yml --ref <分支>`），通过后用 `merge-pr.sh <PR号> --fix-main` 合（PR 要先 rebase 到红的那次提交之后）。
+- 评审时看「选测」一步：PR 加了新页面或新目录，要求作者在映射里补规则；作者觉得选测不够的，可以手动触发全量。
 
 ### 12.1 必须修类别（五类，补上判定细则）
 
