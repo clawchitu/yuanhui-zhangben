@@ -61,40 +61,41 @@ full ios/ShopCore/Sources/ShopCore/Money/*
 # ---------- 页面 → UI 测试 ----------
 ui ios/App/Features/Account/*      S23bUITests
 # 卖出 / 进货 / 新商品 / 手输码 / 打折五个目录互相引用（DiscountPanel、ManualCodeView、NewProductView、SellModel、SellFixture、CameraStrip…），
-# 改到任何一个都跑这一组扫码记账的 UI 测试，加 S20（记录页用 SellModel）；--self-test 会按跨目录引用核对
-ui ios/App/Features/Discount/*     S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
+# 改到任何一个都跑这一组扫码记账的 UI 测试，加 S20（记录页用 SellModel）、S25（商品页用 YuanInput 等新商品的控件）；--self-test 会按跨目录引用核对
+ui ios/App/Features/Discount/*     S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests
 ui ios/App/Features/Expiry/*       S27UITests
 # 首页是各页的入口：遍历在冒烟集里，这里加首页上的提醒条、大字号
 ui ios/App/Features/Home/*         PendingPanelUITests S27UITests S20UITests S15UITests/testHomeBigButtonsFitAtMaxAccessibilitySize S15UITests/testUnsyncedReminderAboveExpiring
 ui ios/App/Features/Login/*        S21UITests S23aHeldUITests S23bUITests
-ui ios/App/Features/ManualCode/*   S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
-ui ios/App/Features/NewProduct/*   S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
-# DeviceNamePicker 设置页也在用 → 带上设置页的测试
-ui ios/App/Features/Onboarding/*   S21UITests S15UITests/testCashierOnboardingHasNoNaming S15UITests/testFamilyOnboardingHasNaming S15UITests/testOnboardingDefaultsToLargeAndChoiceSurvivesRestart ICPFooterUITests S23aHeldUITests S23bUITests S15UITests/testCashierSettingsHasExactlyFiveItems
+ui ios/App/Features/ManualCode/*   S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests
+ui ios/App/Features/NewProduct/*   S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests
+# DeviceNamePicker 设置页也在用 → 带上设置页的测试；FlowLayout 商品页在用 → S25
+ui ios/App/Features/Onboarding/*   S21UITests S15UITests/testCashierOnboardingHasNoNaming S15UITests/testFamilyOnboardingHasNaming S15UITests/testOnboardingDefaultsToLargeAndChoiceSurvivesRestart ICPFooterUITests S23aHeldUITests S23bUITests S15UITests/testCashierSettingsHasExactlyFiveItems S25UITests
 # DeviceBackend / OfflineNote 账号页、看账页也在用
 ui ios/App/Features/Pairing/*      S23aUITests S23aHeldUITests S23bUITests S24UITests S20UITests
 # PendingModel 配对页（等着的那几笔）也在用
 ui ios/App/Features/Pending/*      PendingPanelUITests S23aUITests S23aHeldUITests S23bUITests S24UITests S20UITests
+ui ios/App/Features/Products/*     S25UITests
 ui ios/App/Features/Records/*      S20UITests
 ui ios/App/Features/Reports/*      S24UITests S20UITests
-ui ios/App/Features/Sell/*         S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
+ui ios/App/Features/Sell/*         S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests
 ui ios/App/Features/Settings/ScannerStatusView.swift  S14UITests
 ui ios/App/Features/Settings/*     ICPFooterUITests S23aHeldUITests S23bUITests S15UITests/testCashierSettingsHasExactlyFiveItems
-ui ios/App/Features/StockIn/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
+ui ios/App/Features/StockIn/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests
 ui ios/App/Net/APIEnvironment.swift  S21UITests
-ui ios/App/Net/ProductImages.swift   S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
-ui ios/App/Net/ImageChanges.swift    S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
+ui ios/App/Net/ProductImages.swift   S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests
+ui ios/App/Net/ImageChanges.swift    S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests
 
 # ---------- ShopCore 里不属于数据模型 / 同步的部分 ----------
 # 购物篮、整件换算、分摊、进货预览：卖出和进货那一组页面都在用
-ui ios/ShopCore/Sources/ShopCore/Basket/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
-ui ios/ShopCore/Sources/ShopCore/Allocation/*  S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
+ui ios/ShopCore/Sources/ShopCore/Basket/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests
+ui ios/ShopCore/Sources/ShopCore/Allocation/*  S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests
 # 盘点的本地层：S26-1 还没有页面用它（单元测试在 ShopCoreTests 里照跑）；S26-2 接上页面时改成 ui … S26UITests
 none ios/ShopCore/Sources/ShopCore/Count/*
 ui ios/ShopCore/Sources/ShopCore/Expiry/*      S27UITests
 # 商品图缓存和下载：网络层 ProductImages / ImageChanges 在用 → 带上它们那一组，加快过期页（缩略图）
-ui ios/ShopCore/Sources/ShopCore/Images/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S27UITests
-ui ios/ShopCore/Sources/ShopCore/StockIn/*     S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
+ui ios/ShopCore/Sources/ShopCore/Images/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests S27UITests
+ui ios/ShopCore/Sources/ShopCore/StockIn/*     S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests S25UITests
 
 # ---------- UI 测试里的共用桩（别的类也在用） ----------
 ui ios/UITests/S23aUITests.swift   S23aHeldUITests
