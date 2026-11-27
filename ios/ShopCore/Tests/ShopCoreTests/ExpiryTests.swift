@@ -163,6 +163,22 @@ final class ExpiryTests: XCTestCase {
         XCTAssertEqual(try db.expiryBoard(today: try CalendarDate("2026-11-22")).remindKinds, 3)
     }
 
+    /// 再提醒还没传上去、过了几天这批又回到清单时再处理：带的版本要算上没传的那条（服务器先应用再提醒，handle_ver + 1）
+    func testHandleAfterPendingSnoozeCarriesNextVersion() throws {
+        let db = try db()
+        let item = try XCTUnwrap(try db.expiryBoard(today: Self.today).soon.first { $0.lotId == Self.beerLot })
+        XCTAssertEqual(item.handleVer, 0)
+        try db.handleExpiry(item, choice: .snooze, actualQty: 10, at: try XCTUnwrap(LocalDB.parseTimestamp("2026-11-19T10:00:00.000+08:00")))
+        let later = try XCTUnwrap(try db.expiryBoard(today: try CalendarDate("2026-11-22")).soon.first { $0.lotId == Self.beerLot })
+        XCTAssertEqual(later.handleVer, 1)
+        XCTAssertEqual(later.qtyLeft, 10)
+        try db.handleExpiry(later, choice: .discard, actualQty: 10)
+        let vers = try db.pendingOps().map { o -> Int64? in
+            int64(((try JSONSerialization.jsonObject(with: o.opJSON) as? [String: Any])?["payload"] as? [String: Any])?["handle_ver"])
+        }
+        XCTAssertEqual(vers, [0, 1])
+    }
+
     /// 另一台手机已经处理过同一批：服务器拒 stale → 本机的处理作废，批次回到清单（拉下来的是服务器的最新状态）
     func testStaleRejectionBringsLotBack() throws {
         let db = try db()

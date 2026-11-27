@@ -131,6 +131,8 @@ extension LocalDB {
             // 本机还没传上去的处理 / 再提醒（同一家店，含恢复队列里的），按 outbox 顺序，后面的盖前面的
             var disposed = Set<UUID>()
             var snoozes: [UUID: (qty: Int64, until: CalendarDate)] = [:]
+            // 本机没传的「再提醒」条数：服务器每应用一条 handle_ver + 1，之后再处理同一批要带加上去的版本，否则被拒 stale
+            var pendingHandles: [UUID: Int64] = [:]
             let pending = try Row.fetchAll(db, sql: """
                 SELECT type, op_json, occurred_at FROM outbox WHERE store_id = ? AND status = 'pending' AND type IN ('expiry_dispose', 'lot_snooze')
                 ORDER BY seq
@@ -144,7 +146,10 @@ extension LocalDB {
                 let lot = p.lot_id
                 if r["type"] as String == OpType.expiryDispose.rawValue {
                     disposed.insert(lot)
-                } else if let days = p.days, let at = Self.parseTimestamp(r["occurred_at"] as String),
+                    continue
+                }
+                pendingHandles[lot, default: 0] += 1
+                if let days = p.days, let at = Self.parseTimestamp(r["occurred_at"] as String),
                           let until = try? Self.shanghaiDay(at).adding(days: days) {
                     let qty = p.actual_qty
                     // 和服务器一样：op 时间所在的上海日期 + 天数（§14 S06-5；服务器还会按时钟校正，差几分钟跨零点时差一天，只影响提醒早晚）
@@ -167,7 +172,7 @@ extension LocalDB {
                 if let o = snoozes[lotId] { qty = o.qty; until = o.until }
                 let warn: Int64 = r["warn"]
                 let item = ExpiryItem(lotId: lotId, productId: try parseUUID(r["product_id"]), name: r["name"], unit: r["base_unit"],
-                                      imageVer: r["image_ver"], expiryDate: expiry, qtyLeft: qty, handleVer: r["handle_ver"],
+                                      imageVer: r["image_ver"], expiryDate: expiry, qtyLeft: qty, handleVer: (r["handle_ver"] as Int64) + pendingHandles[lotId, default: 0],
                                       snoozedUntil: until.flatMap { today < $0 ? $0 : nil }, daysLeft: today.days(until: expiry))
                 if ExpiryRule.shouldRemind(today: today, expiry: expiry, warnDays: warn, qtyLeft: qty, closed: false, snoozedUntil: until) {
                     if item.expired { expired.append(item) } else { soon.append(item) }
