@@ -77,14 +77,6 @@ enum Route: String, Hashable, CaseIterable, Sendable {
         }
     }
 
-    /// 还没做的页面在哪一段做（占位页上显示）；现在全都做了
-    var plannedIn: String? {
-        switch self {
-        case .logout, .pending, .pairing, .devices, .held, .account, .deleteAccount, .reports, .expiry, .products, .count: nil
-        case .sell, .manualCode, .discount, .stockIn, .settings, .deviceName, .scanner, .records, .undoLast: nil
-        }
-    }
-
     /// 页面颜色：卖出朱红、进货靛青，其余中性
     var mode: ShopMode {
         switch self {
@@ -188,9 +180,6 @@ struct PlaceholderPage: View {
                     Text(message)
                         .font(TypeScale.title)
                         .foregroundStyle(Tokens.Palette.ink)
-                    if let s = route.plannedIn {
-                        Text("开发计划 \(s) 段").font(TypeScale.secondary).foregroundStyle(Tokens.Palette.ink2)
-                    }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.top, 80)

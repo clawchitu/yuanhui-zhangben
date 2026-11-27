@@ -180,8 +180,7 @@ struct SettingsView: View {
 
     /// 隐私政策：和登录页一样，用系统浏览器打开服务器下发的地址（没取到配置用默认地址），不进 App 里的页面
     private var privacyRow: some View {
-        SettingsExternalLink(id: "privacy", title: "隐私政策",
-                             destination: model.services?.privacyURL ?? AppServices.defaultPrivacyURL)
+        SettingsExternalLink(id: "privacy", title: "隐私政策", destination: model.privacyURL)
     }
 
     private var scannerRow: some View {

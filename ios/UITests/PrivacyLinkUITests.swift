@@ -18,6 +18,15 @@ final class PrivacyLinkUITests: XCTestCase {
         row.tap()
         let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
         XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 15), "点了以后系统浏览器到前台", file: file, line: line)
+        // 打开的是隐私政策地址（夹具没有服务 → 默认地址；服务器下发的地址由 NavigationTests 单元测试钉）。
+        // 底栏地址条平时只显示域名，点一下进编辑态，地址框里才是完整 URL（没网也一样）
+        let bar = safari.descendants(matching: .any)["TabBarItemTitle"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 15), "Safari 地址条", file: file, line: line)
+        bar.tap()
+        let field = safari.textFields["URL"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "Safari 地址框", file: file, line: line)
+        XCTAssertTrue((field.value as? String ?? "").contains("yuanhuishop.cn/privacy"),
+                      "打开的是隐私政策地址：\(field.value ?? "")", file: file, line: line)
         // 回到 App：还停在设置页，没有推进占位页
         app.activate()
         XCTAssertTrue(app.otherElements["page.settings"].waitForExistence(timeout: 10), file: file, line: line)

@@ -402,7 +402,5 @@ final class S23bTests: XCTestCase {
             XCTAssertEqual(RouteView.content(for: .account, capabilities: caps), .denied, "\(role)")
             XCTAssertEqual(RouteView.content(for: .deleteAccount, capabilities: caps), .denied, "\(role)")
         }
-        XCTAssertNil(Route.account.plannedIn)
-        XCTAssertNil(Route.deleteAccount.plannedIn)
     }
 }
