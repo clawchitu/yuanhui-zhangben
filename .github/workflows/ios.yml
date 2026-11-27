@@ -1,42 +1,81 @@
 name: ios
-# 只在 ios/、contracts/（ShopCore 的测试读契约和向量）或本工作流改动时触发（偏差说明见 docs/process-deviations.md）。
-# 没触发时 scripts/merge-pr.sh 把它当作「不需要」，不会卡合并。
+# 三种跑法（11/27 负责人同意的 CI 精简方案）：
+#   PR：编译 + 全部单元测试 + 冒烟集 + 按改动路径选出来的 UI 测试 + Release / Beta 构建检查，目标 10–15 分钟。
+#       改到公共层、导航、数据模型、契约，或改了映射里没登记的路径 → 这个 PR 自动跑全量。
+#       规则在 scripts/ci/ios-test-map.txt，选测脚本 scripts/ci/ios-select-tests.sh。
+#   push 到 main、每晚北京时间 03:00（schedule）、手动触发（workflow_dispatch）：全量。
+#       main 上同一时间只跑一轮，新的一轮取消旧的。main 最新一轮完成的全量是红的，scripts/merge-pr.sh 拒绝合并。
+# 只在 ios/、contracts/（ShopCore 的测试读契约和向量）、选测规则或本工作流改动时触发（偏差说明见 docs/process-deviations.md）。
+# PR 上没触发时 scripts/merge-pr.sh 把它当作「不需要」，不会卡合并。
 on:
   pull_request:
     paths:
       - "ios/**"
       - "contracts/**"
+      - "scripts/ci/**"
       - ".github/workflows/ios.yml"
   push:
     branches: [main]
     paths:
       - "ios/**"
       - "contracts/**"
+      - "scripts/ci/**"
       - ".github/workflows/ios.yml"
+  schedule:
+    - cron: "0 19 * * *"   # UTC 19:00 = 北京时间 03:00，夜间全量兜底
   workflow_dispatch: {}
 permissions:
   contents: read
 concurrency:
-  # 本机只有一台自托管 runner，排队跑，不并发
-  group: ios-${{ github.ref }}
+  # PR 按分支各排各的；main 上的全量（push / 夜间）共用一组：同一时间只跑一轮，新的取消旧的
+  group: ios-${{ github.event_name == 'pull_request' && github.ref || format('full-{0}', github.ref) }}
   cancel-in-progress: true
 jobs:
   ios-ci:
     name: ios-ci
     runs-on: [self-hosted, macOS, yuanhui]
-    timeout-minutes: 75   # S22b：测试约 40 分钟 + Release、Beta 检查各约 6 分钟，45 分钟不够（D-S22b-1）
+    timeout-minutes: 75   # 全量约 60 分钟（D-S22b-1）；PR 选测约 10–15 分钟
     defaults:
       run:
         working-directory: ios
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 选测要 git diff PR 的 base...head
+      - name: 选测（PR 按改动路径选；其他触发一律全量）
+        id: pick
+        working-directory: .
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          list="$RUNNER_TEMP/ios-tests-${{ github.run_id }}.txt"
+          if [ "$EVENT" = pull_request ]; then
+            scripts/ci/ios-select-tests.sh --self-test
+            scripts/ci/ios-select-tests.sh --base "$BASE" --head "$HEAD" > "$list"
+          else
+            echo "选测：$EVENT 触发，跑全量" >&2
+            echo FULL > "$list"
+          fi
+          if [ "$(head -1 "$list")" = FULL ]; then mode=full; else mode=select; fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          {
+            echo "### iOS CI：$([ $mode = full ] && echo 全量 || echo 选测)"
+            [ $mode = select ] && { echo '```'; cat "$list"; echo '```'; }
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "模式：$mode"; cat "$list"
       - name: xcodegen
         run: xcodegen generate
       - name: 建本次专用模拟器
         id: sim
         run: |
-          udid=$(scripts/sim-create.sh "yuanhui-ci-${{ github.run_id }}-${{ github.run_attempt }}")
+          name="yuanhui-ci-${{ github.run_id }}-${{ github.run_attempt }}"
+          udid=$(scripts/sim-create.sh "$name")
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "DERIVED=$RUNNER_TEMP/yuanhui-dd-${{ github.run_id }}" >> "$GITHUB_ENV"
       - name: 先启动模拟器（UI 测试和 Release 检查都在同一台上跑，启动好了再开始）
         run: |
@@ -47,17 +86,42 @@ jobs:
         # S21 登录后令牌进钥匙串，S21UITests 要靠它（§8 S21）
         # -collect-test-diagnostics never：测试全过后 xcodebuild 仍会跑 `simctl diagnose`，在这台 Mac 上每次卡满 600 秒超时，
         # 三次 xcodebuild 共多出约 30 分钟，把 75 分钟时限撑爆（D-1126-1）
+        # 选测时开 2 路并行（xcodebuild 按测试类分到本模拟器的两台克隆上）：遍历一条就约 6 分钟，其余的放另一路跑
         run: |
           set -o pipefail
+          list="${{ steps.pick.outputs.list }}"
+          args=()
+          if [ "${{ steps.pick.outputs.mode }}" = select ]; then
+            while IFS= read -r t; do [ -n "$t" ] && args+=("-only-testing:$t"); done < "$list"
+            args+=(-parallel-testing-enabled YES -parallel-testing-worker-count 2)
+          fi
           xcodebuild test \
             -project YuanhuiZhangben.xcodeproj \
             -scheme YuanhuiZhangben \
             -destination "id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath "$DERIVED" \
             -collect-test-diagnostics never \
+            "${args[@]}" \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
-            | tee "$RUNNER_TEMP/xcodebuild.log" | grep -E "error:|warning: |Test Case|Executed|\*\* TEST" || true
+            | tee "$RUNNER_TEMP/xcodebuild.log" | grep -E "error:|warning: |Test [Cc]ase|Executed|\*\* TEST" || true
           grep -q "\*\* TEST SUCCEEDED \*\*" "$RUNNER_TEMP/xcodebuild.log"
+      - name: 选测：核对选中的 UI 测试真的跑了（防止名字写错被 -only-testing 静默跳过）
+        if: steps.pick.outputs.mode == 'select'
+        run: |
+          bad=0
+          while IFS= read -r t; do
+            case "$t" in
+              YuanhuiZhangbenUITests/*/*) cls=${t#*/}; cls=${cls%/*}; m=${t##*/} ;;
+              YuanhuiZhangbenUITests/*) cls=${t#*/}; m='test[A-Za-z0-9_]*' ;;
+              *) continue ;;
+            esac
+            # 串行的输出是「-[Target.类 方法]' passed」，并行的是「类.方法()' passed」
+            if ! grep -qE "(\.|^|[^A-Za-z0-9_])$cls[ ./]$m(\]|\(\)).* passed" "$RUNNER_TEMP/xcodebuild.log"; then
+              echo "选中的 $t 没有跑到「passed」" >&2; bad=1
+            fi
+          done < "${{ steps.pick.outputs.list }}"
+          [ $bad -eq 0 ] && echo "选中的 UI 测试都跑过了"
+          exit $bad
       - name: Release 构建检查（没有演示会话和会话夹具，§14 S15-4）
         run: |
           scripts/release-check.sh "${{ steps.sim.outputs.udid }}" "$RUNNER_TEMP/yuanhui-dd-rel-${{ github.run_id }}" \
@@ -70,5 +134,16 @@ jobs:
         if: always()
         run: |
           scripts/sim-destroy.sh "${{ steps.sim.outputs.udid }}"
+          # 并行测试的克隆（「Clone N of <本次模拟器名>」）正常由 xcodebuild 删；被取消时可能留下，只删名字对得上本次的
+          set_dir="$HOME/Library/Developer/XCTestDevices"
+          if [ -n "${{ steps.sim.outputs.name }}" ] && [ -d "$set_dir" ]; then
+            xcrun simctl --set "$set_dir" list devices -j 2>/dev/null \
+              | jq -r --arg n "${{ steps.sim.outputs.name }}" '.devices[][] | select(.name | endswith(" of " + $n)) | .udid' \
+              | while read -r c; do
+                  xcrun simctl --set "$set_dir" shutdown "$c" 2>/dev/null || true
+                  xcrun simctl --set "$set_dir" delete "$c" 2>/dev/null || true
+                  echo "已清理克隆 $c"
+                done
+          fi
           [ -n "${DERIVED:-}" ] && rm -rf "$DERIVED" || true
           rm -rf "$RUNNER_TEMP/yuanhui-dd-rel-${{ github.run_id }}" "$RUNNER_TEMP/yuanhui-dd-beta-${{ github.run_id }}"
