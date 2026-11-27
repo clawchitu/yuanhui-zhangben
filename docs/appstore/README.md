@@ -17,17 +17,17 @@
 
 按大致先后：
 
-1. **填隐私政策和支持页上的联系方式**：`deploy/site/privacy.html`、`support.html` 里电话、邮箱现在是【待填】。填好再发布（发布走 `deploy/deploy.sh`，改页面不用重载 Caddy）。
+1. **联系方式已填**：`deploy/site/privacy.html`、`support.html` 里电话 `+86 15951656032`、邮箱 `haoqianglyu@gmail.com`（负责人 11/27 定）。`deploy/deploy.sh` 会拒绝发布还带「待填」字样的页面。
 2. **发布静态页**，确认 `https://yuanhuishop.cn/privacy`、`/support`、`/review-barcodes` 都能打开；用一台装了 App 的手机对着电脑屏幕把条码页上的码扫一遍（S30 验收「条码图页用屏幕对屏幕能被 App 扫出来」；本 PR 只用 macOS Vision 对渲染出的图片解码核对过 15 个码，没有用 App 真扫过）。
 3. **演示店「今天」**：按 plan-v2 §14 T15 的「S30 评估（11/27）」决定是否挪重置时间并改种子日期。不改的话，美西白天审核员看到的「看账 → 今天」是空的（Review Notes 里已经提示）；改了就删掉 Review Notes 里那一句。
-4. **iOS 侧待办（本 PR 不改 iOS 代码）**：
-   - `ios/project.yml` 加 `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO`（现在没设）。
-   - 加 `PrivacyInfo.xcprivacy`（现在仓库里没有；要声明的项见 `privacy-labels.md`）。
-   - 「更多 → 隐私政策」现在是「这一页还在做（S21）」的占位页，要改成打开服务器下发的 `privacy_url`（§10 要求登录页和设置里都有入口）。
-   - 「商品」（S25）、「盘点」（S26）提审时必须已经做完，否则审核员点到占位页有 2.1 被拒的风险。
-   - 相机权限说明现在是「扫商品条码、扫登录码、给商品拍照要用相机」，§10 写的是「用来扫商品条码和登录二维码，不保存照片」。S22d 加了拍照换商品图，照片会上传，所以「不保存照片」不能照抄；隐私政策已按实际写（扫码画面不保存，主动拍的商品图会上传）。
+4. **iOS 侧**：
+   - 本 PR 已做：`ios/project.yml` 加了 `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO`；加了 `ios/App/Resources/PrivacyInfo.xcprivacy`（打进 .app 根目录，`scripts/archive-check.sh` 会查）；`make store-shots` 截 6.9 / 6.5 寸两套（`screenshots/`）；`make archive-check ARCHIVE=…` 查归档包。
+   - 还没做：
+     - 「更多 → 隐私政策」现在是「这一页还在做（S21）」的占位页，要改成打开服务器下发的 `privacy_url`（§10 要求登录页和设置里都有入口）。
+     - 「商品」（S25）、「盘点」（S26）提审时必须已经做完，否则审核员点到占位页有 2.1 被拒的风险。
+     - 相机权限说明现在是「扫商品条码、扫登录码、给商品拍照要用相机」，§10 写的是「用来扫商品条码和登录二维码，不保存照片」。S22d 加了拍照换商品图，照片会上传，所以「不保存照片」不能照抄；隐私政策已按实际写（扫码画面不保存，主动拍的商品图会上传）。
 5. **服务器**：提审前打开 `demo_login_enabled`（11/26 定），审核期间不改（S32 ①）；提审期间服务器不维护（§10）。
-6. **ASC**：按 `listing.md` 填；版权行选 A 还是 B（`listing.md` 第 10 节）由负责人定；App 备案号填 `苏ICP备2026094233号-2A`（不是网站的 `-1`）；版本发布方式选**手动发布**。
+6. **ASC**：按 `listing.md` 填；版权行填 `2026 Haoqiang Lyu`（以 ASC 账号显示的法定名为准，`listing.md` 第 10 节）；App 备案号填 `苏ICP备2026094233号-2A`（不是网站的 `-1`）；版本发布方式选**手动发布**。
 7. **审核信息**：审核号用户名和密码、联系人电话邮箱直接填进 ASC，不进仓库；上传 §10 要求的真机录屏。
 8. **截图**：S30 的 `make store-shots`（不在本目录），6.9 寸和 6.5 寸各一套，逐张人工看没有烟、酒、「烟酒店」字样和真实包装图。
 9. **提审之后**马上提交 Unlisted 申请（`unlisted-request.md`；苹果要求先提审才能申请）。申请表要用开发者账号登录才看得到，本稿没看到表上的字段，填之前按实际字段对号入座。预计用户数等【待负责人确认】的项先确认。
