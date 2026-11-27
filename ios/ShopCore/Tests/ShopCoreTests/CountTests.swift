@@ -94,6 +94,8 @@ final class CountTests: XCTestCase, @unchecked Sendable {
             countEntry(liquor, at: "2026-10-31T16:30:00.000Z", seq: 4),                       // UTC 10-31 16:30 = 上海 11-01 00:30，本月
             countEntry(zhonghua, at: "2026-11-10T10:00:00.000+08:00", seq: 5, flags: ["late_before_count": true], qty: 1), // 迟到补偿行不是人数的
             countEntry(noodle, at: "2026-11-11T10:00:00.000+08:00", seq: 6, voided: true, qty: -1), // 撤销了的不算
+            countEntry(noodle, at: "2026-11-12T10:00:00.000+08:00", seq: 7, reverses: UUID(), qty: 1), // 冲销行也不算
+            countEntry(water, at: "2026-11-12T11:00:00.000+08:00", seq: 8, reverses: UUID(), qty: 2),  // 只有冲销行（原行不在本地）不算
         ])
         p = try db.countProgress(today: today)
         XCTAssertEqual(p.counted, 2, "啤酒、二锅头")

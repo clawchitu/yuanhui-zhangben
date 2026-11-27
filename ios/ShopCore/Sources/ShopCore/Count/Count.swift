@@ -84,7 +84,7 @@ public enum CountPrepared: Sendable {
     case submit(Op)
     /// 版本变了：先问人「账上现在是 N 个，你数的还对吗」，确认后带这一版再交
     case stale(stockQty: Int64, stockVer: Int64)
-    /// 商品不在本机了（被合并 / 删了）
+    /// 本机没有这个商品（删了；合并的已由 `canonicalProductId` 换成赢家，不走这里）
     case gone
 }
 
@@ -100,6 +100,7 @@ extension LocalDB {
     /// 待确认商品照样返回（`product.needsReview`），由页面挡下、让人去 22b 补全
     public func countItem(_ productId: UUID) throws -> CountItem? {
         try writer.read { db in
+            guard let s = try Self.currentSession(db), s.holdsPrivateData else { return nil }
             let id = try Self.canonicalProductId(db, productId)
             guard let r = try Row.fetchOne(db, sql: """
                 SELECT p.*, pp.stock_qty AS cq, pp.stock_ver AS cv FROM product p JOIN product_private pp ON pp.product_id = p.id
@@ -148,7 +149,9 @@ extension LocalDB {
     }
 
     /// 排空之后调：读本机基线（= 服务器现在的），版本还是 `expectedVer`（人数货时看到的、或 stale 后人确认过的那一版）
-    /// 就做出 `count` op；变了返回 `.stale` 让人重新确认，不交。每次新 op、新 entry id（被拒的 op 重交只会拿回同一个结果）
+    /// 就做出 `count` op；变了返回 `.stale` 让人重新确认，不交。每次新 op、新 entry id（被拒的 op 重交只会拿回同一个结果）。
+    /// 只在第一次交、或被拒 stale 且人确认之后调；**没连上、不知道成没成时不要再调**，拿原来那个 op 原样重交
+    /// （`submitOnline` 幂等；换了新 op 而第一次其实记上了，会把自己刚交的结果当成别的手机的账来问）
     public func countOp(productId: UUID, counted: Int64, expectedVer: Int64, at now: Date = Date()) throws -> CountPrepared {
         guard let item = try countItem(productId) else { return .gone }
         guard item.stockVer == expectedVer else { return .stale(stockQty: item.stockQty, stockVer: item.stockVer) }
