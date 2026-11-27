@@ -31,6 +31,8 @@ import ShopCore
 ///   -uiConfirmUpsert 秒                          S22d：登记放够这么多秒当作服务器已确认（见 `confirmUpserts`）
 ///   -uiAPI 地址                                  S23a：开通页、已登录的手机连这个桩（令牌 fixture-token）；S23b 账号与密码、注销同样；S24 看账同样
 ///   -uiReportGoods                               S24：多登记稿子 09「快没货了」的红牛（罐）、双汇王中王（根）
+///   -uiExpiry                                    S27：装上稿子 19 的四批（光明已过期、桃李 / 伊利快过期、达利园过几天再提醒），
+///                                                演示数据自带的三批清零；首页黄条的样数从库里算（收银员不装）
 ///   -uiReportDate YYYY-MM-DD / -uiReportMonth YYYY-MM / -uiReportTab month   S24：看账看某一天 / 某个月、一进来就看本月
 ///   -uiUsername 名字                             S23b：这台手机登录用的账号名（家用 / 审核默认 yuanhui；none = 本机没记着，等 `/v1/me` 给）
 ///   -uiDeletePending ISO 时间                    S23b：账号在注销申请中（当作服务器给了 delete_pending_until）
@@ -317,6 +319,38 @@ extension UIFixture {
         }
     }
 
+    /// S27 `-uiExpiry`：稿子 19 / 20 / 20b 的四样（今天 = 稿子上的 11/19）。光明 2 盒进价 ¥9.80（20「算亏 ¥19.60」），
+    /// 伊利 3 盒货值 ¥6.87（20b「算亏 ¥6.87」）。收银员会话没有批次，不装
+    static func installExpiry(into db: LocalDB) throws {
+        guard try db.currentSession()?.holdsPrivateData == true else { return }
+        let d = { (s: String) in try CalendarDate(s) }
+        // (编号, 名称, 单位, 售价, 条码, 库存, 货值, 进价, 到期日, 再提醒到)
+        let items: [(Int, String, String, Int64, String, Int64, Int64, Int64, String, String?)] = [
+            (0x3A1, "光明 新鲜牧场 950ml", "盒", 1380, "6901209200021", 2, 1960, 980, "2026-11-17", nil),
+            (0x3A2, "桃李 醇熟切片面包", "袋", 800, "6939283900016", 4, 2000, 500, "2026-11-21", nil),
+            (0x3A3, "伊利纯牛奶 250ml", "盒", 350, "6907992100029", 3, 687, 229, "2026-11-24", nil),
+            (0x3A4, "达利园 法式软面包", "袋", 900, "6911988000014", 5, 2500, 500, "2026-11-25", "2026-11-22"),
+        ]
+        var b = CatalogBaseline()
+        for (n, name, unit, price, code, stock, value, cost, expiry, snooze) in items {
+            let id = UUID(uuidString: String(format: "5EED0000-0000-4000-8000-%012X", n))!
+            b.products.append(try Product(id: id, name: name, baseUnit: unit, priceFen: Fen(price), trackExpiry: true))
+            b.barcodes.append(try BarcodeRecord(barcode: code, productId: id, packQty: 1, unitName: unit, packPriceFen: nil))
+            b.privates.append(try ProductPrivate(productId: id, stockQty: stock, stockValueFen: Fen(value), lastCostFen: Fen(cost),
+                                                 costKnown: true, stockVer: 1, lowAt: 1))
+            b.lots.append(try LocalLot(id: UUID(uuidString: String(format: "5EED0000-0000-4000-8000-%012X", n + 0x100))!, productId: id,
+                                       expiryDate: try d(expiry), qtyIn: stock, qtyLeft: stock, snoozedUntil: try snooze.map(d),
+                                       handleVer: snooze == nil ? 0 : 1))
+        }
+        // 演示数据自带的三批（11/25 到期）清零，不出现在清单里
+        for n in [0x202, 0x203, 0x204] {
+            let seed = { (k: Int) in UUID(uuidString: String(format: "5EED0000-0000-4000-8000-%012X", k))! }
+            b.lots.append(try LocalLot(id: seed(n + 0x100), productId: seed(n), expiryDate: try d("2026-11-25"),
+                                       qtyIn: 1, qtyLeft: 0))
+        }
+        try db.applyBaseline(b)
+    }
+
     /// 卖出页要用的额外夹具：长名商品、事先记好的几笔卖出
     static func installSellExtras(into db: LocalDB, args: [String]) throws {
         if args.contains("-uiLongName") {
@@ -364,6 +398,7 @@ extension UIFixture {
             }
             try db.applyBaseline(CatalogBaseline(products: products, barcodes: codes))
         }
+        if args.contains("-uiExpiry") { try installExpiry(into: db) }
         if let n = value(for: "-uiPriorSales", in: args).flatMap(Int.init), n > 0 {
             guard let water = try db.lookup(barcode: "6921168509256") else { return }
             for i in 0..<n {

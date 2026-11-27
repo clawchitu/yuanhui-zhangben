@@ -98,8 +98,8 @@ public struct ExpiryBoard: Hashable, Sendable {
 public enum ExpiryChoice: String, Hashable, Sendable, CaseIterable {
     case soldOut, discard, `return`, snooze
 
-    /// 面板上从上到下的顺序，第一个是突出的那个：已过期突出「下架扔掉」（20），没过期突出「还在卖，过几天再提醒」（20b），
-    /// 实际数减到 0 时突出「卖完了」并把扔掉、退货置灰
+    /// 优先顺序，第一个是面板上突出的那个：已过期突出「下架扔掉」（20），没过期突出「还在卖，过几天再提醒」（20b），
+    /// 实际数减到 0 时突出「卖完了」并把扔掉、退货置灰。面板上从上到下怎么排照稿子，由界面定（`ExpiryModel.choices`）
     public static func order(expired: Bool, actualQty: Int64) -> [ExpiryChoice] {
         if actualQty <= 0 { return [.soldOut, .snooze, .discard, .return] }
         return expired ? [.discard, .soldOut, .return, .snooze] : [.snooze, .soldOut, .return, .discard]

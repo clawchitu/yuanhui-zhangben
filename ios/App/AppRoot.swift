@@ -422,6 +422,9 @@ struct AppRoot: View {
                              scrollToBottom: UIFixture.value(for: "-uiScrollTo", in: args) == "bottom",
                              fixedNow: UIFixture.designNow)
         model.liveRecent = liveRecent
+        // S27：-uiExpiry 时首页黄条的样数从库里算（其余夹具仍用稿子上的 3）
+        model.liveExpiry = args.contains("-uiExpiry")
+        model.refreshExpiring()
         model.sellFixture = SellFixture.from(args)
         // S23b：账号名、注销申请中
         let username = UIFixture.value(for: "-uiUsername", in: args) ?? (role == .cashier ? "none" : "yuanhui")
