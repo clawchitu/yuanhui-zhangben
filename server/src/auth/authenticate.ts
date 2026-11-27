@@ -8,7 +8,7 @@ export interface AuthContext {
   identity: Identity;
   device: { id: string; role: "family" | "cashier"; label: string; revokedAt: Date | null; revokeReason: string | null };
   account: { id: string; kind: "family" | "review"; username: string; deleteRequestedAt: Date | null };
-  store: { id: string; name: string; isDemo: boolean; epoch: string };
+  store: { id: string; name: string; isDemo: boolean; epoch: string; lowStockDefault: number };
 }
 
 /** last_seen_at 最多每分钟写一次 */
@@ -50,6 +50,7 @@ export async function authenticate(db: Kysely<Database>, token: string, now: Dat
       "s.name as store_name",
       "s.is_demo",
       "s.epoch",
+      "s.low_stock_default",
     ])
     .where("d.token_hash", "=", sha256Hex(token))
     .executeTakeFirst();
@@ -72,6 +73,6 @@ export async function authenticate(db: Kysely<Database>, token: string, now: Dat
       revokeReason: row.revoke_reason,
     },
     account: { id: row.account_id, kind: row.kind, username: row.username, deleteRequestedAt: row.delete_requested_at },
-    store: { id: row.store_id, name: row.store_name, isDemo: row.is_demo, epoch: row.epoch },
+    store: { id: row.store_id, name: row.store_name, isDemo: row.is_demo, epoch: row.epoch, lowStockDefault: row.low_stock_default },
   };
 }

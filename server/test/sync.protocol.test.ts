@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestDb, type TestDb } from "./helpers/db.ts";
 import { bearer, login, makeApp, makeLoginShop, pair, TestClock } from "./helpers/auth.ts";
-import { op, sync, syncOk, upsertFull, upsertQuick } from "./helpers/sync.ts";
+import { expectContract, op, sync, syncOk, upsertFull, upsertQuick } from "./helpers/sync.ts";
 import { HANDLERS } from "../src/sync/push.ts";
 import { OP_TYPES, OPS_SCHEMA_PATH, type OpType } from "../src/sync/validate.ts";
 
@@ -126,6 +126,24 @@ describe("响应外壳", () => {
   });
 });
 
+describe("store.low_stock_default（S25：手机 11「快没货」与 09 同一条件，§14 S07-6）", () => {
+  it("家用的响应带店里的默认提醒线（改了就跟着变），收银员的响应里没有这个键；都符合契约", async () => {
+    const shop = await makeLoginShop(tdb);
+    const app = makeApp(tdb);
+    const boss = await login(app, shop.username);
+    const cas = await pair(app, boss.token, "cashier", "小王");
+    const r1 = await syncOk(app, boss.token, { epoch: shop.epoch });
+    await tdb.kysely.updateTable("stores").set({ low_stock_default: 7 }).where("id", "=", shop.storeId).execute();
+    const r2 = await syncOk(app, boss.token, { epoch: shop.epoch });
+    const rc = await syncOk(app, cas.token, { epoch: shop.epoch });
+    await app.close();
+    expect(r1.store).toEqual({ name: "元辉烟酒店", low_stock_default: 3 });
+    expect(r2.store).toEqual({ name: "元辉烟酒店", low_stock_default: 7 });
+    expect(rc.store).toEqual({ name: "元辉烟酒店" });
+    for (const r of [r1, r2, rc]) await expectContract("SyncResponse", r);
+  });
+});
+
 describe("手机时钟超前", () => {
   it("occurred_at 比服务器时间晚 5 分钟以上：改成服务器收到的时间，flags.clock_adjusted；5 分钟以内不改", async () => {
     const clock = new TestClock();
@@ -167,11 +185,14 @@ describe("被踢设备（§4.5）", () => {
   }
 
   it("响应 device.revoked=true，不返回任何数据（changes 为空、total_products=0、游标原样）", async () => {
-    const { shop, app, cas } = await kicked();
+    const { shop, app, cas, fam2 } = await kicked();
     const r = await syncOk(app, cas.token, { epoch: shop.epoch, cursors: { catalog: 0, ledger: 0 } });
-    await app.close();
     expect(r.device).toEqual({ role: "cashier", label: "小王", revoked: true });
     expect(r.changes).toEqual({ products: [], barcodes: [], removed: [], entries: [], batches: [], lots: [] });
+    // 被踢的家用设备也不发店里的快没货提醒线（S25）
+    const rf = await syncOk(app, fam2.token, { epoch: shop.epoch, cursors: { catalog: 0, ledger: 0 } });
+    await app.close();
+    expect(rf.store).toEqual({ name: "元辉烟酒店" });
     expect(r.total_products).toBe(0);
     expect(r.cursors).toEqual({ catalog: 0, ledger: 0 });
     expect(r.has_more).toEqual({ catalog: false, ledger: false });

@@ -18,6 +18,16 @@ public struct SyncResponse: Decodable, Sendable {
         public let code: String?
         public let remap: [String: String]?
         public let replayed: Bool?
+        /// `rejected: stale` 时带回的最新状态（库存类 `{stock_qty, stock_ver}`，§14 S06-2）
+        public let current: Current?
+    }
+    public struct Current: Decodable, Sendable, Equatable {
+        public let stockQty: Int64?
+        public let stockVer: Int64?
+    }
+    public struct Store: Decodable, Sendable {
+        public let name: String
+        public let lowStockDefault: Int64?
     }
     public struct Private: Decodable, Sendable {
         public let stockQty: Int64
@@ -131,6 +141,7 @@ public struct SyncResponse: Decodable, Sendable {
     public let serverTime: String
     public let epoch: UUID
     public let device: Device
+    public let store: Store?
 
     public static func decode(_ data: Data) throws -> SyncResponse {
         let d = JSONDecoder()
@@ -184,6 +195,29 @@ public enum SyncError: Error, Equatable, Sendable {
     case revoked(discardOutbox: Bool)
 }
 
+/// 只能联网的 op（补全、盘点，§5.6 第 1 条）交上去的结果
+public enum OnlineOutcome: Equatable, Sendable {
+    case applied
+    /// 账面数变了（`rejected: stale`），带回服务器现在的库存和版本，让人重新确认（§5.6 第 2 条）
+    case stale(stockQty: Int64, stockVer: Int64)
+    /// 别的拒绝（`invalid`、`forbidden`……）
+    case rejected(code: String?)
+    /// 审核号的写入暂存，等家用确认（§4.5）
+    case held
+}
+
+/// 只能联网的 op 交不上去的原因（都没有改服务器上的账；同一个 op 原样重交是幂等的）
+public enum OnlineSubmitError: Error, Equatable, Sendable {
+    /// 本机还有没传上去的账（先传完才能交，否则账面版本对不上）
+    case outboxNotDrained(Int)
+    /// 账号注销期间不能记账（§14 S04-2）
+    case deletePending
+    /// 刚跟服务器重新对过一次（epoch 换了），本机的账面数可能变了，要重新看一眼再交
+    case resynced
+    /// 响应里没有这个 op 的结果
+    case noResult
+}
+
 /// 首次同步进度（「194 / 312 样」）
 public struct SyncProgress: Equatable, Sendable {
     public let products: Int
@@ -216,6 +250,11 @@ extension LocalDB {
 
     /// 请求体：外壳 + outbox 里的原样字节（重发字节不变）
     public func syncRequestBody(_ batch: PushBatch?, appBuild: Int, pull: Bool = true) throws -> Data {
+        try syncRequestBody(opsJSON: (batch?.items ?? []).map(\.opJSON), appBuild: appBuild, pull: pull)
+    }
+
+    /// 请求体：外壳 + 给定的 op 字节（只能联网的 op 不进 outbox，单独发，`SyncEngine.submitOnline`）
+    func syncRequestBody(opsJSON: [Data], appBuild: Int, pull: Bool = true) throws -> Data {
         let (cur, epoch) = try writer.read { db -> (SyncResponse.Cursors, String?) in
             let c = Int64(try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [MetaKey.catalogCursor.rawValue]) ?? "0") ?? 0
             let l = Int64(try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = ?", arguments: [MetaKey.ledgerCursor.rawValue]) ?? "0") ?? 0
@@ -224,9 +263,9 @@ extension LocalDB {
         }
         guard let epoch, UUID(uuidString: epoch) != nil else { throw invalid("还没有 epoch（登录响应里带）") }
         var body = Data("{\"epoch\":\"\(epoch)\",\"cursors\":{\"catalog\":\(cur.catalog),\"ledger\":\(cur.ledger)},\"app_build\":\(appBuild),\"pull\":\(pull),\"ops\":[".utf8)
-        for (i, o) in (batch?.items ?? []).enumerated() {
+        for (i, o) in opsJSON.enumerated() {
             if i > 0 { body.append(0x2C) }
-            body.append(o.opJSON)
+            body.append(o)
         }
         body.append(contentsOf: Array("]}".utf8))
         return body
@@ -351,6 +390,8 @@ extension LocalDB {
             try put(.lastSyncAt, ts)
             try put(.serverTimeAtSync, try Self.normalizeTimestamp(r.serverTime))
             try put(.deletePendingUntil, r.deletePendingUntil)
+            // 收银员的响应里没有这个键（也用不着）；家用每次都带，跟着服务器变
+            if let v = r.store?.lowStockDefault, s.holdsPrivateData { try put(.lowStockDefault, String(v)) }
             if !r.hasMore.catalog { try put(.catalogDone, "1") }
             try Self.deleteConfirmedForeignOps(db, current: s)
         }
@@ -591,5 +632,54 @@ public final class SyncEngine: @unchecked Sendable {
             lastCursors = r.cursors
         }
         return try db.syncStatus()
+    }
+}
+
+extension SyncEngine {
+    /// 交只能联网的 op 之前：先把本机的账传完、把两条流拉到底（§8 S26「提交前先传完本机 outbox」）。
+    /// 传不完抛 `outboxNotDrained`；注销期间抛 `deletePending`。之后读到的本地基线（`stock_ver`）才是服务器现在的
+    public func drainForOnline() throws {
+        try sync()
+        let st = try db.syncStatus()
+        if st.deletePendingUntil != nil { throw OnlineSubmitError.deletePending }
+        if st.pendingCount > 0 { throw OnlineSubmitError.outboxNotDrained(st.pendingCount) }
+    }
+
+    /// 交一个只能联网的 op（`product_review_complete`、`count`）：不进 outbox，单独一个请求；结果和这次的拉取同一个事务提交，
+    /// 然后接着把两条流拉到底。同一个 op（同 id、同字节）重交是幂等的（服务器按 id 返回第一次的结果）——没连上、
+    /// 不知道成没成时原样重交，不换 id。阻塞，不许在主线程调。
+    public func submitOnline(_ op: Op) throws -> OnlineOutcome {
+        guard op.type.onlineOnly else { throw invalid("\(op.type.rawValue) 不是只能联网的 op，走 outbox") }
+        guard let s = try db.currentSession() else { throw invalid("没有登录") }
+        guard Capabilities(role: s.role).canSend(op.type) else { throw invalid("这台手机不能记 \(op.type.rawValue)") }
+        // 本机还有没传的账就不交（交了版本也对不上）：调用方先 `drainForOnline`（PR #68 Opus 建议 1）
+        let st = try db.syncStatus()
+        if st.deletePendingUntil != nil { throw OnlineSubmitError.deletePending }
+        if st.pendingCount > 0 { throw OnlineSubmitError.outboxNotDrained(st.pendingCount) }
+        let body = try db.syncRequestBody(opsJSON: [op.encoded()], appBuild: appBuild)
+        let (code, data) = try transport(body)
+        if code == 409, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any], obj["epoch"] is String {
+            // 服务器从备份恢复过：这个 op 一个都没应用。按正常同步握手、重建投影，让人看过新的账面数再交
+            try sync()
+            throw OnlineSubmitError.resynced
+        }
+        guard code == 200 else { throw SyncHTTPError(status: code) }
+        let r = try SyncResponse.decode(data)
+        if r.device.revoked {
+            try db.handleRevoked(r, sent: nil)
+            throw SyncError.revoked(discardOutbox: r.device.discardOutbox ?? false)
+        }
+        try db.applySyncResponse(r, sent: nil)
+        if r.deletePendingUntil != nil { throw OnlineSubmitError.deletePending }
+        guard let res = r.results.first(where: { $0.id == op.id }) else { throw OnlineSubmitError.noResult }
+        // 这次的拉取可能没拉完；结果已经提交，拉不完下次同步再拉
+        _ = try? sync()
+        switch res.status {
+        case "applied": return .applied
+        case "held": return .held
+        default:
+            if res.code == "stale", let q = res.current?.stockQty, let v = res.current?.stockVer { return .stale(stockQty: q, stockVer: v) }
+            return .rejected(code: res.code)
+        }
     }
 }
