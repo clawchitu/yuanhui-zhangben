@@ -64,7 +64,9 @@ run "夜间全量红 → 拒绝" 1 "{\"workflow_runs\":[$(r schedule failure 202
 run "红之后的新一轮被取消 → 仍按红拒绝" 1 "{\"workflow_runs\":[$(r push cancelled 2026-11-27T04:00:00Z),$(r push failure 2026-11-27T03:00:00Z)]}" "$none"
 run "超时也算红 → 拒绝" 1 "{\"workflow_runs\":[$(r push timed_out 2026-11-27T03:00:00Z)]}" "$none"
 run "红之后修绿 → 放行" 0 "{\"workflow_runs\":[$(r push success 2026-11-27T05:00:00Z),$(r push failure 2026-11-27T03:00:00Z)]}" "$none"
-run "main 还没有跑完的全量 → 放行" 0 "$none" "$none"
+run "main 上找不到跑完的全量 → 按红拒绝" 1 "$none" "$none"
+run "只有被取消的（第一次跑）→ 找不到，按红拒绝" 1 "{\"workflow_runs\":[$(r push cancelled 2026-11-27T04:00:00Z),$(r schedule cancelled 2026-11-27T03:00:00Z)]}" "$none"
+run "对红的那轮点了 Re-run、又被取消 → 仍按红拒绝" 1 "{\"workflow_runs\":[$(r push cancelled 2026-11-27T03:00:00Z completed 2),$(r push success 2026-11-27T01:00:00Z)]}" "$none"
 run "main 红 + --fix-main 但没手动全量 → 拒绝" 1 "{\"workflow_runs\":[$(r push failure 2026-11-27T03:00:00Z)]}" "$none" --fix-main
 run "main 红 + --fix-main + 手动全量失败 → 拒绝" 1 "{\"workflow_runs\":[$(r push failure 2026-11-27T03:00:00Z)]}" "{\"workflow_runs\":[$(r workflow_dispatch failure 2026-11-27T04:00:00Z)]}" --fix-main
 run "main 红 + --fix-main + 手动全量成功 → 放行" 0 "{\"workflow_runs\":[$(r push failure 2026-11-27T03:00:00Z)]}" "{\"workflow_runs\":[$(r workflow_dispatch success 2026-11-27T04:00:00Z)]}" --fix-main

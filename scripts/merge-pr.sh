@@ -23,7 +23,7 @@
 #      修 main 的 PR 自己也被拦，所以加 --fix-main：要求这个 PR 的 head 上有一轮手动触发的全量
 #      （gh workflow run ios.yml --ref <分支>，workflow_dispatch 一律全量）跑成功，才放行。
 #      对红的那轮点 Re-run、重跑还没完时按红算。--fix-main 还要求 PR 已 rebase 到红的那次提交之后。
-#      main 上还没有任何跑完的全量（刚上线时）不拦。
+#      Re-run 后又被取消的那轮也按红算；最近 100 条里找不到一轮跑完的全量也按红算（先手动跑一轮）。
 #   合并方式：squash，--match-head-commit 防止检查和合并之间有人再推。
 set -euo pipefail
 
@@ -106,15 +106,18 @@ check_ci ios-ci "$ios_needed"
 # ios 工作流在 main 上只有 push / schedule / workflow_dispatch 三种触发，都是全量。取最新一轮没被取消的：
 #   跑完了 → 看结论；
 #   还在跑、run_attempt > 1（有人对红的那轮点了 Re-run）→ 按红算，重跑期间不解锁；
-#   还在跑、第一次跑 → 看再早一轮跑完的。
-main_run=$(gh api "repos/$REPO/actions/workflows/ios.yml/runs?branch=main&per_page=50" \
+#   还在跑、第一次跑 → 看再早一轮跑完的；
+#   Re-run 的那轮（run_attempt > 1）后来被取消 → 也按红算（API 只给最后一次 attempt 的结论，看不到它重跑前是红的，PR #73 评审）；
+#   最近 100 条里一轮可用的都找不到 → 按红算，不放行（先手动跑一轮全量）。
+main_run=$(gh api "repos/$REPO/actions/workflows/ios.yml/runs?branch=main&per_page=100" \
   --jq '[.workflow_runs[] | select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")
-                         | select(.conclusion != "cancelled" and .conclusion != "skipped")
+                         | select(.conclusion != "skipped")
+                         | select(.conclusion != "cancelled" or .run_attempt > 1)
                          | select(.status == "completed" or .run_attempt > 1)]
         | sort_by(.created_at) | last
         | if . == null then "" else "\(if .status == "completed" then .conclusion else "rerunning" end) \(.head_sha) \(.event) \(.html_url)" end')
 if [ -z "$main_run" ]; then
-  ok "main 上还没有跑完的 ios 全量，不拦"
+  bad "main 上找不到跑完的 ios 全量，按红算：先手动跑一轮 gh workflow run ios.yml --ref main"
 else
   read -r main_concl main_sha main_event main_url <<<"$main_run"
   if [ "$main_concl" = success ]; then

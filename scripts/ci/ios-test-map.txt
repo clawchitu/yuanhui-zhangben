@@ -21,8 +21,10 @@
 # 不在 ios/、contracts/、scripts/ci/ 下、也不是 .github/workflows/ios.yml 的文件（server/、docs/ 等）不参与选测。
 # 改名 / 移动的文件新旧两个路径都算。
 
-# ---------- 冒烟集（单机约 7 分钟；遍历一条约 6 分钟） ----------
+# ---------- 冒烟集（单机约 10 分钟；家用遍历约 6 分钟，收银员遍历约 2.5 分钟） ----------
 smoke YuanhuiZhangbenUITests/S15UITests/testFamilyTraversalReachesEveryPage
+# 收银员遍历：权限边界（新加的入口通到家用页，PR 上就要测出来）
+smoke YuanhuiZhangbenUITests/S15UITests/testCashierTraversalNeverReachesFamilyPages
 smoke YuanhuiZhangbenUITests/S15UITests/testCashierSettingsHasExactlyFiveItems
 smoke YuanhuiZhangbenUITests/S16UITests/testSellOneThingFromHomeInTwoTaps
 smoke YuanhuiZhangbenUITests/S16UITests/testThreeCodesCommitOneBatchOfThreeLines
@@ -38,6 +40,8 @@ full ios/App/AppModel.swift
 full ios/App/AppRoot.swift
 full ios/App/UIFixture.swift
 full ios/App/Design/*
+# 扫码层：卖出、进货、登录、手输码、设置都在用，所有扫码的 UI 测试靠 FakeScanner 喂码
+full ios/App/Scanner/*
 full ios/App/Features/Navigation/*
 full ios/App/Net/AppServices.swift
 full ios/App/Net/SyncCoordinator.swift
@@ -56,23 +60,27 @@ full ios/ShopCore/Sources/ShopCore/Money/*
 
 # ---------- 页面 → UI 测试 ----------
 ui ios/App/Features/Account/*      S23bUITests
-ui ios/App/Features/Discount/*     S17UITests
+# 卖出 / 进货 / 新商品 / 手输码 / 打折五个目录互相引用（DiscountPanel、ManualCodeView、NewProductView、SellModel、SellFixture、CameraStrip…），
+# 改到任何一个都跑这一组扫码记账的 UI 测试，加 S20（记录页用 SellModel）；--self-test 会按跨目录引用核对
+ui ios/App/Features/Discount/*     S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
 ui ios/App/Features/Expiry/*       S27UITests
 # 首页是各页的入口：遍历在冒烟集里，这里加首页上的提醒条、大字号
 ui ios/App/Features/Home/*         PendingPanelUITests S27UITests S20UITests S15UITests/testHomeBigButtonsFitAtMaxAccessibilitySize S15UITests/testUnsyncedReminderAboveExpiring
 ui ios/App/Features/Login/*        S21UITests S23aHeldUITests S23bUITests
-ui ios/App/Features/ManualCode/*   S17UITests S16UITests
-ui ios/App/Features/NewProduct/*   S18UITests S22dUITests NameWrapUITests S19UITests
-ui ios/App/Features/Onboarding/*   S21UITests S15UITests/testCashierOnboardingHasNoNaming S15UITests/testFamilyOnboardingHasNaming S15UITests/testOnboardingDefaultsToLargeAndChoiceSurvivesRestart
-ui ios/App/Features/Pairing/*      S23aUITests S23aHeldUITests
-ui ios/App/Features/Pending/*      PendingPanelUITests
+ui ios/App/Features/ManualCode/*   S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
+ui ios/App/Features/NewProduct/*   S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
+# DeviceNamePicker 设置页也在用 → 带上设置页的测试
+ui ios/App/Features/Onboarding/*   S21UITests S15UITests/testCashierOnboardingHasNoNaming S15UITests/testFamilyOnboardingHasNaming S15UITests/testOnboardingDefaultsToLargeAndChoiceSurvivesRestart ICPFooterUITests S23aHeldUITests S23bUITests S15UITests/testCashierSettingsHasExactlyFiveItems
+# DeviceBackend / OfflineNote 账号页、看账页也在用
+ui ios/App/Features/Pairing/*      S23aUITests S23aHeldUITests S23bUITests S24UITests S20UITests
+# PendingModel 配对页（等着的那几笔）也在用
+ui ios/App/Features/Pending/*      PendingPanelUITests S23aUITests S23aHeldUITests S23bUITests S24UITests S20UITests
 ui ios/App/Features/Records/*      S20UITests
 ui ios/App/Features/Reports/*      S24UITests S20UITests
-ui ios/App/Features/Sell/*         S16UITests S17UITests S18UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests
+ui ios/App/Features/Sell/*         S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
 ui ios/App/Features/Settings/ScannerStatusView.swift  S14UITests
 ui ios/App/Features/Settings/*     ICPFooterUITests S23aHeldUITests S23bUITests S15UITests/testCashierSettingsHasExactlyFiveItems
-ui ios/App/Features/StockIn/*      S19UITests ScanLayoutUITests S22dUITests
-ui ios/App/Scanner/*               S14UITests S16UITests ScanLayoutUITests
+ui ios/App/Features/StockIn/*      S16UITests S17UITests S18UITests S19UITests S22cUITests S22dUITests ScanLayoutUITests SellTagFitUITests NameWrapUITests S20UITests
 ui ios/App/Net/APIEnvironment.swift  S21UITests
 ui ios/App/Net/ProductImages.swift   S22cUITests S22dUITests
 ui ios/App/Net/ImageChanges.swift    S22cUITests S22dUITests
