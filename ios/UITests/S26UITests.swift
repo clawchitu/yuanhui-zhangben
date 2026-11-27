@@ -119,6 +119,31 @@ final class S26UITests: XCTestCase {
         XCTAssertFalse(app.alerts.firstMatch.exists, "原 op 重交，不问「账上现在是」")
     }
 
+    /// 「正在存」的时候按返回不离开：等结果出来，账上变了的问句照样弹出来（不会人走了、以为存了）
+    func testBackWhileSubmittingStaysForAnswer() {
+        let app = launch(outcome: "slowStale")
+        XCTAssertTrue(el(app, "count.card").waitForExistence(timeout: 10))
+        press(app, "1")
+        el(app, "count.save").tap()
+        app.buttons["返回"].firstMatch.tap()
+        let alert = app.alerts.firstMatch
+        XCTAssertTrue(alert.waitForExistence(timeout: 10))
+        XCTAssertEqual(alert.label, "账上现在是 1 罐，你数的还对吗")
+        alert.buttons["对，就是 1 罐"].tap()
+        waitLabel(el(app, "count.notice"), contains: "存好了")
+    }
+
+    /// 交的时候 epoch 对不上（不是被踢）：提示没存上，卡和数都还在
+    func testEpochMismatchSaysNotSaved() {
+        let app = launch(outcome: "epoch")
+        XCTAssertTrue(el(app, "count.card").waitForExistence(timeout: 10))
+        press(app, "1")
+        el(app, "count.save").tap()
+        waitLabel(el(app, "count.notice"), contains: "没存上")
+        XCTAssertTrue(el(app, "count.card").exists)
+        XCTAssertEqual(el(app, "count.input").value as? String, "1")
+    }
+
     /// 必须联网：没网时整页「要联网才能盘点」，扫码不出商品卡
     func testOfflineNeedsNetwork() {
         let app = launch(outcome: "offline")

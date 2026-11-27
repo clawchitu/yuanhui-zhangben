@@ -105,8 +105,9 @@ struct CountView: View {
         }
     }
 
-    /// 返回：商品卡开着先关卡（没存的数作废）；等扫码时还有没数的先看 12b；否则离开
+    /// 返回：正在存的时候不理（等结果，问句不能没人看）；商品卡开着先关卡（没存的数作废）；等扫码时还有没数的先看 12b；否则离开
     private func back() {
+        if model.phase == .submitting { return }
         if model.item != nil, !model.busy {
             model.close()
         } else if model.phase == .ready, (model.progress?.remaining ?? 0) > 0 {

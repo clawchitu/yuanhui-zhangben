@@ -38,8 +38,9 @@ import ShopCore
 ///                                                演示数据自带的三批清零；首页黄条的样数从库里算（收银员不装）
 ///   -uiCountGoods                                S26：装上稿子 12a / 12b 的货（红牛 2 罐、桃李、维达、旺仔、双汇；二锅头账上 9 瓶），
 ///                                                演示数据的另外五样当作本月数过了；设置页「11月 数了 N 种」从库里算（收银员不装）
-///   -uiCountOutcome applied|stale|offline|lost   S26：盘点交账的假通道（不连服务器；offline = 排空就失败；
-///                                                lost = 第一次记上了但回包丢了，同一 op 重交才拿回结果）
+///   -uiCountOutcome applied|stale|slowStale|offline|lost|epoch   S26：盘点交账的假通道（不连服务器；offline = 排空就失败；
+///                                                lost = 第一次记上了但回包丢了，同一 op 重交才拿回结果；
+///                                                slowStale = stale 但第一次交等 3 秒；epoch = 交时 epoch 对不上）
 ///   -uiReportDate YYYY-MM-DD / -uiReportMonth YYYY-MM / -uiReportTab month   S24：看账看某一天 / 某个月、一进来就看本月
 ///   -uiUsername 名字                             S23b：这台手机登录用的账号名（家用 / 审核默认 yuanhui；none = 本机没记着，等 `/v1/me` 给）
 ///   -uiDeletePending ISO 时间                    S23b：账号在注销申请中（当作服务器给了 delete_pending_until）

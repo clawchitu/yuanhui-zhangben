@@ -235,7 +235,7 @@ final class CountModel {
             phase = .ready
             await refreshItem()
             show("刚跟服务器重新对了一次账，看一眼账上的数再存", error: true)
-        } catch is SyncError {
+        } catch SyncError.revoked {
             phase = .ready   // 被踢了：页面会回到登录（25b / 25f）
         } catch {
             phase = .ready; show("\(Self.offlineText)，没存上。连上网再点一次", error: true)
@@ -293,8 +293,9 @@ final class CountModel {
 
 #if DEBUG
 extension CountBackend {
-    /// UI 测试的假通道（`-uiCountOutcome applied|stale|offline|lost`）：不连服务器。
-    /// `offline` 排空就失败；`stale` 第一次交时回「账上现在比看到的少 1 个」、确认后成功；
+    /// UI 测试的假通道（`-uiCountOutcome applied|stale|slowStale|offline|lost|epoch`）：不连服务器。
+    /// `offline` 排空就失败；`stale` 第一次交时回「账上现在比看到的少 1 个」、确认后成功；`slowStale` 同 `stale`，
+    /// 但第一次交要等 3 秒（测「正在存」时按返回）；`epoch` 交的时候抛 `SyncError.epochMismatch`（不是被踢）；
     /// 成功时把这样商品在本机改成数到的数（像服务器的拉取带回来那样）
     static func fixture(outcome: String, db: LocalDB) -> CountBackend {
         final class Count: @unchecked Sendable { var n = 0; var first: UUID? }
@@ -314,7 +315,9 @@ extension CountBackend {
                     if op.id == count.first { return .applied }
                     return .stale(stockQty: p.countedQty, stockVer: p.baseVer + 1)
                 }
-                if outcome == "stale", count.n == 1 {
+                if outcome == "epoch" { throw SyncError.epochMismatch(UUID()) }
+                if outcome == "slowStale", count.n == 1 { try await Task.sleep(for: .seconds(3)) }
+                if outcome == "stale" || outcome == "slowStale", count.n == 1 {
                     try await Task.detached { try Self.setBook(db, p.productId, qty: p.baseQty - 1, ver: p.baseVer + 1) }.value
                     return .stale(stockQty: p.baseQty - 1, stockVer: p.baseVer + 1)
                 }
@@ -348,7 +351,7 @@ extension CountBackend {
 extension AppModel {
     /// 盘点交账的通道（S26）：先停掉定时同步、等在途的那趟跑完（不和它同时写本地库），排空 outbox、拉到底，
     /// 再单独交 `count`；交完让同步接着跑。没有网络服务（夹具）时返回 nil，页面按没网处理。
-    /// Debug 的 `-uiCountOutcome applied|stale|offline` 换成假通道（UI 测试用）
+    /// Debug 的 `-uiCountOutcome …` 换成假通道（UI 测试用）
     func makeCountBackend() -> CountBackend? {
         #if DEBUG
         if let o = UIFixture.value(for: "-uiCountOutcome", in: ProcessInfo.processInfo.arguments) {
