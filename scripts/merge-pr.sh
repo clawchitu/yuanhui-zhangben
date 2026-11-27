@@ -22,6 +22,7 @@
 #      不算被取消的）结论必须是 success。main 红着时一律拒绝，先修 main。
 #      修 main 的 PR 自己也被拦，所以加 --fix-main：要求这个 PR 的 head 上有一轮手动触发的全量
 #      （gh workflow run ios.yml --ref <分支>，workflow_dispatch 一律全量）跑成功，才放行。
+#      对红的那轮点 Re-run、重跑还没完时按红算。--fix-main 还要求 PR 已 rebase 到红的那次提交之后。
 #      main 上还没有任何跑完的全量（刚上线时）不拦。
 #   合并方式：squash，--match-head-commit 防止检查和合并之间有人再推。
 set -euo pipefail
@@ -70,7 +71,8 @@ done
 [ "$mergeable" = "true" ] && ok "没有冲突" || bad "GitHub 报告不可合并（mergeable=$mergeable）"
 
 # ---- 改动路径 ----
-files=$(gh api --paginate "repos/$REPO/pulls/$pr/files" --jq '.[].filename')
+# 改名 / 移动的文件新旧路径都算（previous_filename）
+files=$(gh api --paginate "repos/$REPO/pulls/$pr/files" --jq '.[] | .filename, (.previous_filename // empty)')
 ios_needed=0
 if grep -qE '^(ios/|contracts/|scripts/ci/|\.github/workflows/ios\.yml$)' <<<"$files"; then ios_needed=1; fi
 
@@ -101,28 +103,36 @@ check_ci server-ci 1
 check_ci ios-ci "$ios_needed"
 
 # ---- main 是否绿（ios 全量） ----
-# 最近一轮跑完、没被取消的 main 全量；ios 工作流在 main 上只有 push / schedule / workflow_dispatch 三种触发，都是全量
-main_runs=$(gh api "repos/$REPO/actions/workflows/ios.yml/runs?branch=main&status=completed&per_page=30" \
+# ios 工作流在 main 上只有 push / schedule / workflow_dispatch 三种触发，都是全量。取最新一轮没被取消的：
+#   跑完了 → 看结论；
+#   还在跑、run_attempt > 1（有人对红的那轮点了 Re-run）→ 按红算，重跑期间不解锁；
+#   还在跑、第一次跑 → 看再早一轮跑完的。
+main_run=$(gh api "repos/$REPO/actions/workflows/ios.yml/runs?branch=main&per_page=50" \
   --jq '[.workflow_runs[] | select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")
-                         | select(.conclusion != "cancelled" and .conclusion != "skipped")]
-        | sort_by(.created_at) | last | if . == null then "" else "\(.conclusion) \(.head_sha[0:7]) \(.event) \(.html_url)" end')
-if [ -z "$main_runs" ]; then
+                         | select(.conclusion != "cancelled" and .conclusion != "skipped")
+                         | select(.status == "completed" or .run_attempt > 1)]
+        | sort_by(.created_at) | last
+        | if . == null then "" else "\(if .status == "completed" then .conclusion else "rerunning" end) \(.head_sha) \(.event) \(.html_url)" end')
+if [ -z "$main_run" ]; then
   ok "main 上还没有跑完的 ios 全量，不拦"
 else
-  read -r main_concl main_sha main_event main_url <<<"$main_runs"
+  read -r main_concl main_sha main_event main_url <<<"$main_run"
   if [ "$main_concl" = success ]; then
-    ok "main 的 ios 全量是绿的（$main_sha，$main_event）"
+    ok "main 的 ios 全量是绿的（${main_sha:0:7}，$main_event）"
   elif [ "$fix_main" = 1 ]; then
-    # 修 main 的 PR：head 上要有一轮手动触发的全量跑成功
+    # 修 main 的 PR：① 已经包含 main 红的那次提交（rebase 过）；② head 上有一轮手动触发的全量跑成功
+    cmp=$(gh api "repos/$REPO/compare/$main_sha...$sha" --jq .status 2>/dev/null || echo error)
     fix_ok=$(gh api "repos/$REPO/actions/workflows/ios.yml/runs?head_sha=$sha&event=workflow_dispatch&status=completed&per_page=30" \
       --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
-    if [ "${fix_ok:-0}" -gt 0 ]; then
-      ok "main 的 ios 全量是红的（$main_concl，$main_sha），--fix-main：本 PR head 上手动全量已通过，放行"
+    if [ "$cmp" != ahead ] && [ "$cmp" != identical ]; then
+      bad "main 的 ios 全量是红的（$main_concl，${main_sha:0:7}）；--fix-main 要求本 PR 已 rebase 到红的那次提交之后（compare：$cmp）"
+    elif [ "${fix_ok:-0}" -gt 0 ]; then
+      ok "main 的 ios 全量是红的（$main_concl，${main_sha:0:7}），--fix-main：本 PR 包含它，head 上手动全量已通过，放行"
     else
-      bad "main 的 ios 全量是红的（$main_concl，$main_sha）；--fix-main 要求本 PR head 上有一轮手动全量成功：gh workflow run ios.yml --ref <分支>"
+      bad "main 的 ios 全量是红的（$main_concl，${main_sha:0:7}）；--fix-main 要求本 PR head 上有一轮手动全量成功：gh workflow run ios.yml --ref <分支>"
     fi
   else
-    bad "main 的 ios 全量是红的（$main_concl，$main_sha，$main_url），先把 main 修绿；修 main 的 PR 用 --fix-main"
+    bad "main 的 ios 全量是红的（$main_concl，${main_sha:0:7}，$main_url），先把 main 修绿；修 main 的 PR 用 --fix-main"
   fi
 fi
 

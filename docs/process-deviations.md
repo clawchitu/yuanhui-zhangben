@@ -11,11 +11,12 @@
 **改为**：
 
 1. 规则写在 `CLAUDE.md`：所有改动走 PR，不直接推 `main`，合并只用 `scripts/merge-pr.sh`。
-2. `scripts/merge-pr.sh <PR号> [--dry-run]` 在合并前检查：
+2. `scripts/merge-pr.sh <PR号> [--dry-run] [--fix-main]` 在合并前检查：
    - PR 是 open、非草稿、无冲突、目标 main；
    - `server-ci` 在当前 head 上成功；
    - `ios-ci`：PR 改了 `ios/**`、`contracts/**`、`scripts/ci/**` 或 `.github/workflows/ios.yml` 时必须成功（`contracts/**` 自 S12 起加入，`scripts/ci/**` 自 11/27 CI 精简起加入）；没改、工作流没触发时视为不需要；只要出现过就必须成功；
    - PR 评论里有当前 head 推送之后的「Codex 审核：通过」开头的评论，以及「Opus 审核：通过」或「Fable 审核：通过」开头的评论之一（2026-11-24 起第二路是 Opus，Fable 只为兼容旧 PR），每方以最后一条「X 审核：」评论为准；Opus、Fable 当前 head 上任一方最后一条是「不通过」就拒绝。
+   - main 是绿的：ios 工作流在 main 上最近一轮跑完的全量是 success（11/27 起，见 D-1127-1；`--fix-main` 例外）；
    - 全过才 `gh pr merge --squash --match-head-commit <sha>`。
 3. 评审结论用 **PR 评论**而不是 `review/codex`、`review/fable` 状态（没有必需检查，状态也拦不住合并，评论更直观）。
 4. 不写 `scripts/protect-main.sh`（开不了）。
@@ -66,6 +67,6 @@ PR #41 的 ios-ci 两次都在 45 分钟时被取消：`xcodebuild test` 本身�
 
 PR 上的 ios-ci 原来每次跑全量，要 55–65 分钟（S15 遍历四条约 16 分钟、S22d 约 5 分钟），两台 runner 排队时常常再等 1 小时。
 
-**改为**：PR 上跑编译、全部单元测试、冒烟集（含家用全页面遍历）、按 `scripts/ci/ios-test-map.txt` 选出的 UI 测试、Release / Beta 构建检查；改到公共层、导航、数据模型、契约或没登记的路径时自动全量。全量在 push 到 main 后和每晚北京时间 03:00 跑，main 上同一时间只跑一轮，新的取消旧的。`merge-pr.sh` 加了一条：main 最近一轮跑完的 ios 全量不是 success 就拒绝合并（`--fix-main` 例外，要求本 PR head 上手动全量通过）。
+**改为**：PR 上跑编译、全部单元测试、冒烟集（含家用全页面遍历）、按 `scripts/ci/ios-test-map.txt` 选出的 UI 测试、Release / Beta 构建检查；改到公共层、导航、数据模型、契约或没登记的路径时自动全量。全量在 push 到 main 后和每晚北京时间 03:00 跑，main 上同一时间只跑一轮（正在跑的跑完，排队的只留最新一个；方案原文是「新的取消旧的」，自审发现合并频繁时每轮都会被砍、永远没有跑完的全量，红锁失效，所以只取消排队中的）。`merge-pr.sh` 加了一条：main 最近一轮跑完的 ios 全量不是 success 就拒绝合并（`--fix-main` 例外，要求本 PR 已 rebase 到红的提交之后、head 上手动全量通过；对红的那轮 Re-run 期间仍按红算）。
 
 代价：PR 上没选中的 UI 测试出问题，要到合并后 main 上的全量才发现，那时 main 红、锁住合并，由合进去的人修。缓解：没登记的路径一律全量；公共层一律全量；夜间兜底。

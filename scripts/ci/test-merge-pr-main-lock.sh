@@ -33,6 +33,7 @@ case "$path" in
   */issues/7/comments*) body='[{"created_at":"2026-11-27T02:00:00Z","body":"Codex 审核：通过","user":{"login":"x"}},{"created_at":"2026-11-27T02:01:00Z","body":"Opus 审核：通过","user":{"login":"x"}}]' ;;
   */actions/workflows/ios.yml/runs\?branch=main*) body=$(cat "$FAKE_MAIN_RUNS") ;;
   */actions/workflows/ios.yml/runs\?head_sha=*) body=$(cat "$FAKE_PR_DISPATCH_RUNS") ;;
+  */compare/*) body="{\"status\":\"${FAKE_COMPARE:-ahead}\"}" ;;
   *) echo "假 gh 没有这个路径：$path" >&2; exit 1 ;;
 esac
 jq -r "$jqf" <<<"$body"
@@ -43,15 +44,16 @@ run() { # 名字 期望退出码(0 放行 / 1 拒绝) main 上的 runs JSON 本 
   local name="$1" want="$2" main="$3" disp="$4" out code; shift 4
   echo "$main" >"$tmp/main.json"; echo "$disp" >"$tmp/disp.json"
   set +e
-  out=$(PATH="$tmp/bin:$PATH" FAKE_MAIN_RUNS="$tmp/main.json" FAKE_PR_DISPATCH_RUNS="$tmp/disp.json" \
+  out=$(PATH="$tmp/bin:$PATH" FAKE_MAIN_RUNS="$tmp/main.json" FAKE_PR_DISPATCH_RUNS="$tmp/disp.json" FAKE_COMPARE="${FAKE_COMPARE:-ahead}" \
     bash "$root/scripts/merge-pr.sh" 7 --dry-run "$@" 2>&1)
   code=$?
   set -e
   local line; line=$(grep -E "main (的|上)" <<<"$out" | head -1)
   if [ "$code" = "$want" ]; then echo "  [对] $name（退出码 $code）$line"; else echo "  [错] $name：期望 $want 得到 $code"; echo "$out" | sed 's/^/      /'; fail=1; fi
 }
-r() { # event conclusion created_at
-  echo "{\"event\":\"$1\",\"conclusion\":\"$2\",\"created_at\":\"$3\",\"head_sha\":\"0123456789\",\"html_url\":\"https://example/run\"}"
+r() { # event conclusion created_at [status] [run_attempt]
+  local concl="\"$2\""; [ "$2" = null ] && concl=null
+  echo "{\"event\":\"$1\",\"conclusion\":$concl,\"created_at\":\"$3\",\"status\":\"${4:-completed}\",\"run_attempt\":${5:-1},\"head_sha\":\"0123456789\",\"html_url\":\"https://example/run\"}"
 }
 none='{"workflow_runs":[]}'
 fail=0
@@ -66,4 +68,9 @@ run "main 还没有跑完的全量 → 放行" 0 "$none" "$none"
 run "main 红 + --fix-main 但没手动全量 → 拒绝" 1 "{\"workflow_runs\":[$(r push failure 2026-11-27T03:00:00Z)]}" "$none" --fix-main
 run "main 红 + --fix-main + 手动全量失败 → 拒绝" 1 "{\"workflow_runs\":[$(r push failure 2026-11-27T03:00:00Z)]}" "{\"workflow_runs\":[$(r workflow_dispatch failure 2026-11-27T04:00:00Z)]}" --fix-main
 run "main 红 + --fix-main + 手动全量成功 → 放行" 0 "{\"workflow_runs\":[$(r push failure 2026-11-27T03:00:00Z)]}" "{\"workflow_runs\":[$(r workflow_dispatch success 2026-11-27T04:00:00Z)]}" --fix-main
+run "新一轮还在跑（第一次）→ 看上一轮跑完的：绿放行" 0 "{\"workflow_runs\":[$(r push null 2026-11-27T05:00:00Z in_progress 1),$(r push success 2026-11-27T03:00:00Z)]}" "$none"
+run "新一轮还在跑（第一次）→ 看上一轮跑完的：红拒绝" 1 "{\"workflow_runs\":[$(r push null 2026-11-27T05:00:00Z in_progress 1),$(r push failure 2026-11-27T03:00:00Z)]}" "$none"
+run "对红的那轮点了 Re-run、还在跑 → 仍拒绝" 1 "{\"workflow_runs\":[$(r push null 2026-11-27T03:00:00Z in_progress 2),$(r push success 2026-11-27T01:00:00Z)]}" "$none"
+FAKE_COMPARE=behind run "main 红 + --fix-main + 手动全量成功，但 PR 没 rebase 到红的提交 → 拒绝" 1 "{\"workflow_runs\":[$(r push failure 2026-11-27T03:00:00Z)]}" "{\"workflow_runs\":[$(r workflow_dispatch success 2026-11-27T04:00:00Z)]}" --fix-main
+FAKE_COMPARE=diverged run "--fix-main，PR 和 main 分叉 → 拒绝" 1 "{\"workflow_runs\":[$(r push failure 2026-11-27T03:00:00Z)]}" "{\"workflow_runs\":[$(r workflow_dispatch success 2026-11-27T04:00:00Z)]}" --fix-main
 [ $fail -eq 0 ] && echo "全部符合预期" || { echo "有不符合预期的"; exit 1; }
