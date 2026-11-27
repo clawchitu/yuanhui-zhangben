@@ -40,6 +40,8 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UIUserInterfaceStyle: Light
         INFOPLIST_KEY_NSCameraUsageDescription: 扫商品条码、扫登录码、给商品拍照要用相机
+        # 只用系统自带的 HTTPS（URLSession），属于豁免的加密，上传时不用再填出口合规（§10，S30）
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
   YuanhuiZhangbenTests:
